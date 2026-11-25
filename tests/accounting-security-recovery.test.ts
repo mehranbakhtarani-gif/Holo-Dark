@@ -68,7 +68,7 @@ test('P0: Jalali date validation rejects Esfand 30 in common years and accepts i
 test('P0: Voucher validation rejects non-numeric amount strings instead of coercing them to zero', () => {
   const seed = createHolooSeedData('p0_validation_test');
   const debitAccount = seed.accounts.find((a) => a.code === '10101')!;
-  const creditAccount = seed.accounts.find((a) => a.code === '40101')!;
+  const creditAccount = seed.accounts.find((a) => a.code === '50101')!;
   const base = {
     date: '1403/12/30',
     description: 'P0 validation test',
