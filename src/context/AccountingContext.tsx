@@ -96,6 +96,7 @@ import {
 import {
   commitInvoiceOperationalTx,
   commitChequeOperationalTx,
+  commitChequeStatusOperationalTx,
   commitInventoryAdjustmentOperationalTx,
   getOperationalDbStats,
   loadOperationalWorkspace,
@@ -2651,13 +2652,21 @@ export const AccountingProvider: React.FC<{ children: React.ReactNode }> = ({ ch
           const nextNumber = getNextFiscalYearVoucherNumber(fy, undefined, localMax);
           localVoucher = buildVoucher(cachedCheque, plan, nextNumber);
         }
-        setCheques((prev) =>
-          prev.map((c) =>
-            c.id === chequeId
-              ? { ...c, status: newStatus, _version: (Number(c._version) || 1) + 1 }
-              : c
-          )
-        );
+        const updatedCheque: Cheque = {
+          ...cachedCheque,
+          status: newStatus,
+          _version: (Number(cachedCheque._version) || 1) + 1,
+        };
+        const saved = await commitChequeStatusOperationalTx({
+          chequeId,
+          expectedStatus: cachedCheque.status,
+          updatedCheque,
+          voucher: localVoucher,
+        });
+        if (!saved) {
+          throw new Error('پایگاه داده محلی در دسترس نیست؛ وضعیت چک و سند خزانه ذخیره نشدند.');
+        }
+        setCheques((prev) => prev.map((c) => (c.id === chequeId ? updatedCheque : c)));
         if (localVoucher) setVouchers((prev) => [...prev, localVoucher!]);
         showToast(
           localVoucher
