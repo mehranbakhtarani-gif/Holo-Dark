@@ -1055,7 +1055,7 @@ export const InvoicesView: React.FC<{ initialIntent?: string; clearIntent?: () =
         paidCash: invoiceType === 'waste' ? 0 : safePaidCash,
         paidBank: invoiceType === 'waste' ? 0 : safePaidBank,
         paidCheque: invoiceType === 'waste' ? 0 : safePaidCheque,
-        ...(safePaidCheque > 0
+        ...(safePaidCheque > 0 && invoiceType !== 'proforma' && invoiceType !== 'waste'
           ? {
               chequeSayadiId: normalizedChequeSayadiId,
               chequeSerial: chequeSerial.trim(),
