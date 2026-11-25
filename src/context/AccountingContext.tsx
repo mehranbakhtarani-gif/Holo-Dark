@@ -2158,7 +2158,7 @@ export const AccountingProvider: React.FC<{ children: React.ReactNode }> = ({ ch
       ) {
         throw new Error('نوع طرف‌حساب با دریافتنی یا پرداختنی بودن چک سازگار نیست.');
       }
-      if (cheques.some((item) => item.sayadiId.replace(/\D/g, '') === normalizedSayadi)) {
+      if (cheques.some((item) => normalizeDigits(item.sayadiId).replace(/\D/g, '') === normalizedSayadi)) {
         throw new Error('این شناسه صیادی قبلاً در خزانه ثبت شده است.');
       }
 
@@ -2168,6 +2168,7 @@ export const AccountingProvider: React.FC<{ children: React.ReactNode }> = ({ ch
       const full: Cheque = {
         ...payload,
         sayadiId: normalizedSayadi,
+        partyName: party.name,
         amount,
         id,
         ownerId,
@@ -2179,7 +2180,7 @@ export const AccountingProvider: React.FC<{ children: React.ReactNode }> = ({ ch
                 accountCode: '10301',
                 accountTitle: 'اسناد دریافتنی نزد صندوق',
                 partyId: payload.partyId,
-                partyName: payload.partyName,
+                partyName: party.name,
                 description: `دریافت چک صیادی ${normalizedSayadi}`,
                 debit: amount,
                 credit: 0,
@@ -2220,7 +2221,7 @@ export const AccountingProvider: React.FC<{ children: React.ReactNode }> = ({ ch
         const validation = validateVoucherPayload({
           payload: {
             date: payload.issueDate,
-            description: `ثبت چک صیادی ${normalizedSayadi} — ${payload.partyName}`,
+            description: `ثبت چک صیادی ${normalizedSayadi} — ${party.name}`,
             voucherType: 'treasury',
             status: 'permanent',
             lines,
@@ -2342,7 +2343,7 @@ export const AccountingProvider: React.FC<{ children: React.ReactNode }> = ({ ch
               serial: full.serial.slice(0, 48),
               direction: full.direction,
               partyId: full.partyId.slice(0, 128),
-              partyName: full.partyName.slice(0, 160),
+              partyName: party.name.slice(0, 160),
               bankName: full.bankName.slice(0, 100),
               ...(full.branch ? { branch: full.branch.slice(0, 100) } : {}),
               amount,
