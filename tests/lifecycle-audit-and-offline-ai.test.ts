@@ -138,6 +138,10 @@ test('1. Proforma -> Final Sale conversion syncs FIFO costLayers, Sayadi cheque,
   assert.ok(plan.cheque, 'Sayadi receivable cheque must be created when paidCheque > 0');
   assert.equal(plan.cheque!.direction, 'receivable');
   assert.equal(plan.cheque!.amount, paidCheque);
+  assert.equal(plan.cheque!.sayadiId, '1234567890123470');
+  assert.equal(plan.cheque!.serial, 'PF-CHK-001');
+  assert.equal(plan.cheque!.issueDate, '1405/04/10');
+  assert.equal(plan.cheque!.dueDate, '1405/05/10');
   assert.ok(
     typeof plan.invoice.items[0].totalCostIrr === 'number' && plan.invoice.items[0].totalCostIrr > 0,
     'Converted sale items must capture exact FIFO totalCostIrr'
