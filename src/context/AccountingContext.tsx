@@ -1824,8 +1824,8 @@ export const AccountingProvider: React.FC<{ children: React.ReactNode }> = ({ ch
       referenceId: string
     ): Promise<number> => {
       if (entries.length === 0) return 0;
-      if (entries.length > 450) {
-        throw new Error('هر نوبت انبارگردانی حداکثر می‌تواند ۴۵۰ قلم کالا داشته باشد.');
+      if (entries.length > 50) {
+        throw new Error('هر نوبت انبارگردانی حداکثر می‌تواند ۵۰ قلم کالا داشته باشد تا تعداد آرتیکل‌های سند از سقف مجاز پایگاه داده بیشتر نشود.');
       }
       const productIds = entries.map((entry) => entry.productId);
       if (new Set(productIds).size !== productIds.length) {
