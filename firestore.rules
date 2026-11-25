@@ -1025,7 +1025,7 @@ service cloud.firestore {
   }
 }
 )))
-        && (data.paidCheque == 0 || (
+        && (data.paidCheque == 0 || data.invoiceType in ['proforma', 'waste'] || (
           'chequeSayadiId' in data && 'chequeSerial' in data
           && 'chequeBankName' in data && 'chequeDueDate' in data
         ))
