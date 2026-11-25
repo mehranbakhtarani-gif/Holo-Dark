@@ -2285,6 +2285,7 @@ export function planAtomicInvoiceCommit(input: AtomicInvoicePlanInput): AtomicIn
           .replace(/[۰-۹]/g, (digit) => String(digit.charCodeAt(0) - 1776))
           .replace(/[٠-٩]/g, (digit) => String(digit.charCodeAt(0) - 1632));
       const sayadiId = normalizeSayadiDigits(payload.chequeSayadiId ?? '').replace(/\D/g, '');
+      const chequeIssueDate = normalizeSayadiDigits(payload.chequeIssueDate ?? '').trim().replace(/-/g, '/');
       const chequeDueDate = normalizeSayadiDigits(payload.chequeDueDate ?? '').trim().replace(/-/g, '/');
       const chequeSerial = String(payload.chequeSerial ?? '').trim();
       const chequeBankName = String(payload.chequeBankName ?? '').trim();
@@ -2294,8 +2295,12 @@ export function planAtomicInvoiceCommit(input: AtomicInvoicePlanInput): AtomicIn
       if (!chequeSerial || !chequeBankName) {
         throw new Error('شماره سریال و نام بانک چک برای ثبت فاکتور الزامی است.');
       }
-      if (!isValidShamsiDate(chequeDueDate) || chequeDueDate.replace(/-/g, '/') < payload.date.replace(/-/g, '/')) {
-        throw new Error('تاریخ سررسید چک معتبر نیست یا قبل از تاریخ فاکتور قرار دارد.');
+      if (
+        !isValidShamsiDate(chequeIssueDate) ||
+        !isValidShamsiDate(chequeDueDate) ||
+        chequeDueDate < chequeIssueDate
+      ) {
+        throw new Error('تاریخ صدور یا سررسید چک معتبر نیست؛ سررسید نباید قبل از تاریخ صدور باشد.');
       }
       const cId = chequeId || `chq_inv_${invoiceId}`;
       const direction: Cheque['direction'] =
@@ -2313,7 +2318,7 @@ export function planAtomicInvoiceCommit(input: AtomicInvoicePlanInput): AtomicIn
         bankName: chequeBankName.slice(0, 100),
         branch: 'ثبت از فاکتور',
         amount: Math.round(payload.paidCheque),
-        issueDate: payload.date,
+        issueDate: chequeIssueDate,
         dueDate: chequeDueDate,
         status: 'in_box',
         notes: `ثبت اتمیک بابت فاکتور ${payload.invoiceNumber}`,
@@ -2330,6 +2335,7 @@ export function planAtomicInvoiceCommit(input: AtomicInvoicePlanInput): AtomicIn
           chequeSayadiId: cheque.sayadiId,
           chequeSerial: cheque.serial,
           chequeBankName: cheque.bankName,
+          chequeIssueDate: cheque.issueDate,
           chequeDueDate: cheque.dueDate,
         }
       : {}),
