@@ -2280,6 +2280,23 @@ export function planAtomicInvoiceCommit(input: AtomicInvoicePlanInput): AtomicIn
         payload.invoiceType === 'sale_return' ||
         payload.invoiceType === 'purchase_return')
     ) {
+      const normalizeSayadiDigits = (value: string) =>
+        String(value ?? '')
+          .replace(/[۰-۹]/g, (digit) => String(digit.charCodeAt(0) - 1776))
+          .replace(/[٠-٩]/g, (digit) => String(digit.charCodeAt(0) - 1632));
+      const sayadiId = normalizeSayadiDigits(payload.chequeSayadiId ?? '').replace(/\D/g, '');
+      const chequeDueDate = String(payload.chequeDueDate ?? '').trim();
+      const chequeSerial = String(payload.chequeSerial ?? '').trim();
+      const chequeBankName = String(payload.chequeBankName ?? '').trim();
+      if (!/^\d{16}$/.test(sayadiId)) {
+        throw new Error('برای تسویه با چک، شناسه صیادی واقعی و ۱۶ رقمی الزامی است.');
+      }
+      if (!chequeSerial || !chequeBankName) {
+        throw new Error('شماره سریال و نام بانک چک برای ثبت فاکتور الزامی است.');
+      }
+      if (!isValidShamsiDate(chequeDueDate) || chequeDueDate.replace(/-/g, '/') < payload.date.replace(/-/g, '/')) {
+        throw new Error('تاریخ سررسید چک معتبر نیست یا قبل از تاریخ فاکتور قرار دارد.');
+      }
       const cId = chequeId || `chq_inv_${invoiceId}`;
       const direction: Cheque['direction'] =
         payload.invoiceType === 'sale' || payload.invoiceType === 'purchase_return'
@@ -2288,16 +2305,16 @@ export function planAtomicInvoiceCommit(input: AtomicInvoicePlanInput): AtomicIn
       cheque = {
         id: cId,
         ownerId,
-        sayadiId: `SYD${String(Date.now()).slice(-10)}${Math.floor(100 + Math.random() * 899)}`,
-        serial: `INV-${payload.invoiceNumber.slice(-3)}`,
+        sayadiId,
+        serial: chequeSerial.slice(0, 48),
         direction,
         partyId: payload.partyId,
         partyName: payload.partyName,
-        bankName: 'بانک ملت',
-        branch: 'ثبت خودکار از فاکتور',
+        bankName: chequeBankName.slice(0, 100),
+        branch: 'ثبت از فاکتور',
         amount: Math.round(payload.paidCheque),
         issueDate: payload.date,
-        dueDate: payload.date,
+        dueDate: chequeDueDate,
         status: 'in_box',
         notes: `ثبت اتمیک بابت فاکتور ${payload.invoiceNumber}`,
         _version: 1,
