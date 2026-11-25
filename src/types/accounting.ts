@@ -276,6 +276,7 @@ export interface Invoice {
   chequeSayadiId?: string;
   chequeSerial?: string;
   chequeBankName?: string;
+  chequeIssueDate?: string;
   chequeDueDate?: string;
   creditAmount: number;
   status: InvoiceStatus;
