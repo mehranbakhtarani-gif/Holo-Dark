@@ -328,11 +328,23 @@ export async function commitInventoryAdjustmentOperationalTx(payload: {
 
   return new Promise((resolve, reject) => {
     let tx: IDBTransaction | null = null;
+    let versionConflict = false;
     try {
       tx = db.transaction(['meta', 'products', 'vouchers'], 'readwrite');
       const productStore = tx.objectStore('products');
       for (const product of payload.updatedProducts) {
-        productStore.put(product);
+        const readRequest = productStore.get(product.id);
+        readRequest.onsuccess = () => {
+          const existing = readRequest.result as Product | undefined;
+          const expectedVersion = Math.max(1, (product._version ?? 2) - 1);
+          const liveVersion = existing?._version ?? 1;
+          if (!existing || liveVersion !== expectedVersion) {
+            versionConflict = true;
+            tx?.abort();
+            return;
+          }
+          productStore.put(product);
+        };
       }
       if (payload.voucher) {
         tx.objectStore('vouchers').put(payload.voucher);
@@ -360,7 +372,11 @@ export async function commitInventoryAdjustmentOperationalTx(payload: {
       };
       tx.onabort = () => {
         db.close();
-        reject(tx?.error ?? new Error('Atomic inventory adjustment transaction aborted'));
+        reject(
+          versionConflict
+            ? new Error('موجودی کالا در دستگاه یا زبانه دیگری تغییر کرده است؛ اطلاعات را تازه‌سازی و انبارگردانی را دوباره اجرا کنید.')
+            : tx?.error ?? new Error('Atomic inventory adjustment transaction aborted')
+        );
       };
     } catch (err) {
       if (tx) {
