@@ -1,5 +1,5 @@
 import React, { useEffect, useMemo, useRef, useState } from 'react';
-import { ChevronDown, CornerDownLeft, Filter, Search, Sparkles, X } from 'lucide-react';
+import { ChevronDown, CornerDownLeft, Filter, Mic, Search, Sparkles, Square, X } from 'lucide-react';
 import {
   fuzzyScoreFields,
   FuzzyMatchKind,
@@ -7,6 +7,9 @@ import {
   normalizeFuzzyText,
 } from '../lib/fuzzySearch';
 import { toPersianDigits } from '../lib/format';
+import { useDebouncedValue } from '../hooks/useDebouncedValue';
+import { usePersianSpeechRecognition } from '../hooks/usePersianSpeechRecognition';
+import { normalizeSpokenPersianNumbers } from '../lib/financialVoiceSearch';
 
 export interface FuzzyTableOption {
   id: string;
@@ -88,6 +91,19 @@ export const FuzzyTableSearch: React.FC<FuzzyTableSearchProps> = ({
   const [open, setOpen] = useState(false);
   const [activeIndex, setActiveIndex] = useState(0);
 
+  const debouncedQuery = useDebouncedValue(query, 90);
+
+  const voiceSearch = usePersianSpeechRecognition({
+    onInterim: (spoken) => {
+      onQueryChange(normalizeSpokenPersianNumbers(spoken));
+      setOpen(true);
+    },
+    onFinal: (spoken) => {
+      onQueryChange(normalizeSpokenPersianNumbers(spoken));
+      setOpen(true);
+    },
+  });
+
   useEffect(() => {
     const handleOutside = (e: MouseEvent) => {
       if (containerRef.current && !containerRef.current.contains(e.target as Node)) {
@@ -98,7 +114,7 @@ export const FuzzyTableSearch: React.FC<FuzzyTableSearchProps> = ({
     return () => document.removeEventListener('mousedown', handleOutside);
   }, []);
 
-  const hasQuery = normalizeFuzzyText(query).length > 0;
+  const hasQuery = normalizeFuzzyText(debouncedQuery).length > 0;
 
   const suggestions: ScoredSuggestion[] = useMemo(() => {
     if (!hasQuery) {
@@ -112,7 +128,7 @@ export const FuzzyTableSearch: React.FC<FuzzyTableSearchProps> = ({
 
     const scored: ScoredSuggestion[] = [];
     for (const opt of options) {
-      const res = fuzzyScoreFields(query, [
+      const res = fuzzyScoreFields(debouncedQuery, [
         { text: opt.code, weight: 1.3 },
         { text: opt.label, weight: 1.15 },
         { text: opt.sublabel, weight: 0.9 },
@@ -126,11 +142,14 @@ export const FuzzyTableSearch: React.FC<FuzzyTableSearchProps> = ({
     }
     scored.sort((a, b) => b.score - a.score);
     return scored.slice(0, maxSuggestions);
-  }, [options, query, hasQuery, maxSuggestions]);
+  }, [options, debouncedQuery, hasQuery, maxSuggestions]);
 
   useEffect(() => {
     setActiveIndex(0);
-  }, [query, open]);
+  }, [debouncedQuery, open]);
+
+  const safeActiveIndex =
+    suggestions.length > 0 ? Math.min(activeIndex, suggestions.length - 1) : 0;
 
   const handleSelectItem = (opt: FuzzyTableOption) => {
     onSelect(opt);
@@ -159,12 +178,12 @@ export const FuzzyTableSearch: React.FC<FuzzyTableSearchProps> = ({
       setActiveIndex((prev) =>
         suggestions.length > 0 ? (prev - 1 + suggestions.length) % suggestions.length : 0
       );
-    } else if (e.key === 'Enter' && open && suggestions[activeIndex]) {
+    } else if (e.key === 'Enter' && open && suggestions[safeActiveIndex]) {
       e.preventDefault();
       if (e.shiftKey) {
-        handleFilterOnly(suggestions[activeIndex].opt);
+        handleFilterOnly(suggestions[safeActiveIndex].opt);
       } else {
-        handleSelectItem(suggestions[activeIndex].opt);
+        handleSelectItem(suggestions[safeActiveIndex].opt);
       }
     } else if (e.key === 'Escape') {
       setOpen(false);
@@ -176,9 +195,10 @@ export const FuzzyTableSearch: React.FC<FuzzyTableSearchProps> = ({
     typeof matchedCount === 'number' && typeof totalCount === 'number' && hasQuery;
 
   return (
-    <div ref={containerRef} className={`relative ${className}`}>
-      <div className="relative flex items-center">
-        <Search className="absolute right-3 w-4 h-4 text-teal-600 dark:text-teal-400 pointer-events-none" />
+    <div ref={containerRef} className={`relative min-w-0 ${className}`}>
+      {/* Flex input wrapper prevents counter badge & clear button from overlapping Persian text on narrow RTL screens */}
+      <div className="flex items-center gap-1.5 min-h-[40px] rounded-lg border border-slate-200 dark:border-slate-700 bg-white dark:bg-slate-950 px-2.5 focus-within:ring-2 focus-within:ring-teal-600/30 focus-within:border-teal-600 transition-colors">
+        <Search className="w-4 h-4 text-teal-600 dark:text-teal-400 shrink-0 pointer-events-none" />
         <input
           ref={inputRef}
           type="text"
@@ -192,15 +212,40 @@ export const FuzzyTableSearch: React.FC<FuzzyTableSearchProps> = ({
           placeholder={placeholder}
           autoComplete="off"
           aria-label={placeholder}
-          className="w-full rounded-lg border border-slate-200 dark:border-slate-700 bg-white dark:bg-slate-950 text-slate-900 dark:text-slate-100 placeholder:text-slate-400 pr-9 pl-24 py-2 text-xs focus:outline-none focus:ring-2 focus:ring-teal-600/30 focus:border-teal-600 transition-colors"
+          className="flex-1 min-w-0 bg-transparent text-slate-900 dark:text-slate-100 placeholder:text-slate-400 py-2 text-xs focus:outline-none"
         />
 
-        <div className="absolute left-2 flex items-center gap-1.5">
+        <div className="flex items-center gap-1 shrink-0">
           {showCounter && (
             <span className="font-code tabular-nums text-[10px] font-semibold px-1.5 py-0.5 rounded bg-teal-50 dark:bg-teal-950/70 text-teal-800 dark:text-teal-300 border border-teal-200/70 dark:border-teal-800 whitespace-nowrap">
               {toPersianDigits(matchedCount)} / {toPersianDigits(totalCount)}
             </span>
           )}
+          <button
+            type="button"
+            tabIndex={-1}
+            onClick={() => voiceSearch.toggleListening()}
+            aria-pressed={voiceSearch.isListening}
+            title={
+              voiceSearch.isListening
+                ? 'توقف جستجوی صوتی'
+                : voiceSearch.isSupported
+                  ? 'جستجوی صوتی فارسی'
+                  : 'جستجوی صوتی (در این مرورگر پشتیبانی نمی‌شود)'
+            }
+            aria-label={voiceSearch.isListening ? 'توقف جستجوی صوتی' : 'جستجوی صوتی فارسی'}
+            className={`p-1 rounded transition-colors cursor-pointer ${
+              voiceSearch.isListening
+                ? 'bg-rose-600 text-white hover:bg-rose-700'
+                : 'text-slate-400 hover:text-indigo-600 dark:hover:text-indigo-400 hover:bg-slate-100 dark:hover:bg-slate-800'
+            }`}
+          >
+            {voiceSearch.isListening ? (
+              <Square className="w-3 h-3 fill-current" />
+            ) : (
+              <Mic className="w-3.5 h-3.5" />
+            )}
+          </button>
           {query ? (
             <button
               type="button"
@@ -209,7 +254,7 @@ export const FuzzyTableSearch: React.FC<FuzzyTableSearchProps> = ({
                 onQueryChange('');
                 inputRef.current?.focus();
               }}
-              className="p-0.5 rounded text-slate-400 hover:text-slate-700 dark:hover:text-slate-200 hover:bg-slate-100 dark:hover:bg-slate-800"
+              className="p-1 rounded text-slate-400 hover:text-slate-700 dark:hover:text-slate-200 hover:bg-slate-100 dark:hover:bg-slate-800"
               title="پاک کردن فیلتر"
               aria-label="پاک کردن فیلتر"
             >
@@ -223,7 +268,7 @@ export const FuzzyTableSearch: React.FC<FuzzyTableSearchProps> = ({
                 setOpen((prev) => !prev);
                 if (!open) inputRef.current?.focus();
               }}
-              className="p-0.5 rounded text-slate-400 hover:text-slate-700 dark:hover:text-slate-200"
+              className="p-1 rounded text-slate-400 hover:text-slate-700 dark:hover:text-slate-200"
               aria-label="باز کردن پیشنهادها"
             >
               <ChevronDown className="w-3.5 h-3.5" />
@@ -231,19 +276,26 @@ export const FuzzyTableSearch: React.FC<FuzzyTableSearchProps> = ({
           )}
         </div>
       </div>
+      {voiceSearch.errorMessage && (
+        <div className="mt-1 text-[11px] text-rose-600 dark:text-rose-400 px-1">
+          {voiceSearch.errorMessage}
+        </div>
+      )}
 
       {/* Live Fuzzy Suggestions Dropdown */}
       {open && (
-        <div className="absolute right-0 left-0 mt-1.5 z-50 rounded-xl bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-700 shadow-2xl overflow-hidden">
-          <div className="px-3.5 py-2 bg-slate-50 dark:bg-slate-950 border-b border-slate-100 dark:border-slate-800 flex items-center justify-between text-[10.5px] text-slate-500">
-            <span className="flex items-center gap-1.5 font-medium">
-              <Sparkles className="w-3 h-3 text-teal-600 dark:text-teal-400" />
-              {hasQuery
-                ? `پیشنهادهای هوشمند فازی (${toPersianDigits(suggestions.length)} ${entityLabel} برتر)`
-                : `دسترسی سریع به آخرین ${entityLabel}ها`}
+        <div className="absolute right-0 left-0 mt-1.5 z-50 max-w-full rounded-xl bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-700 shadow-2xl overflow-hidden">
+          <div className="px-3.5 py-2 bg-slate-50 dark:bg-slate-950 border-b border-slate-100 dark:border-slate-800 flex flex-wrap items-center justify-between gap-2 text-[10.5px] text-slate-500">
+            <span className="flex items-center gap-1.5 font-medium min-w-0">
+              <Sparkles className="w-3 h-3 text-teal-600 dark:text-teal-400 shrink-0" />
+              <span className="truncate">
+                {hasQuery
+                  ? `پیشنهادهای هوشمند فازی (${toPersianDigits(suggestions.length)} ${entityLabel} برتر)`
+                  : `دسترسی سریع به آخرین ${entityLabel}ها`}
+              </span>
             </span>
             {showCounter && (
-              <span className="font-code text-teal-700 dark:text-teal-400 font-semibold">
+              <span className="font-code text-teal-700 dark:text-teal-400 font-semibold whitespace-nowrap">
                 فیلتر زنده جدول: {toPersianDigits(matchedCount)} مورد
               </span>
             )}
@@ -259,9 +311,12 @@ export const FuzzyTableSearch: React.FC<FuzzyTableSearchProps> = ({
               </div>
             </div>
           ) : (
-            <ul className="max-h-72 overflow-y-auto divide-y divide-slate-100 dark:divide-slate-800" role="listbox">
+            <ul
+              className="max-h-72 overflow-y-auto divide-y divide-slate-100 dark:divide-slate-800"
+              role="listbox"
+            >
               {suggestions.map(({ opt, isFuzzy, kind }, idx) => {
-                const isActive = idx === activeIndex;
+                const isActive = idx === safeActiveIndex;
                 return (
                   <li
                     key={opt.id}
@@ -283,11 +338,11 @@ export const FuzzyTableSearch: React.FC<FuzzyTableSearchProps> = ({
                       <div className="flex items-center gap-2 min-w-0">
                         {opt.code && (
                           <span className="font-code text-[11px] font-bold text-teal-700 dark:text-teal-400 shrink-0">
-                            <HighlightedText text={opt.code} query={query} />
+                            <HighlightedText text={opt.code} query={debouncedQuery} />
                           </span>
                         )}
                         <span className="text-xs font-semibold text-slate-900 dark:text-white truncate">
-                          <HighlightedText text={opt.label} query={query} />
+                          <HighlightedText text={opt.label} query={debouncedQuery} />
                         </span>
                         {hasQuery && isFuzzy && (
                           <span className="text-[10px] font-medium text-amber-700 dark:text-amber-400 shrink-0">
@@ -297,7 +352,7 @@ export const FuzzyTableSearch: React.FC<FuzzyTableSearchProps> = ({
                       </div>
                       {opt.sublabel && (
                         <div className="text-[11px] text-slate-500 dark:text-slate-400 truncate mt-0.5">
-                          <HighlightedText text={opt.sublabel} query={query} />
+                          <HighlightedText text={opt.sublabel} query={debouncedQuery} />
                         </div>
                       )}
                     </button>
@@ -326,7 +381,7 @@ export const FuzzyTableSearch: React.FC<FuzzyTableSearchProps> = ({
                           e.stopPropagation();
                           handleFilterOnly(opt);
                         }}
-                        className="p-1 rounded-md border border-slate-200 dark:border-slate-700 text-slate-500 hover:text-teal-700 hover:border-teal-300 dark:hover:text-teal-400 dark:hover:border-teal-700 bg-white dark:bg-slate-900"
+                        className="p-1.5 rounded-md border border-slate-200 dark:border-slate-700 text-slate-500 hover:text-teal-700 hover:border-teal-300 dark:hover:text-teal-400 dark:hover:border-teal-700 bg-white dark:bg-slate-900"
                         aria-label="فیلتر جدول روی این رکورد"
                       >
                         <Filter className="w-3 h-3" />
@@ -339,7 +394,7 @@ export const FuzzyTableSearch: React.FC<FuzzyTableSearchProps> = ({
           )}
 
           <div className="px-3.5 py-1.5 bg-slate-50 dark:bg-slate-950 border-t border-slate-100 dark:border-slate-800 text-[10px] text-slate-400 flex flex-wrap items-center justify-between gap-2">
-            <span>جستجوی فازی فارسی و انگلیسی (حساس به اشتباه تایپی و چندکلمه‌ای)</span>
+            <span>جستجوی فازی فارسی و انگلیسی (پشتیبانی از نیم‌فاصله، اشتباه تایپی و چندکلمه‌ای)</span>
             <span className="font-code flex items-center gap-1.5">
               <span>↑↓ انتخاب</span>
               <span>·</span>

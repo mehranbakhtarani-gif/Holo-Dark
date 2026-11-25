@@ -30,6 +30,8 @@ import {
   toPersianDigits,
 } from '../lib/format';
 import { fuzzyFilterAndRank } from '../lib/fuzzySearch';
+import { mulQtyByIrr } from '../lib/moneyMath';
+import { useDebouncedValue } from '../hooks/useDebouncedValue';
 import {
   BulkParsedProductRow,
   computeInventoryIntelligence,
@@ -314,8 +316,10 @@ export const InventoryView: React.FC<{ initialIntent?: string; clearIntent?: () 
     [products, warehouseFilter]
   );
 
+  const debouncedSearch = useDebouncedValue(search, 90);
+
   const filtered = useMemo(() => {
-    const ranked = fuzzyFilterAndRank(warehouseScopedProducts, search, (p) => [
+    const ranked = fuzzyFilterAndRank(warehouseScopedProducts, debouncedSearch, (p) => [
       { text: p.sku, weight: 1.35 },
       { text: p.name, weight: 1.25 },
       { text: p.yarnCount, weight: 1.15 },
@@ -326,15 +330,15 @@ export const InventoryView: React.FC<{ initialIntent?: string; clearIntent?: () 
       { text: p.secondaryUnit, weight: 0.8 },
     ]);
     return ranked.map((r) => r.item);
-  }, [warehouseScopedProducts, search]);
+  }, [warehouseScopedProducts, debouncedSearch]);
 
   const inventoryStats = useMemo(() => {
     let totalValue = 0;
     let totalKg = 0;
     let totalCartons = 0;
     for (const p of products) {
-      totalValue += Math.round(p.stock * p.buyPrice);
-      totalKg += p.stock;
+      totalValue += mulQtyByIrr(p.stock, p.buyPrice);
+      totalKg += Number.isFinite(p.stock) ? p.stock : 0;
       totalCartons += computeCartons(p.stock, p.kgPerCarton);
     }
     return { totalValue, totalKg, totalCartons };

@@ -3,6 +3,7 @@ import { motion } from 'framer-motion';
 import { AlertTriangle, CheckCircle2, ChevronLeft, Clock, FileText, Plus } from 'lucide-react';
 import type { ActiveModule, CurrencyUnit, Invoice } from '../../types/accounting';
 import { formatMoney, toPersianDigits } from '../../lib/format';
+import { HighlightedText } from '../FuzzyTableSearch';
 
 const snappySpring = {
   type: 'spring' as const,
@@ -19,6 +20,7 @@ interface RecentInvoicesBentoCardProps {
   unit: CurrencyUnit;
   currencyWord: string;
   onNavigate: (mod: ActiveModule, intent?: string, subKey?: string) => void;
+  dragControls?: React.ReactNode;
 }
 
 export const RecentInvoicesBentoCard: React.FC<RecentInvoicesBentoCardProps> = ({
@@ -29,24 +31,28 @@ export const RecentInvoicesBentoCard: React.FC<RecentInvoicesBentoCardProps> = (
   unit,
   currencyWord,
   onNavigate,
+  dragControls,
 }) => {
   return (
     <motion.div
       initial={{ opacity: 0, y: 12 }}
       animate={{ opacity: 1, y: 0 }}
       transition={{ ...snappySpring, delay: 0.08 }}
-      className="lg:col-span-8 bg-white dark:bg-slate-900/95 rounded-2xl border border-slate-200/80 dark:border-slate-800/80 shadow-[0_2px_12px_-4px_rgba(15,23,42,0.05)] overflow-hidden flex flex-col"
+      className="h-full bg-white dark:bg-slate-900/95 rounded-2xl border border-slate-200/80 dark:border-slate-800/80 shadow-[0_2px_12px_-4px_rgba(15,23,42,0.05)] overflow-hidden flex flex-col"
     >
       <div className="p-5 border-b border-slate-100 dark:border-slate-800/80 flex items-center justify-between gap-3">
-        <div className="min-w-0">
-          <h2 className="font-bold text-base text-slate-900 dark:text-white">
-            آخرین اسناد و فاکتورها
-          </h2>
-          <p className="text-xs text-slate-500 dark:text-slate-400 mt-0.5 tabular-nums">
-            {quickSearch.trim()
-              ? `${toPersianDigits(invoices.length)} نتیجه مطابق با «${quickSearch.trim()}»`
-              : `نمایش ${toPersianDigits(invoices.length)} فاکتور اخیر از مجموع ${toPersianDigits(totalInvoicesCount)} فاکتور ثبت‌شده`}
-          </p>
+        <div className="flex items-start gap-2 min-w-0">
+          {dragControls}
+          <div className="min-w-0">
+            <h2 className="font-bold text-base text-slate-900 dark:text-white truncate">
+              آخرین اسناد و فاکتورها
+            </h2>
+            <p className="text-xs text-slate-500 dark:text-slate-400 mt-0.5 tabular-nums">
+              {quickSearch.trim()
+                ? `${toPersianDigits(invoices.length)} نتیجه مطابق با «${quickSearch.trim()}»`
+                : `نمایش ${toPersianDigits(invoices.length)} فاکتور اخیر از مجموع ${toPersianDigits(totalInvoicesCount)} فاکتور ثبت‌شده`}
+            </p>
+          </div>
         </div>
         <button
           type="button"
@@ -120,7 +126,9 @@ export const RecentInvoicesBentoCard: React.FC<RecentInvoicesBentoCardProps> = (
                       className="hover:bg-slate-50/80 dark:hover:bg-slate-800/40 transition-colors cursor-pointer"
                     >
                       <td className="py-3.5 px-5 font-code font-semibold text-slate-700 dark:text-slate-200 tabular-nums whitespace-nowrap">
-                        <div>{toPersianDigits(inv.invoiceNumber)}</div>
+                        <div>
+                          <HighlightedText text={toPersianDigits(inv.invoiceNumber)} query={quickSearch} />
+                        </div>
                         <div
                           className={`text-[11px] font-sans font-medium mt-0.5 ${
                             isProforma
@@ -142,10 +150,10 @@ export const RecentInvoicesBentoCard: React.FC<RecentInvoicesBentoCardProps> = (
                         </div>
                       </td>
                       <td className="py-3.5 px-5 font-medium text-slate-900 dark:text-slate-100 max-w-[220px] truncate">
-                        {inv.partyName}
+                        <HighlightedText text={inv.partyName} query={quickSearch} />
                       </td>
                       <td className="py-3.5 px-5 text-slate-500 dark:text-slate-400 text-xs font-code tabular-nums whitespace-nowrap">
-                        {toPersianDigits(inv.date)}
+                        <HighlightedText text={toPersianDigits(inv.date)} query={quickSearch} />
                       </td>
                       <td className="py-3.5 px-5 font-bold font-code text-slate-900 dark:text-white tabular-nums whitespace-nowrap">
                         {formatMoney(inv.grandTotal, unit, false)}
@@ -201,12 +209,16 @@ export const RecentInvoicesBentoCard: React.FC<RecentInvoicesBentoCardProps> = (
                   <div className="flex items-start justify-between gap-2">
                     <div className="min-w-0">
                       <div className="font-semibold text-sm text-slate-900 dark:text-white truncate">
-                        {inv.partyName}
+                        <HighlightedText text={inv.partyName} query={quickSearch} />
                       </div>
                       <div className="text-xs text-slate-500 dark:text-slate-400 mt-0.5 flex items-center gap-1.5 font-code tabular-nums">
-                        <span>{toPersianDigits(inv.invoiceNumber)}</span>
+                        <span>
+                          <HighlightedText text={toPersianDigits(inv.invoiceNumber)} query={quickSearch} />
+                        </span>
                         <span aria-hidden="true">·</span>
-                        <span>{toPersianDigits(inv.date)}</span>
+                        <span>
+                          <HighlightedText text={toPersianDigits(inv.date)} query={quickSearch} />
+                        </span>
                       </div>
                     </div>
                     <span

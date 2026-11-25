@@ -44,6 +44,8 @@ import { InvoiceTemplateDesigner } from './InvoiceTemplateDesigner';
 import { SupabaseAutoDiagnosticPanel } from './SupabaseAutoDiagnosticPanel';
 import { SystemResetCenter } from './SystemResetCenter';
 import { useInvoiceSettings } from '../lib/invoiceSettings';
+import { fuzzyFilterAndRank } from '../lib/fuzzySearch';
+import { useDebouncedValue } from '../hooks/useDebouncedValue';
 
 const PERMISSION_LABELS: { key: keyof RbacPermissions; label: string }[] = [
   { key: 'canCreateVoucher', label: 'ثبت سند حسابداری' },
@@ -188,13 +190,15 @@ export const SettingsView: React.FC<{
     []
   );
 
+  const debouncedSettingsQuery = useDebouncedValue(settingsQuery, 80);
+
   const matchedSettingsSections = useMemo(() => {
-    const q = settingsQuery.trim().toLowerCase();
-    if (!q) return settingsDirectory;
-    return settingsDirectory.filter(
-      (s) => s.title.toLowerCase().includes(q) || s.keywords.toLowerCase().includes(q)
-    );
-  }, [settingsDirectory, settingsQuery]);
+    const ranked = fuzzyFilterAndRank(settingsDirectory, debouncedSettingsQuery, (s) => [
+      { text: s.title, weight: 1.35 },
+      { text: s.keywords, weight: 1.1 },
+    ]);
+    return ranked.map((r) => r.item);
+  }, [settingsDirectory, debouncedSettingsQuery]);
 
   const jumpToSettingsSection = (id: string) => {
     const found = settingsDirectory.find((s) => s.id === id);
@@ -212,18 +216,18 @@ export const SettingsView: React.FC<{
   const [newOpRole, setNewOpRole] = useState<RbacRoleKey>('accountant');
   const [auditSearch, setAuditSearch] = useState('');
 
+  const debouncedAuditSearch = useDebouncedValue(auditSearch, 90);
+
   const filteredAuditLogs = useMemo(() => {
-    const q = auditSearch.trim().toLowerCase();
-    if (!q) return auditLogs;
-    return auditLogs.filter(
-      (log) =>
-        log.operatorName.toLowerCase().includes(q) ||
-        log.module.toLowerCase().includes(q) ||
-        log.action.toLowerCase().includes(q) ||
-        log.details.toLowerCase().includes(q) ||
-        log.timestamp.toLowerCase().includes(q)
-    );
-  }, [auditLogs, auditSearch]);
+    const ranked = fuzzyFilterAndRank(auditLogs, debouncedAuditSearch, (log) => [
+      { text: log.operatorName, weight: 1.3 },
+      { text: log.module, weight: 1.2 },
+      { text: log.action, weight: 1.2 },
+      { text: log.details, weight: 1.0 },
+      { text: log.timestamp, weight: 0.95 },
+    ]);
+    return ranked.map((r) => r.item);
+  }, [auditLogs, debouncedAuditSearch]);
 
   useEffect(() => {
     if (initialIntent === 'local-folder-mesh') {

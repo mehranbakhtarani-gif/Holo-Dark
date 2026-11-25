@@ -14,12 +14,13 @@ import {
   XAxis,
   YAxis,
 } from 'recharts';
-import { AlertTriangle, ShieldCheck, Sparkles } from 'lucide-react';
+import { AlertTriangle, Maximize2, ShieldCheck, Sparkles } from 'lucide-react';
 import type { ActiveModule, CurrencyUnit, Voucher } from '../../types/accounting';
 import { computeCashFlowLiquidityRadar } from '../../lib/smartIntelligence';
 import { formatCompactMoney, formatMoney, toPersianDigits } from '../../lib/format';
 import { LiveFxTickerCard } from '../LiveFxTickerCard';
 import { DashboardWidget } from '../DashboardWidget';
+import type { AnalyticsExpandCardId } from './DashboardCardExpandModal';
 
 type CashFlowLiquidityRadar = ReturnType<typeof computeCashFlowLiquidityRadar>;
 
@@ -69,6 +70,7 @@ interface AnalyticsSuitePanelProps {
   totalVouchersCount: number;
   onNavigate: (mod: ActiveModule, intent?: string, subKey?: string) => void;
   onOpenCopilot?: () => void;
+  onExpandCard?: (cardId: AnalyticsExpandCardId) => void;
 }
 
 export const AnalyticsSuitePanel: React.FC<AnalyticsSuitePanelProps> = ({
@@ -84,7 +86,20 @@ export const AnalyticsSuitePanel: React.FC<AnalyticsSuitePanelProps> = ({
   totalVouchersCount,
   onNavigate,
   onOpenCopilot,
+  onExpandCard,
 }) => {
+  const renderExpandButton = (cardId: AnalyticsExpandCardId, title: string) =>
+    onExpandCard ? (
+      <button
+        type="button"
+        onClick={() => onExpandCard(cardId)}
+        title={`نمایش «${title}» در ابعاد کامل`}
+        aria-label={`نمایش در ابعاد کامل ${title}`}
+        className="h-8 w-8 rounded-lg border border-transparent text-slate-400 dark:text-slate-500 hover:text-indigo-600 dark:hover:text-indigo-300 hover:bg-slate-100 dark:hover:bg-slate-800 hover:border-slate-200 dark:hover:border-slate-700 inline-flex items-center justify-center transition-colors shrink-0 cursor-pointer focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-indigo-500/40"
+      >
+        <Maximize2 className="w-3.5 h-3.5 shrink-0" />
+      </button>
+    ) : null;
   const tooltipStyle = {
     borderRadius: '10px',
     border: '1px solid #cbd5e1',
@@ -149,6 +164,7 @@ export const AnalyticsSuitePanel: React.FC<AnalyticsSuitePanelProps> = ({
           </div>
 
           <div className="flex items-center gap-2 shrink-0">
+            {renderExpandButton('analytics:radar', 'رادار هوشمند نقدینگی ۳۰ روزه')}
             <button
               type="button"
               onClick={() => onNavigate('treasury', 'cheques', 'tr-cheques')}
@@ -243,13 +259,16 @@ export const AnalyticsSuitePanel: React.FC<AnalyticsSuitePanelProps> = ({
                 بر حسب {unitLabel} — محاسبه‌شده از گردش صندوق و بانک‌ها
               </p>
             </div>
-            <button
-              type="button"
-              onClick={() => onNavigate('treasury')}
-              className="text-xs font-medium text-indigo-600 dark:text-indigo-400 hover:underline whitespace-nowrap shrink-0 cursor-pointer"
-            >
-              جزئیات خزانه
-            </button>
+            <div className="flex items-center gap-2 shrink-0">
+              <button
+                type="button"
+                onClick={() => onNavigate('treasury')}
+                className="text-xs font-medium text-indigo-600 dark:text-indigo-400 hover:underline whitespace-nowrap shrink-0 cursor-pointer"
+              >
+                جزئیات خزانه
+              </button>
+              {renderExpandButton('analytics:cashflow', 'جریان نقدینگی ماهانه')}
+            </div>
           </div>
           <div className="h-64 w-full" dir="ltr">
             <ResponsiveContainer width="100%" height="100%">
@@ -307,13 +326,16 @@ export const AnalyticsSuitePanel: React.FC<AnalyticsSuitePanelProps> = ({
                 سهم هر سرفصل هزینه‌ای از کل هزینه‌های ثبت‌شده دوره
               </p>
             </div>
-            <button
-              type="button"
-              onClick={() => onNavigate('reports')}
-              className="text-xs font-medium text-indigo-600 dark:text-indigo-400 hover:underline whitespace-nowrap shrink-0 cursor-pointer"
-            >
-              تراز آزمایشی
-            </button>
+            <div className="flex items-center gap-2 shrink-0">
+              <button
+                type="button"
+                onClick={() => onNavigate('reports')}
+                className="text-xs font-medium text-indigo-600 dark:text-indigo-400 hover:underline whitespace-nowrap shrink-0 cursor-pointer"
+              >
+                تراز آزمایشی
+              </button>
+              {renderExpandButton('analytics:expenses', 'ترکیب هزینه‌ها و بهای تمام‌شده')}
+            </div>
           </div>
 
           {expensePieData.length === 0 ? (
@@ -388,13 +410,16 @@ export const AnalyticsSuitePanel: React.FC<AnalyticsSuitePanelProps> = ({
                 مقایسه درآمد فروش، کل بهای تمام‌شده/هزینه‌ها و سود خالص ({unitLabel})
               </p>
             </div>
-            <button
-              type="button"
-              onClick={() => onNavigate('reports')}
-              className="text-xs font-medium text-indigo-600 dark:text-indigo-400 hover:underline whitespace-nowrap shrink-0 cursor-pointer"
-            >
-              صورت سود و زیان
-            </button>
+            <div className="flex items-center gap-2 shrink-0">
+              <button
+                type="button"
+                onClick={() => onNavigate('reports')}
+                className="text-xs font-medium text-indigo-600 dark:text-indigo-400 hover:underline whitespace-nowrap shrink-0 cursor-pointer"
+              >
+                صورت سود و زیان
+              </button>
+              {renderExpandButton('analytics:pnl', 'نمودار سود و زیان ماهانه')}
+            </div>
           </div>
           <div className="h-64 w-full" dir="ltr">
             <ResponsiveContainer width="100%" height="100%">
@@ -429,13 +454,16 @@ export const AnalyticsSuitePanel: React.FC<AnalyticsSuitePanelProps> = ({
                 مانده لحظه‌ای حساب‌های کدینگ ۱۰۱ و ۱۰۲ بر حسب {unitLabel}
               </p>
             </div>
-            <button
-              type="button"
-              onClick={() => onNavigate('accounts')}
-              className="text-xs font-medium text-indigo-600 dark:text-indigo-400 hover:underline whitespace-nowrap shrink-0 cursor-pointer"
-            >
-              دفتر بانک‌ها
-            </button>
+            <div className="flex items-center gap-2 shrink-0">
+              <button
+                type="button"
+                onClick={() => onNavigate('accounts')}
+                className="text-xs font-medium text-indigo-600 dark:text-indigo-400 hover:underline whitespace-nowrap shrink-0 cursor-pointer"
+              >
+                دفتر بانک‌ها
+              </button>
+              {renderExpandButton('analytics:banks', 'مانده حساب‌های بانکی و صندوق‌ها')}
+            </div>
           </div>
 
           <div className="h-44 w-full" dir="ltr">
@@ -491,13 +519,16 @@ export const AnalyticsSuitePanel: React.FC<AnalyticsSuitePanelProps> = ({
           <h2 className="text-sm font-bold text-slate-900 dark:text-white">
             آخرین اسناد حسابداری ثبت‌شده
           </h2>
-          <button
-            type="button"
-            onClick={() => onNavigate('vouchers')}
-            className="text-xs font-medium text-indigo-600 dark:text-indigo-400 hover:underline whitespace-nowrap cursor-pointer tabular-nums"
-          >
-            دفتر روزنامه ({toPersianDigits(totalVouchersCount)} سند)
-          </button>
+          <div className="flex items-center gap-2 shrink-0">
+            <button
+              type="button"
+              onClick={() => onNavigate('vouchers')}
+              className="text-xs font-medium text-indigo-600 dark:text-indigo-400 hover:underline whitespace-nowrap cursor-pointer tabular-nums"
+            >
+              دفتر روزنامه ({toPersianDigits(totalVouchersCount)} سند)
+            </button>
+            {renderExpandButton('analytics:vouchers', 'آخرین اسناد حسابداری ثبت‌شده')}
+          </div>
         </div>
 
         {recentVouchers.length === 0 ? (

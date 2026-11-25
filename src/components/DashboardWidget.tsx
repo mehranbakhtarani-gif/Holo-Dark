@@ -1,4 +1,4 @@
-import React, { useMemo, useState } from 'react';
+import React, { useEffect, useMemo, useState } from 'react';
 import {
   Area,
   Bar,
@@ -16,6 +16,8 @@ import {
   ArrowUpRight,
   Download,
   FileText,
+  Maximize2,
+  Minimize2,
   Receipt,
   TrendingDown,
   TrendingUp,
@@ -155,6 +157,24 @@ export const DashboardWidget: React.FC<DashboardWidgetProps> = ({ onNavigate }) 
   const [range, setRange] = useState<TrendRange>('14d');
   const [seriesMode, setSeriesMode] = useState<TrendSeriesMode>('combined');
   const [includeCogs, setIncludeCogs] = useState<boolean>(false);
+  const [isExpanded, setIsExpanded] = useState<boolean>(false);
+
+  useEffect(() => {
+    if (!isExpanded) return;
+    const prevOverflow = document.body.style.overflow;
+    document.body.style.overflow = 'hidden';
+    const onKeyDown = (e: KeyboardEvent) => {
+      if (e.key === 'Escape') {
+        e.preventDefault();
+        setIsExpanded(false);
+      }
+    };
+    window.addEventListener('keydown', onKeyDown);
+    return () => {
+      document.body.style.overflow = prevOverflow;
+      window.removeEventListener('keydown', onKeyDown);
+    };
+  }, [isExpanded]);
 
   const unit = profile.currencyUnit;
   const unitLabel = unit === 'IRT' ? 'میلیون تومان' : 'میلیون ریال';
@@ -345,9 +365,9 @@ export const DashboardWidget: React.FC<DashboardWidgetProps> = ({ onNavigate }) 
 
     return {
       allDailyPoints: withMovingAvg,
-      recentExpenses: expenseEntries.slice(0, 6),
+      recentExpenses: isExpanded ? expenseEntries.slice(0, 30) : expenseEntries.slice(0, 6),
     };
-  }, [vouchers, invoices, accounts, accountMap, pettyCashItems, includeCogs, millionDivisor]);
+  }, [vouchers, invoices, accounts, accountMap, pettyCashItems, includeCogs, millionDivisor, isExpanded]);
 
   // Apply selected range window
   const visibleData = useMemo(() => {
@@ -426,10 +446,22 @@ export const DashboardWidget: React.FC<DashboardWidgetProps> = ({ onNavigate }) 
   };
 
   return (
-    <section
-      aria-label="گزارش روند درآمد روزانه و هزینه‌های اخیر"
-      className="bg-white dark:bg-[#151A24] border border-slate-200/80 dark:border-white/[0.07] rounded-2xl overflow-hidden"
-    >
+    <>
+      {isExpanded && (
+        <div
+          aria-hidden="true"
+          onClick={() => setIsExpanded(false)}
+          className="fixed inset-0 z-40 bg-slate-950/60 backdrop-blur-sm"
+        />
+      )}
+      <section
+        aria-label="گزارش روند درآمد روزانه و هزینه‌های اخیر"
+        className={
+          isExpanded
+            ? 'fixed inset-3 sm:inset-6 z-50 bg-white dark:bg-[#151A24] border border-slate-200 dark:border-slate-700 rounded-2xl shadow-2xl overflow-y-auto flex flex-col'
+            : 'bg-white dark:bg-[#151A24] border border-slate-200/80 dark:border-white/[0.07] rounded-2xl overflow-hidden'
+        }
+      >
       {/* Top Header & Reporting Controls */}
       <div className="p-5 flex flex-col lg:flex-row lg:items-center justify-between gap-4 border-b border-slate-100 dark:border-slate-800">
         <div>
@@ -531,10 +563,25 @@ export const DashboardWidget: React.FC<DashboardWidgetProps> = ({ onNavigate }) 
             type="button"
             onClick={handleExportCsv}
             disabled={visibleData.length === 0}
-            className="inline-flex items-center gap-1.5 px-2.5 py-1.5 text-xs font-medium rounded-lg border border-slate-200 dark:border-slate-700 text-slate-700 dark:text-slate-200 hover:bg-slate-50 dark:hover:bg-slate-800 disabled:opacity-40 transition-colors whitespace-nowrap shrink-0"
+            className="inline-flex items-center gap-1.5 px-2.5 py-1.5 text-xs font-medium rounded-lg border border-slate-200 dark:border-slate-700 text-slate-700 dark:text-slate-200 hover:bg-slate-50 dark:hover:bg-slate-800 disabled:opacity-40 transition-colors whitespace-nowrap shrink-0 cursor-pointer"
           >
             <Download className="w-3.5 h-3.5" />
             <span>خروجی CSV</span>
+          </button>
+
+          {/* Expand / Collapse Full View */}
+          <button
+            type="button"
+            onClick={() => setIsExpanded((prev) => !prev)}
+            title={isExpanded ? 'بستن نمایش کامل (Esc)' : 'نمایش در ابعاد کامل'}
+            aria-label={isExpanded ? 'بستن نمایش کامل' : 'نمایش در ابعاد کامل روند درآمد و هزینه'}
+            className="h-8 w-8 rounded-lg border border-slate-200 dark:border-slate-700 bg-white dark:bg-slate-900 text-slate-500 dark:text-slate-300 hover:text-indigo-600 dark:hover:text-indigo-300 hover:border-indigo-300 dark:hover:border-indigo-700 inline-flex items-center justify-center transition-colors shrink-0 cursor-pointer"
+          >
+            {isExpanded ? (
+              <Minimize2 className="w-3.5 h-3.5 shrink-0" />
+            ) : (
+              <Maximize2 className="w-3.5 h-3.5 shrink-0" />
+            )}
           </button>
         </div>
       </div>
@@ -702,7 +749,7 @@ export const DashboardWidget: React.FC<DashboardWidgetProps> = ({ onNavigate }) 
               </button>
             </div>
 
-            <div className="h-72 w-full" dir="ltr">
+            <div className={isExpanded ? 'h-96 sm:h-[430px] w-full' : 'h-72 w-full'} dir="ltr">
               <ResponsiveContainer width="100%" height="100%">
                 <ComposedChart
                   data={visibleData}
@@ -870,7 +917,8 @@ export const DashboardWidget: React.FC<DashboardWidgetProps> = ({ onNavigate }) 
           </div>
         </div>
       )}
-    </section>
+      </section>
+    </>
   );
 };
 

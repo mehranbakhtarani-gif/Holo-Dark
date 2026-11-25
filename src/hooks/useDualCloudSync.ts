@@ -749,25 +749,36 @@ export function useDualCloudSync() {
   useEffect(() => {
     if (!isOnline || sessionRestoredRef.current) return;
     sessionRestoredRef.current = true;
+    let cancelled = false;
     void (async () => {
-      const me = await fetchSupabaseSessionMe();
-      if (me.authenticated && me.workspaceId) {
-        saveSupabaseWorkspaceId(me.workspaceId);
-        setSupabaseWorkspaceIdState(me.workspaceId);
-        setSupabaseCookieAuthenticated(true);
-        setSupabaseWorkspaceInitialized(true);
-        if (me.serverRevision > 0) {
-          setLastSupabaseRevision(me.serverRevision);
-          saveLastSupabaseRevision(me.serverRevision);
+      try {
+        const me = await fetchSupabaseSessionMe();
+        if (cancelled) return;
+        if (me.authenticated && me.workspaceId) {
+          saveSupabaseWorkspaceId(me.workspaceId);
+          setSupabaseWorkspaceIdState(me.workspaceId);
+          setSupabaseCookieAuthenticated(true);
+          setSupabaseWorkspaceInitialized(true);
+          if (me.serverRevision > 0) {
+            setLastSupabaseRevision(me.serverRevision);
+            saveLastSupabaseRevision(me.serverRevision);
+          }
+          if (me.updatedAt) {
+            const stamp = formatShamsiFromIso(me.updatedAt);
+            setLastSupabaseSyncAt(stamp);
+            saveLastSupabaseSyncAt(stamp);
+          }
         }
-        if (me.updatedAt) {
-          const stamp = formatShamsiFromIso(me.updatedAt);
-          setLastSupabaseSyncAt(stamp);
-          saveLastSupabaseSyncAt(stamp);
+        if (!cancelled) {
+          await refreshSupabaseStatus();
         }
+      } catch {
+        // Offline or transient network abort; local IndexedDB continues uninterrupted
       }
-      await refreshSupabaseStatus();
     })();
+    return () => {
+      cancelled = true;
+    };
   }, [isOnline, refreshSupabaseStatus]);
 
   const syncSupabaseNow = useCallback(
@@ -998,7 +1009,6 @@ export function useDualCloudSync() {
       refreshSupabaseStatus,
       deviceId,
       deviceLabel,
-      conflictPolicy,
       profile.companyName,
       profile.fiscalYear,
       logActivity,
@@ -1119,22 +1129,26 @@ export function useDualCloudSync() {
 
     let cancelled = false;
     void (async () => {
-      const meta = await refreshSupabaseBackups();
-      if (cancelled || !meta) return;
+      try {
+        const meta = await refreshSupabaseBackups();
+        if (cancelled || !meta) return;
 
-      const remoteRev = meta.currentRevision || 0;
-      const localRev = lastSupabaseRevisionRef.current;
+        const remoteRev = meta.currentRevision || 0;
+        const localRev = lastSupabaseRevisionRef.current;
 
-      if (remoteRev === 0 || loadOfflineOutbox().length > 0) {
-        await syncSupabaseNowRef.current(true);
-      } else if (
-        remoteRev > localRev &&
-        meta.currentDeviceId !== deviceId
-      ) {
-        await pullFromSupabaseRef.current(undefined, true);
-      } else {
-        setLastSupabaseRevision(Math.max(localRev, remoteRev));
-        saveLastSupabaseRevision(Math.max(localRev, remoteRev));
+        if (remoteRev === 0 || loadOfflineOutbox().length > 0) {
+          await syncSupabaseNowRef.current(true);
+        } else if (
+          remoteRev > localRev &&
+          meta.currentDeviceId !== deviceId
+        ) {
+          await pullFromSupabaseRef.current(undefined, true);
+        } else {
+          setLastSupabaseRevision(Math.max(localRev, remoteRev));
+          saveLastSupabaseRevision(Math.max(localRev, remoteRev));
+        }
+      } catch {
+        // Ignore transient offline bootstrap errors; queued changes stay safe in IndexedDB
       }
     })();
 
@@ -1568,6 +1582,7 @@ export function useDualCloudSync() {
             setLastSupabaseRevision(0);
             saveLastSupabaseRevision(0);
             setLastSupabaseSyncAt(null);
+            saveLastSupabaseSyncAt(null);
             lastSbSyncedHashRef.current = null;
             clearOfflineOutbox();
             setOutbox([]);
@@ -1576,7 +1591,7 @@ export function useDualCloudSync() {
               `فضای ابری Supabase پاکسازی شد (${toPersianDigits(sbRes.deletedBackups || 0)} نسخه پشتیبان و اسنپ‌شات اصلی حذف شد).`
             );
             if (options.disconnectSupabaseSession) {
-              void logoutSupabaseWorkspaceAuth();
+              await logoutSupabaseWorkspaceAuth().catch(() => undefined);
               setSupabaseSessionToken(null);
               setSupabaseCookieAuthenticated(false);
               sbBootstrappedActorRef.current = null;

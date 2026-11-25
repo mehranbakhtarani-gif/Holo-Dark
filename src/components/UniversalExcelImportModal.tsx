@@ -20,7 +20,75 @@ import {
   validateAndTransformImportRows,
 } from '../lib/universalExcelImport';
 import { toPersianDigits } from '../lib/format';
-import { InvoiceItem, InvoiceType, VoucherLine } from '../types/accounting';
+import { fuzzyFilterAndRank, normalizeFuzzyText } from '../lib/fuzzySearch';
+import { mulQtyByIrr, percentOfIrr, sumIrr, toExactIrr } from '../lib/moneyMath';
+import {
+  Account,
+  ChequeDirection,
+  ChequeStatus,
+  CostCenter,
+  Employee,
+  InvoiceItem,
+  InvoiceType,
+  Party,
+  Product,
+  VoucherLine,
+  VoucherType,
+} from '../types/accounting';
+
+interface ImportedVoucherLineRow {
+  accountCode: string;
+  description: string;
+  debit: number;
+  credit: number;
+  partyName?: string;
+}
+
+interface ImportedVoucherDoc {
+  groupKey: string;
+  date: string;
+  description: string;
+  voucherType?: VoucherType;
+  lines: ImportedVoucherLineRow[];
+}
+
+interface ImportedInvoiceItemRow {
+  productName: string;
+  quantity: number;
+  unitPrice: number;
+  discount: number;
+  vatRate: number;
+}
+
+interface ImportedInvoiceDoc {
+  invoiceNumber: string;
+  invoiceType: InvoiceType;
+  date: string;
+  partyName: string;
+  items: ImportedInvoiceItemRow[];
+}
+
+interface ImportedChequeRow {
+  sayadiId: string;
+  serial: string;
+  direction: ChequeDirection;
+  partyName: string;
+  bankName: string;
+  amount: number;
+  issueDate: string;
+  dueDate: string;
+  status: ChequeStatus;
+  notes?: string;
+}
+
+function getErrorMessage(err: unknown): string {
+  if (err instanceof Error && err.message) return err.message;
+  if (typeof err === 'object' && err !== null && 'message' in err) {
+    const msg = (err as { message?: unknown }).message;
+    if (typeof msg === 'string' && msg.trim()) return msg;
+  }
+  return 'خطا در ثبت';
+}
 
 interface UniversalExcelImportModalProps {
   open: boolean;
@@ -144,30 +212,69 @@ export const UniversalExcelImportModal: React.FC<UniversalExcelImportModalProps>
     let skipped = 0;
     const notes: string[] = [];
 
+    const matchPartyFuzzy = (rawQuery: string | undefined): Party | undefined => {
+      const needle = normalizeFuzzyText(rawQuery ?? '');
+      if (!needle) return undefined;
+      const exact = parties.find(
+        (p) =>
+          normalizeFuzzyText(p.code) === needle ||
+          normalizeFuzzyText(p.name) === needle
+      );
+      if (exact) return exact;
+      const ranked = fuzzyFilterAndRank(parties, rawQuery ?? '', (p) => [
+        { text: p.name, weight: 1.3 },
+        { text: p.code, weight: 1.2 },
+        { text: p.phone, weight: 0.9 },
+        { text: p.nationalId, weight: 0.9 },
+      ]);
+      return ranked[0] && ranked[0].score >= 55 ? ranked[0].item : undefined;
+    };
+
+    const matchProductFuzzy = (rawQuery: string | undefined): Product | undefined => {
+      const needle = normalizeFuzzyText(rawQuery ?? '');
+      if (!needle) return undefined;
+      const exact = products.find(
+        (p) =>
+          normalizeFuzzyText(p.sku) === needle ||
+          normalizeFuzzyText(p.name) === needle
+      );
+      if (exact) return exact;
+      const ranked = fuzzyFilterAndRank(products, rawQuery ?? '', (p) => [
+        { text: p.name, weight: 1.3 },
+        { text: p.sku, weight: 1.25 },
+        { text: p.category, weight: 0.9 },
+        { text: p.lotNumber, weight: 0.9 },
+      ]);
+      return ranked[0] && ranked[0].score >= 55 ? ranked[0].item : undefined;
+    };
+
     try {
       if (entity === 'parties') {
-        for (const row of previewResult.validRows as any[]) {
+        const rows = previewResult.validRows as unknown as Omit<Party, 'id' | 'ownerId'>[];
+        for (const row of rows) {
           try {
             await addParty(row);
             imported++;
-          } catch (e: any) {
+          } catch (e: unknown) {
             skipped++;
-            notes.push(`${row.name}: ${e?.message || 'خطا در ثبت'}`);
+            notes.push(`${row.name}: ${getErrorMessage(e)}`);
           }
         }
       } else if (entity === 'products') {
-        for (const row of previewResult.validRows as any[]) {
+        const rows = previewResult.validRows as unknown as Omit<Product, 'id' | 'ownerId'>[];
+        for (const row of rows) {
           try {
             await addProduct(row);
             imported++;
-          } catch (e: any) {
+          } catch (e: unknown) {
             skipped++;
-            notes.push(`${row.name}: ${e?.message || 'خطا در ثبت'}`);
+            notes.push(`${row.name}: ${getErrorMessage(e)}`);
           }
         }
       } else if (entity === 'accounts') {
         const existingCodes = new Set(accounts.map((a) => a.code));
-        for (const row of previewResult.validRows as any[]) {
+        const rows = previewResult.validRows as unknown as Omit<Account, 'id' | 'ownerId'>[];
+        for (const row of rows) {
           if (existingCodes.has(row.code)) {
             skipped++;
             notes.push(`کد حساب ${row.code} تکراری است و رد شد.`);
@@ -177,31 +284,26 @@ export const UniversalExcelImportModal: React.FC<UniversalExcelImportModalProps>
             await addAccount(row);
             existingCodes.add(row.code);
             imported++;
-          } catch (e: any) {
+          } catch (e: unknown) {
             skipped++;
-            notes.push(`${row.code}: ${e?.message || 'خطا در ثبت'}`);
+            notes.push(`${row.code}: ${getErrorMessage(e)}`);
           }
         }
       } else if (entity === 'vouchers') {
         const accMap = new Map(accounts.map((a) => [a.code, a.title]));
-        for (const doc of previewResult.validRows as any[]) {
+        const docs = previewResult.validRows as unknown as ImportedVoucherDoc[];
+        for (const doc of docs) {
           try {
-            const lines: VoucherLine[] = doc.lines.map((l: any) => {
-              const matchedParty = l.partyName
-                ? parties.find(
-                    (p) =>
-                      p.name.includes(l.partyName) ||
-                      p.code.toLowerCase() === String(l.partyName).toLowerCase()
-                  )
-                : undefined;
+            const lines: VoucherLine[] = doc.lines.map((l) => {
+              const matchedParty = matchPartyFuzzy(l.partyName);
               return {
                 accountCode: l.accountCode,
                 accountTitle: accMap.get(l.accountCode) || `حساب ${l.accountCode}`,
                 partyId: matchedParty?.id,
                 partyName: matchedParty?.name,
                 description: l.description,
-                debit: l.debit,
-                credit: l.credit,
+                debit: toExactIrr(l.debit),
+                credit: toExactIrr(l.credit),
               };
             });
             await createVoucher({
@@ -213,21 +315,16 @@ export const UniversalExcelImportModal: React.FC<UniversalExcelImportModalProps>
               allowDuplicate: true,
             });
             imported++;
-          } catch (e: any) {
+          } catch (e: unknown) {
             skipped++;
-            notes.push(`سند ${doc.groupKey}: ${e?.message || 'خطا در ثبت'}`);
+            notes.push(`سند ${doc.groupKey}: ${getErrorMessage(e)}`);
           }
         }
       } else if (entity === 'invoices') {
-        for (const doc of previewResult.validRows as any[]) {
+        const docs = previewResult.validRows as unknown as ImportedInvoiceDoc[];
+        for (const doc of docs) {
           try {
-            const matchedParty =
-              parties.find(
-                (p) =>
-                  p.name.includes(doc.partyName) ||
-                  doc.partyName.includes(p.name) ||
-                  p.code.toLowerCase() === String(doc.partyName).toLowerCase()
-              ) || parties[0];
+            const matchedParty = matchPartyFuzzy(doc.partyName) || parties[0];
 
             if (!matchedParty) {
               skipped++;
@@ -235,39 +332,39 @@ export const UniversalExcelImportModal: React.FC<UniversalExcelImportModalProps>
               continue;
             }
 
-            const items: InvoiceItem[] = doc.items.map((it: any) => {
-              const matchedProd =
-                products.find(
-                  (p) =>
-                    p.sku.toLowerCase() === String(it.productName).toLowerCase() ||
-                    p.name.includes(it.productName) ||
-                    it.productName.includes(p.name)
-                ) || products[0];
-              const gross = Math.round(it.quantity * it.unitPrice);
-              const taxable = Math.max(0, gross - it.discount);
-              const vatAmount = Math.round((taxable * it.vatRate) / 100);
+            const items: InvoiceItem[] = doc.items.map((it) => {
+              const matchedProd = matchProductFuzzy(it.productName) || products[0];
+              const safeQty = Number.isFinite(it.quantity) && it.quantity > 0 ? it.quantity : 0;
+              const safeUnitPrice = toExactIrr(it.unitPrice);
+              const safeDiscount = Math.max(0, toExactIrr(it.discount));
+              const safeVatRate = Number.isFinite(it.vatRate) && it.vatRate >= 0 ? it.vatRate : 0;
+
+              const gross = mulQtyByIrr(safeQty, safeUnitPrice);
+              const appliedDiscount = Math.min(gross, safeDiscount);
+              const taxable = Math.max(0, gross - appliedDiscount);
+              const vatAmount = percentOfIrr(taxable, safeVatRate);
               const lineTotal = taxable + vatAmount;
               return {
                 productId: matchedProd?.id || `xl-prod-${it.productName}`,
                 sku: matchedProd?.sku || 'XL-ITEM',
                 productName: matchedProd?.name || it.productName,
                 unit: matchedProd?.unit || 'کیلوگرم',
-                quantity: it.quantity,
-                unitPrice: it.unitPrice,
-                discount: it.discount,
+                quantity: safeQty,
+                unitPrice: safeUnitPrice,
+                discount: appliedDiscount,
                 vatAmount,
                 lineTotal,
               };
             });
 
-            const subtotal = items.reduce((s, it) => s + Math.round(it.quantity * it.unitPrice), 0);
-            const discount = items.reduce((s, it) => s + it.discount, 0);
-            const vatAmount = items.reduce((s, it) => s + it.vatAmount, 0);
+            const subtotal = sumIrr(items.map((it) => mulQtyByIrr(it.quantity, it.unitPrice)));
+            const discount = sumIrr(items.map((it) => it.discount));
+            const vatAmount = sumIrr(items.map((it) => it.vatAmount));
             const grandTotal = Math.max(0, subtotal - discount + vatAmount);
 
             await createInvoice({
               invoiceNumber: doc.invoiceNumber,
-              invoiceType: doc.invoiceType as InvoiceType,
+              invoiceType: doc.invoiceType,
               date: doc.date,
               partyId: matchedParty.id,
               partyName: matchedParty.name,
@@ -284,18 +381,16 @@ export const UniversalExcelImportModal: React.FC<UniversalExcelImportModalProps>
               items,
             });
             imported++;
-          } catch (e: any) {
+          } catch (e: unknown) {
             skipped++;
-            notes.push(`فاکتور ${doc.invoiceNumber}: ${e?.message || 'خطا در ثبت'}`);
+            notes.push(`فاکتور ${doc.invoiceNumber}: ${getErrorMessage(e)}`);
           }
         }
       } else if (entity === 'cheques') {
-        for (const row of previewResult.validRows as any[]) {
+        const rows = previewResult.validRows as unknown as ImportedChequeRow[];
+        for (const row of rows) {
           try {
-            const matchedParty =
-              parties.find(
-                (p) => p.name.includes(row.partyName) || row.partyName.includes(p.name)
-              ) || parties[0];
+            const matchedParty = matchPartyFuzzy(row.partyName) || parties[0];
             if (!matchedParty) {
               skipped++;
               notes.push(`چک ${row.sayadiId}: طرف‌حسابی یافت نشد.`);
@@ -308,36 +403,38 @@ export const UniversalExcelImportModal: React.FC<UniversalExcelImportModalProps>
               partyId: matchedParty.id,
               partyName: matchedParty.name,
               bankName: row.bankName,
-              amount: row.amount,
+              amount: toExactIrr(row.amount),
               issueDate: row.issueDate,
               dueDate: row.dueDate,
               status: row.status,
               notes: row.notes,
             });
             imported++;
-          } catch (e: any) {
+          } catch (e: unknown) {
             skipped++;
-            notes.push(`چک ${row.sayadiId}: ${e?.message || 'خطا در ثبت'}`);
+            notes.push(`چک ${row.sayadiId}: ${getErrorMessage(e)}`);
           }
         }
       } else if (entity === 'employees') {
-        for (const row of previewResult.validRows as any[]) {
+        const rows = previewResult.validRows as unknown as Omit<Employee, 'id' | 'ownerId'>[];
+        for (const row of rows) {
           try {
             await addEmployee(row);
             imported++;
-          } catch (e: any) {
+          } catch (e: unknown) {
             skipped++;
-            notes.push(`${row.fullName}: ${e?.message || 'خطا در ثبت'}`);
+            notes.push(`${row.fullName}: ${getErrorMessage(e)}`);
           }
         }
       } else if (entity === 'costCenters') {
-        for (const row of previewResult.validRows as any[]) {
+        const rows = previewResult.validRows as unknown as Omit<CostCenter, 'id' | 'ownerId'>[];
+        for (const row of rows) {
           try {
             await addCostCenter(row);
             imported++;
-          } catch (e: any) {
+          } catch (e: unknown) {
             skipped++;
-            notes.push(`${row.name}: ${e?.message || 'خطا در ثبت'}`);
+            notes.push(`${row.name}: ${getErrorMessage(e)}`);
           }
         }
       }
@@ -384,7 +481,7 @@ export const UniversalExcelImportModal: React.FC<UniversalExcelImportModalProps>
         </div>
 
         {/* Stepper */}
-        <div className="px-5 py-2.5 border-b border-slate-100 dark:border-slate-800 flex items-center gap-3 text-xs bg-white dark:bg-slate-900">
+        <div className="px-5 py-2.5 border-b border-slate-100 dark:border-slate-800 flex flex-wrap items-center gap-2 sm:gap-3 text-xs bg-white dark:bg-slate-900">
           {[
             { num: 1, label: '۱. انتخاب بخش و بارگذاری اکسل' },
             { num: 2, label: '۲. تطبیق خودکار ستون‌ها' },
@@ -660,7 +757,9 @@ export const UniversalExcelImportModal: React.FC<UniversalExcelImportModalProps>
                               .slice(0, 6)
                               .map((k) => (
                                 <td key={k} className="p-2 whitespace-nowrap max-w-[180px] truncate">
-                                  {toPersianDigits(String((r as any)[k] ?? '—'))}
+                                  {toPersianDigits(
+                                    String((r as Record<string, unknown>)[k] ?? '—')
+                                  )}
                                 </td>
                               ))}
                           </tr>
@@ -675,7 +774,7 @@ export const UniversalExcelImportModal: React.FC<UniversalExcelImportModalProps>
         </div>
 
         {/* Footer */}
-        <div className="px-5 py-3.5 border-t border-slate-200 dark:border-slate-800 bg-slate-50/70 dark:bg-slate-950/50 flex items-center justify-between gap-2 text-xs">
+        <div className="px-5 py-3.5 border-t border-slate-200 dark:border-slate-800 bg-slate-50/70 dark:bg-slate-950/50 flex flex-wrap items-center justify-between gap-2 text-xs">
           <button
             type="button"
             onClick={step > 1 ? () => setStep((s) => (s === 3 ? 2 : 1)) : onClose}

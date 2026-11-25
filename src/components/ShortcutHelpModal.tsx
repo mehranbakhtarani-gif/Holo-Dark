@@ -5,6 +5,7 @@ import { useAccounting } from '../context/AccountingContext';
 import { formatMoney, formatWeight, toPersianDigits } from '../lib/format';
 import { fuzzyScoreFields, normalizeFuzzyText } from '../lib/fuzzySearch';
 import { HighlightedText } from './FuzzyTableSearch';
+import { useDebouncedValue } from '../hooks/useDebouncedValue';
 
 export const HOLOO_SHORTCUTS: { key: string; label: string; module?: ActiveModule; desc: string }[] = [
   { key: 'F1', label: 'راهنمای کلیدهای میانبر', desc: 'باز/بسته کردن پنجره راهنمای کلیدهای میانبر هلو Apex' },
@@ -98,12 +99,13 @@ export const CommandPaletteModal: React.FC<{
   onNavigate: (mod: ActiveModule, intent?: string) => void;
 }> = ({ open, onClose, onNavigate }) => {
   const [query, setQuery] = useState('');
+  const debouncedQuery = useDebouncedValue(query, 90);
   const [activeIndex, setActiveIndex] = useState(0);
   const { accounts, parties, products, vouchers, cheques, invoices, currencies, profile } =
     useAccounting();
 
   const results = useMemo(() => {
-    const q = normalizeFuzzyText(query);
+    const q = normalizeFuzzyText(debouncedQuery);
     const items: {
       title: string;
       subtitle: string;
@@ -320,7 +322,7 @@ export const CommandPaletteModal: React.FC<{
     }
 
     for (const cmd of staticCommands) {
-      const res = fuzzyScoreFields(query, [
+      const res = fuzzyScoreFields(debouncedQuery, [
         { text: cmd.title, weight: 1.2 },
         { text: cmd.subtitle, weight: 0.9 },
         { text: cmd.category, weight: 0.8 },
@@ -340,7 +342,7 @@ export const CommandPaletteModal: React.FC<{
 
     // Vouchers
     vouchers.forEach((v) => {
-      const res = fuzzyScoreFields(query, [
+      const res = fuzzyScoreFields(debouncedQuery, [
         { text: String(v.voucherNumber), weight: 1.45 },
         { text: v.description, weight: 1.2 },
         { text: v.date, weight: 1.0 },
@@ -365,7 +367,7 @@ export const CommandPaletteModal: React.FC<{
 
     // Cheques
     cheques.forEach((c) => {
-      const res = fuzzyScoreFields(query, [
+      const res = fuzzyScoreFields(debouncedQuery, [
         { text: c.sayadiId, weight: 1.45 },
         { text: c.serial, weight: 1.3 },
         { text: c.partyName, weight: 1.2 },
@@ -390,7 +392,7 @@ export const CommandPaletteModal: React.FC<{
 
     // Invoices
     invoices.forEach((inv) => {
-      const res = fuzzyScoreFields(query, [
+      const res = fuzzyScoreFields(debouncedQuery, [
         { text: inv.invoiceNumber, weight: 1.45 },
         { text: inv.partyName, weight: 1.25 },
         { text: inv.taxSerial, weight: 1.1 },
@@ -417,7 +419,7 @@ export const CommandPaletteModal: React.FC<{
 
     // Parties
     parties.forEach((p) => {
-      const res = fuzzyScoreFields(query, [
+      const res = fuzzyScoreFields(debouncedQuery, [
         { text: p.code, weight: 1.3 },
         { text: p.name, weight: 1.25 },
         { text: p.nationalId, weight: 1.05 },
@@ -437,7 +439,7 @@ export const CommandPaletteModal: React.FC<{
 
     // Textile Yarn Products
     products.forEach((pr) => {
-      const res = fuzzyScoreFields(query, [
+      const res = fuzzyScoreFields(debouncedQuery, [
         { text: pr.sku, weight: 1.35 },
         { text: pr.name, weight: 1.25 },
         { text: pr.yarnCount, weight: 1.15 },
@@ -460,7 +462,7 @@ export const CommandPaletteModal: React.FC<{
 
     // Accounts
     accounts.forEach((a) => {
-      const res = fuzzyScoreFields(query, [
+      const res = fuzzyScoreFields(debouncedQuery, [
         { text: a.code, weight: 1.4 },
         { text: a.title, weight: 1.2 },
       ]);
@@ -478,7 +480,7 @@ export const CommandPaletteModal: React.FC<{
 
     // Currencies
     currencies.forEach((cur) => {
-      const res = fuzzyScoreFields(query, [
+      const res = fuzzyScoreFields(debouncedQuery, [
         { text: cur.code, weight: 1.45 },
         { text: cur.name, weight: 1.3 },
         { text: cur.symbol, weight: 0.9 },
@@ -499,7 +501,7 @@ export const CommandPaletteModal: React.FC<{
 
     return items.sort((a, b) => b.score - a.score).slice(0, 14);
   }, [
-    query,
+    debouncedQuery,
     accounts,
     parties,
     products,
@@ -513,7 +515,9 @@ export const CommandPaletteModal: React.FC<{
 
   useEffect(() => {
     setActiveIndex(0);
-  }, [query, open]);
+  }, [debouncedQuery, open]);
+
+  const safeActiveIndex = results.length > 0 ? Math.min(activeIndex, results.length - 1) : 0;
 
   if (!open) return null;
 
@@ -535,9 +539,9 @@ export const CommandPaletteModal: React.FC<{
                 setActiveIndex((prev) =>
                   results.length > 0 ? (prev - 1 + results.length) % results.length : 0
                 );
-              } else if (e.key === 'Enter' && results[activeIndex]) {
+              } else if (e.key === 'Enter' && results[safeActiveIndex]) {
                 e.preventDefault();
-                results[activeIndex].action();
+                results[safeActiveIndex].action();
                 onClose();
                 setQuery('');
               }

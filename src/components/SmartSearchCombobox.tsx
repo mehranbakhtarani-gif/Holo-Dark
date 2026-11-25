@@ -5,6 +5,7 @@ import {
   getHighlightSegments,
   normalizeFuzzyText,
 } from '../lib/fuzzySearch';
+import { useDebouncedValue } from '../hooks/useDebouncedValue';
 
 export interface SmartSearchOption {
   id: string;
@@ -84,6 +85,7 @@ export const SmartSearchCombobox: React.FC<SmartSearchComboboxProps> = ({
   );
 
   const currentQuery = controlledQuery !== undefined ? controlledQuery : internalQuery;
+  const debouncedQuery = useDebouncedValue(currentQuery, 80);
 
   const setQueryText = (next: string) => {
     if (controlledQuery === undefined) setInternalQuery(next);
@@ -103,7 +105,7 @@ export const SmartSearchCombobox: React.FC<SmartSearchComboboxProps> = ({
 
   // Fuzzy ranking across code, label, sublabel, meta, and keywords
   const rankedSuggestions = useMemo(() => {
-    const q = normalizeFuzzyText(currentQuery);
+    const q = normalizeFuzzyText(debouncedQuery);
     if (!q) {
       return options.slice(0, maxSuggestions);
     }
@@ -124,11 +126,14 @@ export const SmartSearchCombobox: React.FC<SmartSearchComboboxProps> = ({
 
     scored.sort((a, b) => b.score - a.score);
     return scored.slice(0, maxSuggestions).map((s) => s.opt);
-  }, [options, currentQuery, maxSuggestions]);
+  }, [options, debouncedQuery, maxSuggestions]);
 
   useEffect(() => {
     setActiveIndex(0);
-  }, [currentQuery, open]);
+  }, [debouncedQuery, open]);
+
+  const safeActiveIndex =
+    rankedSuggestions.length > 0 ? Math.min(activeIndex, rankedSuggestions.length - 1) : 0;
 
   const commitSelection = (opt: SmartSearchOption) => {
     onSelect(opt);
@@ -156,9 +161,9 @@ export const SmartSearchCombobox: React.FC<SmartSearchComboboxProps> = ({
           : 0
       );
     } else if (e.key === 'Enter') {
-      if (open && rankedSuggestions[activeIndex]) {
+      if (open && rankedSuggestions[safeActiveIndex]) {
         e.preventDefault();
-        commitSelection(rankedSuggestions[activeIndex]);
+        commitSelection(rankedSuggestions[safeActiveIndex]);
       }
     } else if (e.key === 'Escape') {
       setOpen(false);
@@ -174,7 +179,7 @@ export const SmartSearchCombobox: React.FC<SmartSearchComboboxProps> = ({
       : currentQuery;
 
   return (
-    <div ref={containerRef} className={`relative ${className}`}>
+    <div ref={containerRef} className={`relative min-w-0 ${className}`}>
       <div className="relative flex items-center">
         <Search
           className={`absolute right-2.5 text-slate-400 pointer-events-none ${
@@ -186,10 +191,10 @@ export const SmartSearchCombobox: React.FC<SmartSearchComboboxProps> = ({
           type="text"
           value={displayValue}
           onFocus={() => {
-            setOpen(true);
-            if (mode === 'picker') {
+            if (!open && mode === 'picker' && !currentQuery) {
               setQueryText('');
             }
+            setOpen(true);
           }}
           onChange={(e) => {
             setQueryText(e.target.value);
@@ -238,13 +243,16 @@ export const SmartSearchCombobox: React.FC<SmartSearchComboboxProps> = ({
       </div>
 
       {open && (
-        <div className="absolute right-0 left-0 mt-1 z-50 rounded-xl bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-700 shadow-xl overflow-hidden max-h-72 overflow-y-auto">
+        <div className="absolute right-0 left-0 mt-1 z-50 max-w-full rounded-xl bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-700 shadow-xl overflow-hidden flex flex-col">
           {rankedSuggestions.length === 0 ? (
             <div className="px-4 py-3 text-xs text-slate-500 text-center">{emptyText}</div>
           ) : (
-            <ul className="divide-y divide-slate-100 dark:divide-slate-800" role="listbox">
+            <ul
+              className="max-h-64 overflow-y-auto divide-y divide-slate-100 dark:divide-slate-800"
+              role="listbox"
+            >
               {rankedSuggestions.map((opt, idx) => {
-                const isActive = idx === activeIndex;
+                const isActive = idx === safeActiveIndex;
                 const isSelected = value !== undefined && opt.id === value;
                 return (
                   <li key={opt.id}>
@@ -264,19 +272,19 @@ export const SmartSearchCombobox: React.FC<SmartSearchComboboxProps> = ({
                       }`}
                     >
                       <div className="min-w-0">
-                        <div className="flex items-center gap-2">
+                        <div className="flex items-center gap-2 min-w-0">
                           {opt.code && (
                             <span className="font-code text-[11px] font-bold text-teal-700 dark:text-teal-400 shrink-0">
-                              <MatchHighlight text={opt.code} query={currentQuery} />
+                              <MatchHighlight text={opt.code} query={debouncedQuery} />
                             </span>
                           )}
                           <span className="text-xs font-semibold text-slate-900 dark:text-white truncate">
-                            <MatchHighlight text={opt.label} query={currentQuery} />
+                            <MatchHighlight text={opt.label} query={debouncedQuery} />
                           </span>
                         </div>
                         {opt.sublabel && (
                           <div className="text-[11px] text-slate-500 dark:text-slate-400 truncate mt-0.5">
-                            <MatchHighlight text={opt.sublabel} query={currentQuery} />
+                            <MatchHighlight text={opt.sublabel} query={debouncedQuery} />
                           </div>
                         )}
                       </div>
@@ -301,9 +309,9 @@ export const SmartSearchCombobox: React.FC<SmartSearchComboboxProps> = ({
               })}
             </ul>
           )}
-          <div className="px-3 py-1.5 bg-slate-50 dark:bg-slate-950 border-t border-slate-100 dark:border-slate-800 text-[10px] text-slate-400 flex items-center justify-between">
-            <span>جستجوی فازی هلو (اعداد فارسی/انگلیسی و تطابق هوشمند)</span>
-            <span className="font-code">↑ ↓ Enter</span>
+          <div className="px-3 py-1.5 bg-slate-50 dark:bg-slate-950 border-t border-slate-100 dark:border-slate-800 text-[10px] text-slate-400 flex items-center justify-between gap-2 shrink-0">
+            <span className="truncate">جستجوی فازی هلو (اعداد فارسی/انگلیسی، نیم‌فاصله و تطابق املایی)</span>
+            <span className="font-code shrink-0">↑ ↓ Enter</span>
           </div>
         </div>
       )}

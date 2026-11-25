@@ -23,6 +23,7 @@ interface QuickActionsAndAlertsBentoCardProps {
   totalProductsCount: number;
   urgentChequesCount: number;
   onNavigate: (mod: ActiveModule, intent?: string, subKey?: string) => void;
+  dragControls?: React.ReactNode;
 }
 
 export const QuickActionsAndAlertsBentoCard: React.FC<QuickActionsAndAlertsBentoCardProps> = ({
@@ -30,19 +31,27 @@ export const QuickActionsAndAlertsBentoCard: React.FC<QuickActionsAndAlertsBento
   totalProductsCount,
   urgentChequesCount,
   onNavigate,
+  dragControls,
 }) => {
   return (
     <motion.div
       initial={{ opacity: 0, y: 12 }}
       animate={{ opacity: 1, y: 0 }}
       transition={{ ...snappySpring, delay: 0.12 }}
-      className="lg:col-span-4 bg-white dark:bg-slate-900/95 rounded-2xl border border-slate-200/80 dark:border-slate-800/80 shadow-[0_2px_12px_-4px_rgba(15,23,42,0.05)] p-5 flex flex-col justify-between gap-4"
+      className="h-full bg-white dark:bg-slate-900/95 rounded-2xl border border-slate-200/80 dark:border-slate-800/80 shadow-[0_2px_12px_-4px_rgba(15,23,42,0.05)] p-5 flex flex-col justify-between gap-4"
     >
       <div>
-        <h2 className="font-bold text-base text-slate-900 dark:text-white mb-1">دسترسی سریع</h2>
-        <p className="text-xs text-slate-500 dark:text-slate-400 mb-4">
-          عملیات پرتکرار خزانه، انبار و تراز مالی
-        </p>
+        <div className="flex items-start gap-2 mb-4">
+          {dragControls}
+          <div className="min-w-0">
+            <h2 className="font-bold text-base text-slate-900 dark:text-white leading-snug">
+              دسترسی سریع
+            </h2>
+            <p className="text-xs text-slate-500 dark:text-slate-400 mt-0.5">
+              عملیات پرتکرار خزانه، انبار و تراز مالی
+            </p>
+          </div>
+        </div>
 
         <div className="grid grid-cols-2 gap-2.5">
           {[

@@ -124,6 +124,8 @@ function openOperationalDb(): Promise<IDBDatabase> {
     };
     req.onsuccess = () => resolve(req.result);
     req.onerror = () => reject(req.error ?? new Error('Failed to open operational IndexedDB'));
+    req.onblocked = () =>
+      reject(new Error('Operational IndexedDB is blocked by another open tab/connection'));
   });
 }
 
@@ -180,60 +182,65 @@ export async function saveOperationalWorkspaceTx(
       'rbacOperators',
       'auditLogs',
     ];
-    const tx = db.transaction(entityStores, 'readwrite');
-    const metaStore = tx.objectStore('meta');
-    const revReq = metaStore.get('workspace_meta');
+    try {
+      const tx = db.transaction(entityStores, 'readwrite');
+      const metaStore = tx.objectStore('meta');
+      const revReq = metaStore.get('workspace_meta');
 
-    let nextRevision = Math.max(1, Number(data.localRevision) || 1);
+      let nextRevision = Math.max(1, Number(data.localRevision) || 1);
 
-    revReq.onsuccess = () => {
-      const existing = revReq.result as { localRevision?: number } | undefined;
-      if (existing && typeof existing.localRevision === 'number') {
-        nextRevision = Math.max(nextRevision, existing.localRevision + 1);
-      }
+      revReq.onsuccess = () => {
+        const existing = revReq.result as { localRevision?: number } | undefined;
+        if (existing && typeof existing.localRevision === 'number') {
+          nextRevision = Math.max(nextRevision, existing.localRevision + 1);
+        }
 
-      metaStore.put({
-        key: 'profile',
-        value: data.profile,
-        updatedAt: committedAt,
-      });
-      metaStore.put({
-        key: 'workspace_meta',
-        localRevision: nextRevision,
-        updatedAt: committedAt,
-        schemaVersion: OP_DB_VERSION,
-      });
+        metaStore.put({
+          key: 'profile',
+          value: data.profile,
+          updatedAt: committedAt,
+        });
+        metaStore.put({
+          key: 'workspace_meta',
+          localRevision: nextRevision,
+          updatedAt: committedAt,
+          schemaVersion: OP_DB_VERSION,
+        });
 
-      replaceStoreContents(tx, 'accounts', data.accounts);
-      replaceStoreContents(tx, 'parties', data.parties);
-      replaceStoreContents(tx, 'products', data.products);
-      replaceStoreContents(tx, 'vouchers', data.vouchers);
-      replaceStoreContents(tx, 'invoices', data.invoices);
-      replaceStoreContents(tx, 'cheques', data.cheques);
-      replaceStoreContents(tx, 'employees', data.employees);
-      replaceStoreContents(tx, 'assets', data.assets);
-      replaceStoreContents(tx, 'costCenters', data.costCenters);
-      replaceStoreContents(tx, 'currencies', data.currencies);
-      replaceStoreContents(tx, 'exchangeRates', data.exchangeRates);
-      replaceStoreContents(tx, 'importDossiers', data.importDossiers);
-      replaceStoreContents(tx, 'salesOrders', data.salesOrders);
-      replaceStoreContents(tx, 'subcontractJobs', data.subcontractJobs);
-      replaceStoreContents(tx, 'rbacOperators', data.rbacOperators);
-      replaceStoreContents(tx, 'auditLogs', data.auditLogs);
-    };
+        replaceStoreContents(tx, 'accounts', data.accounts);
+        replaceStoreContents(tx, 'parties', data.parties);
+        replaceStoreContents(tx, 'products', data.products);
+        replaceStoreContents(tx, 'vouchers', data.vouchers);
+        replaceStoreContents(tx, 'invoices', data.invoices);
+        replaceStoreContents(tx, 'cheques', data.cheques);
+        replaceStoreContents(tx, 'employees', data.employees);
+        replaceStoreContents(tx, 'assets', data.assets);
+        replaceStoreContents(tx, 'costCenters', data.costCenters);
+        replaceStoreContents(tx, 'currencies', data.currencies);
+        replaceStoreContents(tx, 'exchangeRates', data.exchangeRates);
+        replaceStoreContents(tx, 'importDossiers', data.importDossiers);
+        replaceStoreContents(tx, 'salesOrders', data.salesOrders);
+        replaceStoreContents(tx, 'subcontractJobs', data.subcontractJobs);
+        replaceStoreContents(tx, 'rbacOperators', data.rbacOperators);
+        replaceStoreContents(tx, 'auditLogs', data.auditLogs);
+      };
 
-    tx.oncomplete = () => {
+      tx.oncomplete = () => {
+        db.close();
+        resolve({ localRevision: nextRevision, committedAt });
+      };
+      tx.onerror = () => {
+        db.close();
+        reject(tx.error ?? new Error('Operational IndexedDB commit failed'));
+      };
+      tx.onabort = () => {
+        db.close();
+        reject(tx.error ?? new Error('Operational IndexedDB transaction aborted'));
+      };
+    } catch (err) {
       db.close();
-      resolve({ localRevision: nextRevision, committedAt });
-    };
-    tx.onerror = () => {
-      db.close();
-      reject(tx.error ?? new Error('Operational IndexedDB commit failed'));
-    };
-    tx.onabort = () => {
-      db.close();
-      reject(tx.error ?? new Error('Operational IndexedDB transaction aborted'));
-    };
+      reject(err);
+    }
   });
 }
 
@@ -254,8 +261,9 @@ export async function commitInvoiceOperationalTx(payload: {
   const committedAt = new Date().toISOString();
 
   return new Promise((resolve, reject) => {
-    const tx = db.transaction(['meta', 'products', 'vouchers', 'cheques', 'invoices'], 'readwrite');
+    let tx: IDBTransaction | null = null;
     try {
+      tx = db.transaction(['meta', 'products', 'vouchers', 'cheques', 'invoices'], 'readwrite');
       const prodStore = tx.objectStore('products');
       for (const prod of payload.updatedProducts) {
         prodStore.put(prod);
@@ -279,25 +287,30 @@ export async function commitInvoiceOperationalTx(payload: {
           schemaVersion: OP_DB_VERSION,
         });
       };
+
+      tx.oncomplete = () => {
+        db.close();
+        resolve(true);
+      };
+      tx.onerror = () => {
+        db.close();
+        reject(tx?.error ?? new Error('Atomic invoice IndexedDB commit failed'));
+      };
+      tx.onabort = () => {
+        db.close();
+        reject(tx?.error ?? new Error('Atomic invoice IndexedDB transaction aborted'));
+      };
     } catch (err) {
-      tx.abort();
+      if (tx) {
+        try {
+          tx.abort();
+        } catch {
+          // ignore if transaction already finished/aborted
+        }
+      }
       db.close();
       reject(err);
-      return;
     }
-
-    tx.oncomplete = () => {
-      db.close();
-      resolve(true);
-    };
-    tx.onerror = () => {
-      db.close();
-      reject(tx.error ?? new Error('Atomic invoice IndexedDB commit failed'));
-    };
-    tx.onabort = () => {
-      db.close();
-      reject(tx.error ?? new Error('Atomic invoice IndexedDB transaction aborted'));
-    };
   });
 }
 

@@ -19,6 +19,7 @@ import { ActiveModule } from '../types/accounting';
 import { fuzzyScoreFields, normalizeFuzzyText } from '../lib/fuzzySearch';
 import { HighlightedText } from './FuzzyTableSearch';
 import { toPersianDigits } from '../lib/format';
+import { useDebouncedValue } from '../hooks/useDebouncedValue';
 
 type ActionCategory = 'all' | 'invoices' | 'accounting' | 'treasury_fx' | 'inventory' | 'reports' | 'corporate';
 
@@ -743,7 +744,8 @@ export const DashboardActionSearch: React.FC<{
   const containerRef = useRef<HTMLDivElement>(null);
   const inputRef = useRef<HTMLInputElement>(null);
 
-  const normQuery = normalizeFuzzyText(query);
+  const debouncedQuery = useDebouncedValue(query, 80);
+  const normQuery = normalizeFuzzyText(debouncedQuery);
 
   const rankedActions = useMemo(() => {
     const pool =
@@ -757,7 +759,7 @@ export const DashboardActionSearch: React.FC<{
 
     const scored: { item: DashboardActionItem; score: number; isFuzzy: boolean }[] = [];
     for (const item of pool) {
-      const res = fuzzyScoreFields(query, [
+      const res = fuzzyScoreFields(debouncedQuery, [
         { text: item.title, weight: 1.4 },
         { text: item.keywords, weight: 1.15 },
         { text: item.description, weight: 0.9 },
@@ -770,7 +772,7 @@ export const DashboardActionSearch: React.FC<{
     }
 
     return scored.sort((a, b) => b.score - a.score);
-  }, [query, normQuery, category]);
+  }, [debouncedQuery, normQuery, category]);
 
   const displayedResults = useMemo(() => rankedActions.slice(0, 9), [rankedActions]);
 

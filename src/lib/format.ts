@@ -84,7 +84,8 @@ export function parseGroupedNumberInput(raw: string, allowDecimal = false): numb
 }
 
 export function formatMoney(amount: number, unit: CurrencyUnit = 'IRT', showUnit = true): string {
-  const value = unit === 'IRT' ? Math.round(amount / 10) : Math.round(amount);
+  const safeAmount = Number.isFinite(amount) ? amount : 0;
+  const value = unit === 'IRT' ? Math.round(safeAmount / 10) : Math.round(safeAmount);
   const absFormatted = Math.abs(value).toLocaleString('en-US');
   const sign = value < 0 ? '-' : '';
   const unitText = showUnit ? (unit === 'IRT' ? ' تومان' : ' ریال') : '';
@@ -92,7 +93,8 @@ export function formatMoney(amount: number, unit: CurrencyUnit = 'IRT', showUnit
 }
 
 export function formatCompactMoney(amount: number, unit: CurrencyUnit = 'IRT'): string {
-  const value = unit === 'IRT' ? amount / 10 : amount;
+  const safeAmount = Number.isFinite(amount) ? amount : 0;
+  const value = unit === 'IRT' ? safeAmount / 10 : safeAmount;
   const abs = Math.abs(value);
   const sign = value < 0 ? '-' : '';
   const suffix = unit === 'IRT' ? 'تومان' : 'ریال';
@@ -102,11 +104,12 @@ export function formatCompactMoney(amount: number, unit: CurrencyUnit = 'IRT'): 
   if (abs >= 1_000_000) {
     return `${sign}${toPersianDigits((abs / 1_000_000).toFixed(1))} میلیون ${suffix}`;
   }
-  return formatMoney(amount, unit, true);
+  return formatMoney(safeAmount, unit, true);
 }
 
 export function formatNumber(n: number): string {
-  return toPersianDigits(Math.round(n).toLocaleString('en-US'));
+  const safe = Number.isFinite(n) ? n : 0;
+  return toPersianDigits(Math.round(safe).toLocaleString('en-US'));
 }
 
 /**
@@ -199,7 +202,7 @@ export function numberToPersianWords(amountIrr: number, unit: CurrencyUnit = 'IR
  */
 export function normalizeIranianPhoneForWhatsApp(phone?: string): string {
   if (!phone) return '';
-  const ascii = phone.replace(/[۰-۹]/g, (d) => String(PERSIAN_DIGITS.indexOf(d)));
+  const ascii = normalizeDigitsToAscii(phone);
   const digits = ascii.replace(/\D/g, '');
   if (digits.startsWith('09') && digits.length === 11) {
     return `98${digits.slice(1)}`;

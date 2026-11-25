@@ -11,7 +11,17 @@ const QTY_SCALE = 10_000; // 4 decimal places for weighbridge kg accuracy
 
 export function toExactIrr(value: number | string | null | undefined): number {
   if (value === null || value === undefined || value === '') return 0;
-  const n = typeof value === 'string' ? Number(value.replace(/,/g, '').trim()) : Number(value);
+  const n =
+    typeof value === 'string'
+      ? Number(
+          value
+            .replace(/[۰-۹]/g, (d) => String(d.charCodeAt(0) - 1776))
+            .replace(/[٠-٩]/g, (d) => String(d.charCodeAt(0) - 1632))
+            .replace(/٫/g, '.')
+            .replace(/[,٬،\s]/g, '')
+            .trim()
+        )
+      : Number(value);
   if (!Number.isFinite(n)) return 0;
   return n < 0 ? -Math.round(-n) : Math.round(n);
 }

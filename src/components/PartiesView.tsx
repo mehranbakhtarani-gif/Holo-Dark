@@ -32,6 +32,7 @@ import {
   toPersianDigits,
 } from '../lib/format';
 import { fuzzyFilterAndRank } from '../lib/fuzzySearch';
+import { useDebouncedValue } from '../hooks/useDebouncedValue';
 import { loadInvoiceSettings } from '../lib/invoiceSettings';
 import { FuzzyTableOption, FuzzyTableSearch } from './FuzzyTableSearch';
 import { MessengerShareActions } from './MessengerShareActions';
@@ -157,8 +158,10 @@ export const PartiesView: React.FC<{ initialIntent?: string; clearIntent?: () =>
     [parties, filter]
   );
 
+  const debouncedSearch = useDebouncedValue(search, 90);
+
   const filtered = useMemo(() => {
-    const ranked = fuzzyFilterAndRank(typeScopedParties, search, (p) => [
+    const ranked = fuzzyFilterAndRank(typeScopedParties, debouncedSearch, (p) => [
       { text: p.code, weight: 1.3 },
       { text: p.name, weight: 1.25 },
       { text: p.nationalId, weight: 1.1 },
@@ -167,7 +170,7 @@ export const PartiesView: React.FC<{ initialIntent?: string; clearIntent?: () =>
       { text: p.address, weight: 0.8 },
     ]);
     return ranked.map((r) => r.item);
-  }, [typeScopedParties, search]);
+  }, [typeScopedParties, debouncedSearch]);
 
   const statementEntries = useMemo(
     () => (statementParty ? computePartyLedger(statementParty.id, vouchers, includeCheques) : []),

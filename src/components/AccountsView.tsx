@@ -5,6 +5,7 @@ import { Account, AccountCategory, AccountLevel, AccountNature } from '../types/
 import { formatMoney, toPersianDigits } from '../lib/format';
 import { computeAccountLedger } from '../lib/accountingEngine';
 import { fuzzyFilterAndRank } from '../lib/fuzzySearch';
+import { useDebouncedValue } from '../hooks/useDebouncedValue';
 import { FuzzyTableOption, FuzzyTableSearch } from './FuzzyTableSearch';
 
 const LEVEL_LABELS: Record<AccountLevel, string> = {
@@ -117,15 +118,17 @@ export const AccountsView: React.FC<{ initialIntent?: string; clearIntent?: () =
     [accounts, groupFilter]
   );
 
+  const debouncedSearch = useDebouncedValue(search, 90);
+
   const filtered = useMemo(() => {
-    const ranked = fuzzyFilterAndRank(groupScopedAccounts, search, (a) => [
+    const ranked = fuzzyFilterAndRank(groupScopedAccounts, debouncedSearch, (a) => [
       { text: a.code, weight: 1.45 },
       { text: a.title, weight: 1.25 },
       { text: LEVEL_LABELS[a.level], weight: 0.85 },
       { text: CATEGORY_LABELS[a.category], weight: 0.85 },
     ]);
     return ranked.map((r) => r.item);
-  }, [groupScopedAccounts, search]);
+  }, [groupScopedAccounts, debouncedSearch]);
 
   const selectedAccount = accounts.find((a) => a.code === selectedCode);
   const ledger = useMemo(

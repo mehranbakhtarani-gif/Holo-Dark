@@ -531,9 +531,13 @@ export function loadLastSupabaseSyncAt(): string | null {
   }
 }
 
-export function saveLastSupabaseSyncAt(shamsiStamp: string): void {
+export function saveLastSupabaseSyncAt(shamsiStamp: string | null): void {
   try {
-    localStorage.setItem(LAST_SYNC_STORAGE_KEY, shamsiStamp);
+    if (!shamsiStamp) {
+      localStorage.removeItem(LAST_SYNC_STORAGE_KEY);
+    } else {
+      localStorage.setItem(LAST_SYNC_STORAGE_KEY, shamsiStamp);
+    }
   } catch {
     // ignore
   }

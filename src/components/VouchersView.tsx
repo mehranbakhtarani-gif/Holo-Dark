@@ -40,6 +40,8 @@ import {
   roundCurrency,
 } from '../lib/currency';
 import { fuzzyFilterAndRank } from '../lib/fuzzySearch';
+import { sumIrr, toExactIrr } from '../lib/moneyMath';
+import { useDebouncedValue } from '../hooks/useDebouncedValue';
 import { detectVoucherAnomalies } from '../lib/smartIntelligence';
 import { localParseVoucher } from '../lib/localSmallLlm';
 import { SmartSearchCombobox, SmartSearchOption } from './SmartSearchCombobox';
@@ -352,8 +354,10 @@ export const VouchersView: React.FC<{ initialIntent?: string; clearIntent?: () =
     [vouchers, statusFilter]
   );
 
+  const debouncedSearch = useDebouncedValue(search, 90);
+
   const sortedVouchers = useMemo(() => {
-    const ranked = fuzzyFilterAndRank(statusScopedVouchers, search, (v) => [
+    const ranked = fuzzyFilterAndRank(statusScopedVouchers, debouncedSearch, (v) => [
       { text: String(v.voucherNumber), weight: 1.45 },
       { text: v.description, weight: 1.25 },
       { text: v.date, weight: 1.05 },
@@ -365,20 +369,21 @@ export const VouchersView: React.FC<{ initialIntent?: string; clearIntent?: () =
       },
     ]);
     return ranked.map((r) => r.item);
-  }, [statusScopedVouchers, search]);
+  }, [statusScopedVouchers, debouncedSearch]);
 
   const selectedVoucher: Voucher | undefined =
     vouchers.find((v) => v.id === selectedId) ?? sortedVouchers[0];
 
-  const totalDebit = lines.reduce((s, l) => s + (Number(l.debit) || 0), 0);
-  const totalCredit = lines.reduce((s, l) => s + (Number(l.credit) || 0), 0);
+  // Exact integer Rial totals (guarantees 100% alignment with validateVoucherPayload integer rounding)
+  const totalDebit = sumIrr(lines.map((l) => Math.max(0, toExactIrr(l.debit))));
+  const totalCredit = sumIrr(lines.map((l) => Math.max(0, toExactIrr(l.credit))));
   const balanceDiff = totalDebit - totalCredit;
   const foreignTotalDebit = roundCurrency(
-    lines.reduce((s, l) => s + (Number(l.foreignDebit) || 0), 0),
+    lines.reduce((s, l) => s + (Number.isFinite(Number(l.foreignDebit)) ? Math.max(0, Number(l.foreignDebit)) : 0), 0),
     fxDecimals
   );
   const foreignTotalCredit = roundCurrency(
-    lines.reduce((s, l) => s + (Number(l.foreignCredit) || 0), 0),
+    lines.reduce((s, l) => s + (Number.isFinite(Number(l.foreignCredit)) ? Math.max(0, Number(l.foreignCredit)) : 0), 0),
     fxDecimals
   );
   const foreignBalanceDiff = roundCurrency(foreignTotalDebit - foreignTotalCredit, fxDecimals);
@@ -399,14 +404,20 @@ export const VouchersView: React.FC<{ initialIntent?: string; clearIntent?: () =
     [showForm, date, lines, totalDebit, vouchers, accounts, editingVoucherId]
   );
 
-  // Auto-balance specific row (Holoo 9.6 F9 shortcut)
+  // Auto-balance specific row (Holoo 9.6 F9 shortcut) — uses functional state update to avoid stale closures
   const autoBalanceRow = (idx: number) => {
-    const otherDebit = lines.reduce((s, l, i) => (i === idx ? s : s + (Number(l.debit) || 0)), 0);
-    const otherCredit = lines.reduce((s, l, i) => (i === idx ? s : s + (Number(l.credit) || 0)), 0);
-    const diff = otherDebit - otherCredit;
-    if (diff === 0) return;
-    setLines((prev) =>
-      prev.map((r, i) => {
+    if (idx < 0) return;
+    setLines((prev) => {
+      if (idx >= prev.length) return prev;
+      const otherDebit = sumIrr(
+        prev.map((l, i) => (i === idx ? 0 : Math.max(0, toExactIrr(l.debit))))
+      );
+      const otherCredit = sumIrr(
+        prev.map((l, i) => (i === idx ? 0 : Math.max(0, toExactIrr(l.credit))))
+      );
+      const diff = otherDebit - otherCredit;
+      if (diff === 0) return prev;
+      return prev.map((r, i) => {
         if (i !== idx) return r;
         const nextDebit = diff < 0 ? Math.abs(diff) : 0;
         const nextCredit = diff > 0 ? diff : 0;
@@ -421,27 +432,41 @@ export const VouchersView: React.FC<{ initialIntent?: string; clearIntent?: () =
               }
             : {}),
         };
-      })
-    );
+      });
+    });
   };
 
   const appendBalancedLine = () => {
-    setLines((prev) => [
-      ...prev,
-      {
-        accountCode: '10202',
-        accountTitle: 'بانک سامان — حساب عملیاتی و ارزی',
-        description: description.trim(),
-        debit: balanceDiff < 0 ? Math.abs(balanceDiff) : 0,
-        credit: balanceDiff > 0 ? balanceDiff : 0,
-        ...(isFxMode
-          ? {
-              foreignDebit: foreignBalanceDiff < 0 ? Math.abs(foreignBalanceDiff) : 0,
-              foreignCredit: foreignBalanceDiff > 0 ? foreignBalanceDiff : 0,
-            }
-          : {}),
-      },
-    ]);
+    setLines((prev) => {
+      const curD = sumIrr(prev.map((l) => Math.max(0, toExactIrr(l.debit))));
+      const curC = sumIrr(prev.map((l) => Math.max(0, toExactIrr(l.credit))));
+      const diff = curD - curC;
+      const curFxD = roundCurrency(
+        prev.reduce((s, l) => s + (Number.isFinite(Number(l.foreignDebit)) ? Math.max(0, Number(l.foreignDebit)) : 0), 0),
+        fxDecimals
+      );
+      const curFxC = roundCurrency(
+        prev.reduce((s, l) => s + (Number.isFinite(Number(l.foreignCredit)) ? Math.max(0, Number(l.foreignCredit)) : 0), 0),
+        fxDecimals
+      );
+      const fxDiff = roundCurrency(curFxD - curFxC, fxDecimals);
+      return [
+        ...prev,
+        {
+          accountCode: '10202',
+          accountTitle: 'بانک سامان — حساب عملیاتی و ارزی',
+          description: description.trim(),
+          debit: diff < 0 ? Math.abs(diff) : 0,
+          credit: diff > 0 ? diff : 0,
+          ...(isFxMode
+            ? {
+                foreignDebit: fxDiff < 0 ? Math.abs(fxDiff) : 0,
+                foreignCredit: fxDiff > 0 ? fxDiff : 0,
+              }
+            : {}),
+        },
+      ];
+    });
   };
 
   // Holoo 9.6 Form-level Keyboard Shortcuts (Insert = add line, F9 = auto balance last line)
@@ -570,34 +595,38 @@ export const VouchersView: React.FC<{ initialIntent?: string; clearIntent?: () =
       ? { currencyCode: normalizeCurrencyCode(currencyCode), exchangeRate }
       : { currencyCode: BASE_CURRENCY_CODE, exchangeRate: 1 };
 
-    if (editingVoucherId) {
-      await updateVoucher(editingVoucherId, {
-        date,
-        description,
-        voucherType,
-        status,
-        lines: cleanLines,
-        ...fxPayload,
-      });
-      setSelectedId(editingVoucherId);
-    } else {
-      const created = await createVoucher({
-        date,
-        description,
-        voucherType,
-        status,
-        lines: cleanLines,
-        ...(isFxMode ? fxPayload : {}),
-      });
-      setSelectedId(created.id);
-    }
+    try {
+      if (editingVoucherId) {
+        await updateVoucher(editingVoucherId, {
+          date,
+          description,
+          voucherType,
+          status,
+          lines: cleanLines,
+          ...fxPayload,
+        });
+        setSelectedId(editingVoucherId);
+      } else {
+        const created = await createVoucher({
+          date,
+          description,
+          voucherType,
+          status,
+          lines: cleanLines,
+          ...(isFxMode ? fxPayload : {}),
+        });
+        setSelectedId(created.id);
+      }
 
-    if (saveAndNew) {
-      resetComposer('general');
-      setAiPrompt('');
-    } else {
-      setShowForm(false);
-      setEditingVoucherId(null);
+      if (saveAndNew) {
+        resetComposer('general');
+        setAiPrompt('');
+      } else {
+        setShowForm(false);
+        setEditingVoucherId(null);
+      }
+    } catch (err) {
+      showToast(err instanceof Error ? err.message : 'خطا در ثبت سند حسابداری؛ لطفاً آرتیکل‌ها را بررسی کنید.');
     }
   };
 

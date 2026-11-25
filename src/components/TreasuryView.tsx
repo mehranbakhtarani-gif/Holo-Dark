@@ -26,6 +26,7 @@ import {
 } from '../lib/format';
 import { addDaysToShamsi, diffShamsiDays, useChequeAlertPreferences } from '../lib/chequeAlerts';
 import { fuzzyFilterAndRank } from '../lib/fuzzySearch';
+import { useDebouncedValue } from '../hooks/useDebouncedValue';
 import { numberToPersianWords } from '../lib/enterpriseAccounting';
 import {
   buildSmsUrl,
@@ -189,12 +190,13 @@ export const TreasuryView: React.FC<TreasuryViewProps> = ({ initialIntent, clear
   const [scanningSlipOcr, setScanningSlipOcr] = useState(false);
 
   const matchPartyByName = (hint?: string) => {
-    if (!hint) return '';
-    const q = hint.trim().toLowerCase();
-    const found = parties.find(
-      (p) => p.name.toLowerCase().includes(q) || q.includes(p.name.toLowerCase())
-    );
-    return found?.id || '';
+    if (!hint || !hint.trim()) return '';
+    const ranked = fuzzyFilterAndRank(parties, hint, (p) => [
+      { text: p.name, weight: 1.4 },
+      { text: p.code, weight: 1.2 },
+      { text: p.nationalId, weight: 1.0 },
+    ]);
+    return ranked[0]?.item.id || '';
   };
 
   const handleOcrScanCheque = (file: File) => {
@@ -435,8 +437,10 @@ export const TreasuryView: React.FC<TreasuryViewProps> = ({ initialIntent, clear
     [cheques, dirFilter, statusFilter]
   );
 
+  const debouncedChequeSearch = useDebouncedValue(chequeSearch, 90);
+
   const filteredCheques = useMemo(() => {
-    const ranked = fuzzyFilterAndRank(scopedCheques, chequeSearch, (c) => [
+    const ranked = fuzzyFilterAndRank(scopedCheques, debouncedChequeSearch, (c) => [
       { text: c.sayadiId, weight: 1.45 },
       { text: c.serial, weight: 1.3 },
       { text: c.partyName, weight: 1.25 },
@@ -447,7 +451,7 @@ export const TreasuryView: React.FC<TreasuryViewProps> = ({ initialIntent, clear
       { text: c.notes, weight: 0.8 },
     ]);
     return ranked.map((r) => r.item);
-  }, [scopedCheques, chequeSearch]);
+  }, [scopedCheques, debouncedChequeSearch]);
 
   const handleCreateCheque = async (e: React.FormEvent) => {
     e.preventDefault();

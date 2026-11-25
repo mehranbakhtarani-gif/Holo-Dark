@@ -54,7 +54,9 @@ import {
   numberToPersianWords,
   toPersianDigits,
 } from '../lib/format';
-import { fuzzyFilterAndRank } from '../lib/fuzzySearch';
+import { fuzzyFilterAndRank, normalizeFuzzyText } from '../lib/fuzzySearch';
+import { mulQtyByIrr, percentOfIrr, toExactIrr } from '../lib/moneyMath';
+import { useDebouncedValue } from '../hooks/useDebouncedValue';
 import { localParseInvoice } from '../lib/localSmallLlm';
 import {
   BASE_CURRENCY_CODE,
@@ -421,18 +423,28 @@ export const InvoicesView: React.FC<{ initialIntent?: string; clearIntent?: () =
     showToast(`سطح قیمت فاکتور به «${PRICE_TIER_COLUMN_LABELS[tier]}» به‌روزرسانی شد.`);
   };
 
-  // Holoo 9.6 Barcode Scanner Handler (matches EAN-13 barcode or SKU)
+  // Holoo 9.6 Barcode Scanner Handler (matches EAN-13 barcode, SKU, or fuzzy product name with Persian digit normalization)
   const handleBarcodeScanSubmit = () => {
-    const q = barcodeScanInput.trim().toLowerCase();
+    const q = normalizeFuzzyText(barcodeScanInput);
     if (!q) return;
-    const matched = products.find((p) => {
+    let matched = products.find((p) => {
       const meta = productMetaMap[p.id] || productMetaMap[p.sku];
-      return (
-        p.sku.toLowerCase() === q ||
-        (meta?.barcode && meta.barcode.toLowerCase() === q) ||
-        p.sku.toLowerCase().includes(q)
-      );
+      const normSku = normalizeFuzzyText(p.sku);
+      const normBarcode = meta?.barcode ? normalizeFuzzyText(meta.barcode) : '';
+      return normSku === q || (normBarcode && normBarcode === q) || normSku.includes(q);
     });
+    if (!matched) {
+      const ranked = fuzzyFilterAndRank(products, barcodeScanInput, (p) => {
+        const meta = productMetaMap[p.id] || productMetaMap[p.sku];
+        return [
+          { text: p.sku, weight: 1.45 },
+          { text: meta?.barcode, weight: 1.45 },
+          { text: p.name, weight: 1.2 },
+          { text: p.lotNumber, weight: 1.0 },
+        ];
+      });
+      matched = ranked[0]?.item;
+    }
     if (!matched) {
       showToast(`کالایی با بارکد یا کد «${barcodeScanInput}» در انبار یافت نشد.`);
       return;
@@ -601,19 +613,24 @@ export const InvoicesView: React.FC<{ initialIntent?: string; clearIntent?: () =
     }
   };
 
-  // Exact integer Rial computation alongside foreign-currency equivalents (zero rounding drift)
+  // Exact integer Rial computation alongside foreign-currency equivalents (zero floating-point drift & NaN-safe)
   const computedItems: InvoiceItem[] = useMemo(() => {
-    const effRate = isFxMode ? Math.max(1, exchangeRate) : 1;
+    const effRate = isFxMode ? Math.max(1, Number.isFinite(exchangeRate) ? exchangeRate : 1) : 1;
     return draftItems
       .map((di): InvoiceItem | null => {
         const prod = products.find((p) => p.id === di.productId);
         if (!prod) return null;
-        const safeQty = Math.round(Math.max(0.01, di.quantity) * 100) / 100;
+        const rawQty = Number.isFinite(di.quantity) ? di.quantity : 0;
+        const rawUnitPrice = Number.isFinite(di.unitPrice) ? di.unitPrice : 0;
+        const rawDiscount = Number.isFinite(di.discount) ? di.discount : 0;
+        const rawCartons = Number.isFinite(di.cartonCount) ? di.cartonCount : 0;
+        const rawBobbins = Number.isFinite(di.bobbinCount) ? di.bobbinCount : 0;
+        const safeQty = Math.round(Math.max(0.01, rawQty) * 100) / 100;
 
         if (isFxMode) {
-          const fUnit = roundCurrency(Math.max(0, di.unitPrice), fxDecimals);
+          const fUnit = roundCurrency(Math.max(0, rawUnitPrice), fxDecimals);
           const fGross = roundCurrency(safeQty * fUnit, fxDecimals);
-          const fDisc = Math.min(fGross, roundCurrency(Math.max(0, di.discount), fxDecimals));
+          const fDisc = Math.min(fGross, roundCurrency(Math.max(0, rawDiscount), fxDecimals));
           const fNet = roundCurrency(Math.max(0, fGross - fDisc), fxDecimals);
           const fVat =
             invoiceType !== 'waste' && applyVat && !prod.vatExempt
@@ -639,11 +656,11 @@ export const InvoicesView: React.FC<{ initialIntent?: string; clearIntent?: () =
             quantity: safeQty,
             ...(prod.secondaryUnit ? { secondaryUnit: prod.secondaryUnit } : {}),
             ...(prod.kgPerCarton ? { kgPerCarton: prod.kgPerCarton } : {}),
-            ...(di.cartonCount > 0
-              ? { cartonCount: Math.round(di.cartonCount * 100) / 100 }
+            ...(rawCartons > 0
+              ? { cartonCount: Math.round(rawCartons * 100) / 100 }
               : {}),
             ...(prod.bobbinUnit ? { bobbinUnit: prod.bobbinUnit } : {}),
-            ...(di.bobbinCount > 0 ? { bobbinCount: Math.round(di.bobbinCount) } : {}),
+            ...(rawBobbins > 0 ? { bobbinCount: Math.round(rawBobbins) } : {}),
             ...(di.lotCode || prod.lotNumber ? { lotNumber: di.lotCode || prod.lotNumber } : {}),
             unitPrice: irrUnit,
             discount: irrDisc,
@@ -656,11 +673,12 @@ export const InvoicesView: React.FC<{ initialIntent?: string; clearIntent?: () =
           };
         }
 
-        const gross = Math.round(safeQty * Math.max(0, di.unitPrice));
-        const safeDiscount = Math.min(gross, Math.round(Math.max(0, di.discount)));
+        const safeUnitIrr = Math.max(0, toExactIrr(rawUnitPrice));
+        const gross = mulQtyByIrr(safeQty, safeUnitIrr);
+        const safeDiscount = Math.min(gross, Math.max(0, toExactIrr(rawDiscount)));
         const net = Math.max(0, gross - safeDiscount);
         const vat =
-          invoiceType !== 'waste' && applyVat && !prod.vatExempt ? Math.round(net * 0.1) : 0;
+          invoiceType !== 'waste' && applyVat && !prod.vatExempt ? percentOfIrr(net, 10) : 0;
         return {
           productId: prod.id,
           sku: prod.sku,
@@ -669,13 +687,13 @@ export const InvoicesView: React.FC<{ initialIntent?: string; clearIntent?: () =
           quantity: safeQty,
           ...(prod.secondaryUnit ? { secondaryUnit: prod.secondaryUnit } : {}),
           ...(prod.kgPerCarton ? { kgPerCarton: prod.kgPerCarton } : {}),
-          ...(di.cartonCount > 0
-            ? { cartonCount: Math.round(di.cartonCount * 100) / 100 }
+          ...(rawCartons > 0
+            ? { cartonCount: Math.round(rawCartons * 100) / 100 }
             : {}),
           ...(prod.bobbinUnit ? { bobbinUnit: prod.bobbinUnit } : {}),
-          ...(di.bobbinCount > 0 ? { bobbinCount: Math.round(di.bobbinCount) } : {}),
+          ...(rawBobbins > 0 ? { bobbinCount: Math.round(rawBobbins) } : {}),
           ...(di.lotCode || prod.lotNumber ? { lotNumber: di.lotCode || prod.lotNumber } : {}),
-          unitPrice: Math.round(Math.max(0, di.unitPrice)),
+          unitPrice: safeUnitIrr,
           discount: safeDiscount,
           vatAmount: vat,
           lineTotal: net + vat,
@@ -691,7 +709,7 @@ export const InvoicesView: React.FC<{ initialIntent?: string; clearIntent?: () =
   );
   const totalDiscount = computedItems.reduce((s, i) => s + i.discount, 0);
   const vatTotal = computedItems.reduce((s, i) => s + i.vatAmount, 0);
-  const grandTotal = subtotal - totalDiscount + vatTotal;
+  const grandTotal = Math.max(0, subtotal - totalDiscount + vatTotal);
 
   const foreignSubtotal = isFxMode
     ? roundCurrency(
@@ -719,10 +737,13 @@ export const InvoicesView: React.FC<{ initialIntent?: string; clearIntent?: () =
     ? roundCurrency(foreignSubtotal - foreignDiscountTotal + foreignVatTotal, fxDecimals)
     : 0;
 
-  const totalWeightKg = computedItems.reduce((s, i) => s + i.quantity, 0);
-  const totalCartons = computedItems.reduce((s, i) => s + (i.cartonCount ?? 0), 0);
+  const totalWeightKg = Math.round(computedItems.reduce((s, i) => s + i.quantity, 0) * 100) / 100;
+  const totalCartons = Math.round(computedItems.reduce((s, i) => s + (i.cartonCount ?? 0), 0) * 100) / 100;
   const totalBobbins = computedItems.reduce((s, i) => s + (i.bobbinCount ?? 0), 0);
-  const totalPaid = invoiceType === 'waste' ? 0 : paidCash + paidBank + paidCheque;
+  const safePaidCash = Math.max(0, toExactIrr(paidCash));
+  const safePaidBank = Math.max(0, toExactIrr(paidBank));
+  const safePaidCheque = Math.max(0, toExactIrr(paidCheque));
+  const totalPaid = invoiceType === 'waste' ? 0 : safePaidCash + safePaidBank + safePaidCheque;
   const creditAmount = invoiceType === 'waste' ? 0 : Math.max(0, grandTotal - totalPaid);
 
   // Automatic Volume Tiered Discount match
@@ -816,8 +837,10 @@ export const InvoicesView: React.FC<{ initialIntent?: string; clearIntent?: () =
     [invoices, filterType]
   );
 
+  const debouncedSearch = useDebouncedValue(search, 90);
+
   const filteredInvoices = useMemo(() => {
-    const ranked = fuzzyFilterAndRank(typeScopedInvoices, search, (inv) => [
+    const ranked = fuzzyFilterAndRank(typeScopedInvoices, debouncedSearch, (inv) => [
       { text: inv.invoiceNumber, weight: 1.4 },
       { text: inv.partyName, weight: 1.25 },
       { text: inv.taxSerial, weight: 1.15 },
@@ -831,7 +854,7 @@ export const InvoicesView: React.FC<{ initialIntent?: string; clearIntent?: () =
       },
     ]);
     return ranked.map((r) => r.item);
-  }, [typeScopedInvoices, search]);
+  }, [typeScopedInvoices, debouncedSearch]);
 
   const handleProductChange = (idx: number, newProdId: string) => {
     const prod = products.find((p) => p.id === newProdId);
@@ -941,98 +964,110 @@ export const InvoicesView: React.FC<{ initialIntent?: string; clearIntent?: () =
             : invoiceType === 'waste'
               ? 'W'
               : 'R';
-    const seq = 100 + invoices.length + 1;
-    const invoiceNumber = `${prefix}-${profile.fiscalYear}-${seq}`;
+    const numberPrefix = `${prefix}-${profile.fiscalYear}-`;
+    const maxExistingSeq = invoices.reduce((maxVal, inv) => {
+      if (inv.invoiceNumber.startsWith(numberPrefix)) {
+        const tail = Number(inv.invoiceNumber.slice(numberPrefix.length));
+        if (Number.isFinite(tail) && tail > maxVal) return tail;
+      }
+      return maxVal;
+    }, 100);
+    const seq = Math.max(101, maxExistingSeq + 1);
+    const invoiceNumber = `${numberPrefix}${seq}`;
     const taxId22 = generateMoadianTaxId22(invoiceNumber, date, profile.economicCode);
     const taxSerial = taxId22;
 
     const selectedBroker = brokerParties.find((b) => b.id === intermediaryId);
 
-    const createdInvoice = await createInvoice({
-      invoiceNumber,
-      taxSerial,
-      invoiceType,
-      date,
-      partyId: party.id,
-      partyName: invoiceType === 'waste' ? 'انبار ضایعات داخلی شرکت' : party.name,
-      warehouse,
-      costCenterId: costCenterId || undefined,
-      intermediaryId: selectedBroker?.id,
-      intermediaryName: selectedBroker?.name,
-      ...(isFxMode
-        ? {
-            currencyCode: normalizeCurrencyCode(currencyCode),
-            exchangeRate: Math.max(1, Math.round(exchangeRate)),
-            foreignSubtotal,
-            foreignDiscount: foreignDiscountTotal,
-            foreignVatAmount: foreignVatTotal,
-            foreignGrandTotal,
-          }
-        : {}),
-      subtotal,
-      discount: totalDiscount,
-      vatAmount: vatTotal,
-      grandTotal,
-      paidCash: invoiceType === 'waste' ? 0 : paidCash,
-      paidBank: invoiceType === 'waste' ? 0 : paidBank,
-      paidCheque: invoiceType === 'waste' ? 0 : paidCheque,
-      creditAmount,
-      status:
-        invoiceType === 'waste' || (creditAmount === 0 && invoiceType !== 'proforma')
-          ? 'settled'
-          : 'issued',
-      items: computedItems,
-    });
-
-    // Deduct dye-lot stock for selected batches on sale / waste
-    if (invoiceType === 'sale' || invoiceType === 'waste') {
-      draftItems.forEach((row) => {
-        if (row.lotCode && row.productId && row.quantity > 0) {
-          deductDyeLotStock(row.lotCode, row.productId, row.quantity);
-        }
+    try {
+      const createdInvoice = await createInvoice({
+        invoiceNumber,
+        taxSerial,
+        invoiceType,
+        date,
+        partyId: party.id,
+        partyName: invoiceType === 'waste' ? 'انبار ضایعات داخلی شرکت' : party.name,
+        warehouse,
+        costCenterId: costCenterId || undefined,
+        intermediaryId: selectedBroker?.id,
+        intermediaryName: selectedBroker?.name,
+        ...(isFxMode
+          ? {
+              currencyCode: normalizeCurrencyCode(currencyCode),
+              exchangeRate: Math.max(1, Math.round(exchangeRate)),
+              foreignSubtotal,
+              foreignDiscount: foreignDiscountTotal,
+              foreignVatAmount: foreignVatTotal,
+              foreignGrandTotal,
+            }
+          : {}),
+        subtotal,
+        discount: totalDiscount,
+        vatAmount: vatTotal,
+        grandTotal,
+        paidCash: invoiceType === 'waste' ? 0 : safePaidCash,
+        paidBank: invoiceType === 'waste' ? 0 : safePaidBank,
+        paidCheque: invoiceType === 'waste' ? 0 : safePaidCheque,
+        creditAmount,
+        status:
+          invoiceType === 'waste' || (creditAmount === 0 && invoiceType !== 'proforma')
+            ? 'settled'
+            : 'issued',
+        items: computedItems,
       });
-    }
 
-    // Record Moadian 22-char Tax ID & optional corrective linkage
-    if (createdInvoice?.id) {
-      if (correctiveRefInvoice) {
-        const parentTaxId =
-          moadianLinks[correctiveRefInvoice.id]?.taxId22 ||
-          generateMoadianTaxId22(
-            correctiveRefInvoice.invoiceNumber,
-            correctiveRefInvoice.date,
-            profile.economicCode
-          );
-        upsertMoadianMeta(createdInvoice.id, {
-          taxId22,
-          submissionStatus: 'ready',
-          subject: 'corrective',
-          referenceInvoiceId: correctiveRefInvoice.id,
-          referenceTaxId22: parentTaxId,
-        });
-        upsertMoadianMeta(correctiveRefInvoice.id, {
-          ...(moadianLinks[correctiveRefInvoice.id] || {
-            taxId22: parentTaxId,
-            subject: 'original' as const,
-          }),
-          submissionStatus: 'corrected',
-        });
-      } else {
-        upsertMoadianMeta(createdInvoice.id, {
-          taxId22,
-          submissionStatus: 'ready',
-          subject: invoiceType === 'sale_return' ? 'return' : 'original',
+      // Deduct dye-lot stock for selected batches on sale / waste
+      if (invoiceType === 'sale' || invoiceType === 'waste') {
+        draftItems.forEach((row) => {
+          if (row.lotCode && row.productId && row.quantity > 0) {
+            deductDyeLotStock(row.lotCode, row.productId, row.quantity);
+          }
         });
       }
-    }
 
-    setCorrectiveRefInvoice(null);
-    setShowSettlementModal(false);
-    setShowComposer(false);
-    setIntermediaryId('');
-    setPaidCash(0);
-    setPaidBank(0);
-    setPaidCheque(0);
+      // Record Moadian 22-char Tax ID & optional corrective linkage
+      if (createdInvoice?.id) {
+        if (correctiveRefInvoice) {
+          const parentTaxId =
+            moadianLinks[correctiveRefInvoice.id]?.taxId22 ||
+            generateMoadianTaxId22(
+              correctiveRefInvoice.invoiceNumber,
+              correctiveRefInvoice.date,
+              profile.economicCode
+            );
+          upsertMoadianMeta(createdInvoice.id, {
+            taxId22,
+            submissionStatus: 'ready',
+            subject: 'corrective',
+            referenceInvoiceId: correctiveRefInvoice.id,
+            referenceTaxId22: parentTaxId,
+          });
+          upsertMoadianMeta(correctiveRefInvoice.id, {
+            ...(moadianLinks[correctiveRefInvoice.id] || {
+              taxId22: parentTaxId,
+              subject: 'original' as const,
+            }),
+            submissionStatus: 'corrected',
+          });
+        } else {
+          upsertMoadianMeta(createdInvoice.id, {
+            taxId22,
+            submissionStatus: 'ready',
+            subject: invoiceType === 'sale_return' ? 'return' : 'original',
+          });
+        }
+      }
+
+      setCorrectiveRefInvoice(null);
+      setShowSettlementModal(false);
+      setShowComposer(false);
+      setIntermediaryId('');
+      setPaidCash(0);
+      setPaidBank(0);
+      setPaidCheque(0);
+    } catch (err) {
+      showToast(err instanceof Error ? err.message : 'خطا در ثبت فاکتور؛ لطفاً مقادیر را بررسی کنید.');
+    }
   };
 
   const handleCancelInvoiceWithMoadian = async (inv: Invoice) => {
