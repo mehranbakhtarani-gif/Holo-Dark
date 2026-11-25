@@ -715,17 +715,19 @@ service cloud.firestore {
         && incoming().sayadiId.matches('^[0-9]{16}$')
         && incoming().createdAt == request.time
         && incoming().updatedAt == request.time;
-      allow update: if isValidId(chequeId) && isVerified() && isValidCheque(incoming()) && (
+      allow update: if isValidId(chequeId) && isVerified()
+        && isValidCheque(incoming())
         && (incoming().sayadiId.matches('^[0-9]{16}$') || incoming().sayadiId == existing().sayadiId)
-        isAdmin() || (
-          existing().ownerId == request.auth.uid
-          && existing().status != 'cancelled'
-          && incoming().ownerId == existing().ownerId
-          && incoming().createdAt == existing().createdAt
-          && incoming().updatedAt == request.time
-          && incoming().diff(existing()).affectedKeys().hasOnly(['status', 'bankName', 'branch', 'dueDate', 'notes', '_version', 'updatedByDevice', 'updatedAt'])
-        )
-      );
+        && (
+          isAdmin() || (
+            existing().ownerId == request.auth.uid
+            && existing().status != 'cancelled'
+            && incoming().ownerId == existing().ownerId
+            && incoming().createdAt == existing().createdAt
+            && incoming().updatedAt == request.time
+            && incoming().diff(existing()).affectedKeys().hasOnly(['status', 'bankName', 'branch', 'dueDate', 'notes', '_version', 'updatedByDevice', 'updatedAt'])
+          )
+        );
       allow delete: if isValidId(chequeId) && isVerified() && (existing().ownerId == request.auth.uid || isAdmin());
     }
 
