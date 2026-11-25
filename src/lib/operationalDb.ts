@@ -315,6 +315,68 @@ export async function commitInvoiceOperationalTx(payload: {
 }
 
 /**
+ * Commits an inventory stocktaking adjustment and its ledger voucher atomically.
+ * No in-memory state should be updated unless this transaction completes.
+ */
+export async function commitInventoryAdjustmentOperationalTx(payload: {
+  updatedProducts: Product[];
+  voucher?: Voucher;
+}): Promise<boolean> {
+  if (!isIndexedDbAvailable()) return false;
+  const db = await openOperationalDb();
+  const committedAt = new Date().toISOString();
+
+  return new Promise((resolve, reject) => {
+    let tx: IDBTransaction | null = null;
+    try {
+      tx = db.transaction(['meta', 'products', 'vouchers'], 'readwrite');
+      const productStore = tx.objectStore('products');
+      for (const product of payload.updatedProducts) {
+        productStore.put(product);
+      }
+      if (payload.voucher) {
+        tx.objectStore('vouchers').put(payload.voucher);
+      }
+
+      const metaStore = tx.objectStore('meta');
+      const revisionRequest = metaStore.get('workspace_meta');
+      revisionRequest.onsuccess = () => {
+        const existing = revisionRequest.result as { localRevision?: number } | undefined;
+        metaStore.put({
+          key: 'workspace_meta',
+          localRevision: (existing?.localRevision ?? 0) + 1,
+          updatedAt: committedAt,
+          schemaVersion: OP_DB_VERSION,
+        });
+      };
+
+      tx.oncomplete = () => {
+        db.close();
+        resolve(true);
+      };
+      tx.onerror = () => {
+        db.close();
+        reject(tx?.error ?? new Error('Atomic inventory adjustment transaction failed'));
+      };
+      tx.onabort = () => {
+        db.close();
+        reject(tx?.error ?? new Error('Atomic inventory adjustment transaction aborted'));
+      };
+    } catch (err) {
+      if (tx) {
+        try {
+          tx.abort();
+        } catch {
+          // Ignore an already completed or aborted transaction.
+        }
+      }
+      db.close();
+      reject(err);
+    }
+  });
+}
+
+/**
  * Hydrates the full operational workspace from IndexedDB on application boot.
  * Returns null if the operational database has not been seeded yet.
  */
