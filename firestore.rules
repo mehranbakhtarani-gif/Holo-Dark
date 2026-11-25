@@ -210,6 +210,10 @@ service cloud.firestore {
         && isOptionalString(data, 'chequeBankName', 100)
         && isOptionalString(data, 'chequeDueDate', 20)
         && (!('chequeSayadiId' in data) || (data.chequeSayadiId is string && data.chequeSayadiId.matches('^[0-9]{16}$')))
+        && (data.paidCheque == 0 || data.invoiceType in ['proforma', 'waste'] || (
+          'chequeSayadiId' in data && 'chequeSerial' in data
+          && 'chequeBankName' in data && 'chequeDueDate' in data
+        ))
         && data.status in ['issued', 'settled', 'cancelled']
         && isOptionalString(data, 'voucherId', 128)
         && data.items is list && data.items.size() >= 1 && data.items.size() <= 100 && data.items[0] is map
