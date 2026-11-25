@@ -387,6 +387,80 @@ export async function commitChequeOperationalTx(payload: {
 }
 
 /**
+ * Atomically persists a local cheque status transition and its resulting voucher.
+ * The expected status is checked in IndexedDB to reject stale multi-tab actions.
+ */
+export async function commitChequeStatusOperationalTx(payload: {
+  chequeId: string;
+  expectedStatus: Cheque['status'];
+  updatedCheque: Cheque;
+  voucher?: Voucher;
+}): Promise<boolean> {
+  if (!isIndexedDbAvailable()) return false;
+  const db = await openOperationalDb();
+  const committedAt = new Date().toISOString();
+
+  return new Promise((resolve, reject) => {
+    let tx: IDBTransaction | null = null;
+    let conflictFound = false;
+    try {
+      tx = db.transaction(['meta', 'cheques', 'vouchers'], 'readwrite');
+      const chequeStore = tx.objectStore('cheques');
+      const readRequest = chequeStore.get(payload.chequeId);
+      readRequest.onsuccess = () => {
+        const existing = readRequest.result as Cheque | undefined;
+        if (!existing || existing.status !== payload.expectedStatus) {
+          conflictFound = true;
+          tx?.abort();
+          return;
+        }
+        chequeStore.put(payload.updatedCheque);
+        if (payload.voucher) tx?.objectStore('vouchers').put(payload.voucher);
+
+        const metaStore = tx!.objectStore('meta');
+        const revisionRequest = metaStore.get('workspace_meta');
+        revisionRequest.onsuccess = () => {
+          const meta = revisionRequest.result as { localRevision?: number } | undefined;
+          metaStore.put({
+            key: 'workspace_meta',
+            localRevision: (meta?.localRevision ?? 0) + 1,
+            updatedAt: committedAt,
+            schemaVersion: OP_DB_VERSION,
+          });
+        };
+      };
+
+      tx.oncomplete = () => {
+        db.close();
+        resolve(true);
+      };
+      tx.onerror = () => {
+        db.close();
+        reject(tx?.error ?? new Error('Atomic cheque status IndexedDB commit failed'));
+      };
+      tx.onabort = () => {
+        db.close();
+        reject(
+          conflictFound
+            ? new Error('وضعیت چک در زبانه یا دستگاه دیگری تغییر کرده است؛ اطلاعات را تازه‌سازی کنید.')
+            : tx?.error ?? new Error('Atomic cheque status IndexedDB transaction aborted')
+        );
+      };
+    } catch (err) {
+      if (tx) {
+        try {
+          tx.abort();
+        } catch {
+          // Ignore an already completed or aborted transaction.
+        }
+      }
+      db.close();
+      reject(err);
+    }
+  });
+}
+
+/**
  * Commits an inventory stocktaking adjustment and its ledger voucher atomically.
  * No in-memory state should be updated unless this transaction completes.
  */
