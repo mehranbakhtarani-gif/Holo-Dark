@@ -12,6 +12,7 @@ import {
   computeTrialBalance,
   computeVatSummaryReport,
   computeVoucherIntegrityHash,
+  isValidShamsiDate,
   filterVouchersForReport,
   planAtomicInvoiceCommit,
   planChequeStatusTransition,
@@ -45,6 +46,43 @@ const tests: TestCase[] = [];
 function test(name: string, fn: () => void | Promise<void>) {
   tests.push({ name, fn });
 }
+
+test('P0: Jalali date validation rejects Esfand 30 in common years and accepts it in leap years', () => {
+  assert.equal(isValidShamsiDate('1400/12/30'), false);
+  assert.equal(isValidShamsiDate('1403/12/30'), true);
+  assert.equal(isValidShamsiDate('1403/12/31'), false);
+  assert.equal(isValidShamsiDate('1403/06/31'), true);
+  assert.equal(isValidShamsiDate('1403/07/31'), false);
+});
+
+test('P0: Voucher validation rejects non-numeric amount strings instead of coercing them to zero', () => {
+  const seed = createHolooSeedData('p0_validation_test');
+  const debitAccount = seed.accounts.find((a) => a.code === '10101')!;
+  const creditAccount = seed.accounts.find((a) => a.code === '40101')!;
+  const base = {
+    date: '1403/12/30',
+    description: 'P0 validation test',
+    voucherType: 'general' as const,
+    lines: [
+      { accountCode: debitAccount.code, accountTitle: debitAccount.title, description: 'debit', debit: 'abc', credit: 0 },
+      { accountCode: creditAccount.code, accountTitle: creditAccount.title, description: 'credit', debit: 0, credit: 100 },
+    ],
+  };
+  const invalid = validateVoucherPayload({ payload: base as any, accounts: seed.accounts });
+  assert.equal(invalid.valid, false);
+  assert.ok(invalid.errors.some((error) => error.includes('مبلغ بدهکار یا بستانکار نامعتبر')));
+  const validPersianDigits = validateVoucherPayload({
+    payload: {
+      ...base,
+      lines: [
+        { accountCode: debitAccount.code, accountTitle: debitAccount.title, description: 'debit', debit: '۱۰۰', credit: 0 },
+        { accountCode: creditAccount.code, accountTitle: creditAccount.title, description: 'credit', debit: 0, credit: '۱۰۰' },
+      ],
+    } as any,
+    accounts: seed.accounts,
+  });
+  assert.equal(validPersianDigits.valid, true);
+});
 
 // ============================================================================
 // 1. ACCOUNTING ENGINE TESTS
