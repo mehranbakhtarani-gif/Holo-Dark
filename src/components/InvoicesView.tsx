@@ -25,6 +25,7 @@ import {
   X,
 } from 'lucide-react';
 import { useAccounting } from '../context/AccountingContext';
+import { isValidShamsiDate } from '../lib/accountingEngine';
 import { useWorkspaceExtensions } from '../context/WorkspaceExtensionsContext';
 import { Invoice, InvoiceItem, InvoiceType } from '../types/accounting';
 import { buildMoadianInvoiceJson, PRICING_TIER_LABELS } from '../lib/enterpriseAccounting';
@@ -200,6 +201,10 @@ export const InvoicesView: React.FC<{ initialIntent?: string; clearIntent?: () =
   const [paidCash, setPaidCash] = useState(0);
   const [paidBank, setPaidBank] = useState(0);
   const [paidCheque, setPaidCheque] = useState(0);
+  const [chequeSayadiId, setChequeSayadiId] = useState('');
+  const [chequeSerial, setChequeSerial] = useState('');
+  const [chequeBankName, setChequeBankName] = useState('بانک ملت');
+  const [chequeDueDate, setChequeDueDate] = useState('');
 
   const brokerParties = useMemo(
     () => parties.filter((p) => p.partyType === 'intermediary' || (p.commissionRate ?? 0) > 0),
@@ -277,6 +282,13 @@ export const InvoicesView: React.FC<{ initialIntent?: string; clearIntent?: () =
   const openComposerWithType = (type: InvoiceType) => {
     setCorrectiveRefInvoice(null);
     setInvoiceType(type);
+    setPaidCash(0);
+    setPaidBank(0);
+    setPaidCheque(0);
+    setChequeSayadiId('');
+    setChequeSerial('');
+    setChequeBankName('بانک ملت');
+    setChequeDueDate('');
     setApplyVat(type !== 'waste');
     setDraftItems((prev) =>
       prev.map((row) => {
@@ -316,6 +328,10 @@ export const InvoicesView: React.FC<{ initialIntent?: string; clearIntent?: () =
     setPaidCash(parentInv.paidCash);
     setPaidBank(parentInv.paidBank);
     setPaidCheque(parentInv.paidCheque);
+    setChequeSayadiId(parentInv.chequeSayadiId ?? '');
+    setChequeSerial(parentInv.chequeSerial ?? '');
+    setChequeBankName(parentInv.chequeBankName ?? 'بانک ملت');
+    setChequeDueDate(parentInv.chequeDueDate ?? '');
     setDraftItems(
       parentInv.items.map((it) => ({
         productId: it.productId,
@@ -489,6 +505,10 @@ export const InvoicesView: React.FC<{ initialIntent?: string; clearIntent?: () =
       paidCash,
       paidBank,
       paidCheque,
+      chequeSayadiId,
+      chequeSerial,
+      chequeBankName,
+      chequeDueDate,
       estimatedTotalIrr: grandTotal,
     };
     const next = [reserved, ...reservedInvoices].slice(0, 12);
@@ -515,6 +535,10 @@ export const InvoicesView: React.FC<{ initialIntent?: string; clearIntent?: () =
     setPaidCash(res.paidCash);
     setPaidBank(res.paidBank);
     setPaidCheque(res.paidCheque);
+    setChequeSayadiId(res.chequeSayadiId ?? '');
+    setChequeSerial(res.chequeSerial ?? '');
+    setChequeBankName(res.chequeBankName ?? 'بانک ملت');
+    setChequeDueDate(res.chequeDueDate ?? '');
     const remaining = reservedInvoices.filter((x) => x.id !== res.id);
     setReservedInvoicesSynced(remaining);
     setShowReservedDrawer(false);
@@ -1008,6 +1032,14 @@ export const InvoicesView: React.FC<{ initialIntent?: string; clearIntent?: () =
         paidCash: invoiceType === 'waste' ? 0 : safePaidCash,
         paidBank: invoiceType === 'waste' ? 0 : safePaidBank,
         paidCheque: invoiceType === 'waste' ? 0 : safePaidCheque,
+        ...(safePaidCheque > 0
+          ? {
+              chequeSayadiId,
+              chequeSerial,
+              chequeBankName,
+              chequeDueDate,
+            }
+          : {}),
         creditAmount,
         status:
           invoiceType === 'waste' || (creditAmount === 0 && invoiceType !== 'proforma')
@@ -1065,6 +1097,10 @@ export const InvoicesView: React.FC<{ initialIntent?: string; clearIntent?: () =
       setPaidCash(0);
       setPaidBank(0);
       setPaidCheque(0);
+      setChequeSayadiId('');
+      setChequeSerial('');
+      setChequeBankName('بانک ملت');
+      setChequeDueDate('');
     } catch (err) {
       showToast(err instanceof Error ? err.message : 'خطا در ثبت فاکتور؛ لطفاً مقادیر را بررسی کنید.');
     }
@@ -2190,6 +2226,54 @@ export const InvoicesView: React.FC<{ initialIntent?: string; clearIntent?: () =
                     />
                   </div>
                 </div>
+                {safePaidCheque > 0 && invoiceType !== 'proforma' && (
+                  <div className="mt-3 grid grid-cols-1 sm:grid-cols-2 gap-3 rounded-lg border border-amber-200 dark:border-amber-900 bg-amber-50/60 dark:bg-amber-950/20 p-3">
+                    <div className="sm:col-span-2 text-xs font-semibold text-amber-800 dark:text-amber-300">
+                      مشخصات چک واقعی — ثبت بدون شناسه صیادی معتبر مجاز نیست
+                    </div>
+                    <label className="block text-[11px] text-slate-600 dark:text-slate-300">
+                      شناسه صیادی ۱۶ رقمی
+                      <input
+                        value={chequeSayadiId}
+                        onChange={(event) => setChequeSayadiId(event.target.value)}
+                        inputMode="numeric"
+                        maxLength={24}
+                        placeholder="۱۶ رقم شناسه صیادی"
+                        className="mt-1 w-full rounded-lg border border-slate-200 dark:border-slate-700 bg-white dark:bg-slate-950 px-3 py-2 text-sm"
+                      />
+                    </label>
+                    <label className="block text-[11px] text-slate-600 dark:text-slate-300">
+                      شماره سریال چک
+                      <input
+                        value={chequeSerial}
+                        onChange={(event) => setChequeSerial(event.target.value)}
+                        maxLength={48}
+                        placeholder="شماره سریال"
+                        className="mt-1 w-full rounded-lg border border-slate-200 dark:border-slate-700 bg-white dark:bg-slate-950 px-3 py-2 text-sm"
+                      />
+                    </label>
+                    <label className="block text-[11px] text-slate-600 dark:text-slate-300">
+                      بانک صادرکننده
+                      <input
+                        value={chequeBankName}
+                        onChange={(event) => setChequeBankName(event.target.value)}
+                        maxLength={100}
+                        placeholder="نام بانک"
+                        className="mt-1 w-full rounded-lg border border-slate-200 dark:border-slate-700 bg-white dark:bg-slate-950 px-3 py-2 text-sm"
+                      />
+                    </label>
+                    <label className="block text-[11px] text-slate-600 dark:text-slate-300">
+                      تاریخ سررسید شمسی
+                      <input
+                        value={chequeDueDate}
+                        onChange={(event) => setChequeDueDate(event.target.value)}
+                        maxLength={10}
+                        placeholder="۱۴۰۵/۰۱/۳۱"
+                        className="mt-1 w-full rounded-lg border border-slate-200 dark:border-slate-700 bg-white dark:bg-slate-950 px-3 py-2 text-sm"
+                      />
+                    </label>
+                  </div>
+                )}
                 <div className="flex items-center gap-2">
                   <button
                     type="button"
@@ -2489,6 +2573,54 @@ export const InvoicesView: React.FC<{ initialIntent?: string; clearIntent?: () =
                     </div>
                   </div>
 
+                {safePaidCheque > 0 && invoiceType !== 'proforma' && (
+                  <div className="mt-3 grid grid-cols-1 sm:grid-cols-2 gap-3 rounded-lg border border-amber-200 dark:border-amber-900 bg-amber-50/60 dark:bg-amber-950/20 p-3">
+                    <div className="sm:col-span-2 text-xs font-semibold text-amber-800 dark:text-amber-300">
+                      مشخصات چک واقعی — ثبت بدون شناسه صیادی معتبر مجاز نیست
+                    </div>
+                    <label className="block text-[11px] text-slate-600 dark:text-slate-300">
+                      شناسه صیادی ۱۶ رقمی
+                      <input
+                        value={chequeSayadiId}
+                        onChange={(event) => setChequeSayadiId(event.target.value)}
+                        inputMode="numeric"
+                        maxLength={24}
+                        placeholder="۱۶ رقم شناسه صیادی"
+                        className="mt-1 w-full rounded-lg border border-slate-200 dark:border-slate-700 bg-white dark:bg-slate-950 px-3 py-2 text-sm"
+                      />
+                    </label>
+                    <label className="block text-[11px] text-slate-600 dark:text-slate-300">
+                      شماره سریال چک
+                      <input
+                        value={chequeSerial}
+                        onChange={(event) => setChequeSerial(event.target.value)}
+                        maxLength={48}
+                        placeholder="شماره سریال"
+                        className="mt-1 w-full rounded-lg border border-slate-200 dark:border-slate-700 bg-white dark:bg-slate-950 px-3 py-2 text-sm"
+                      />
+                    </label>
+                    <label className="block text-[11px] text-slate-600 dark:text-slate-300">
+                      بانک صادرکننده
+                      <input
+                        value={chequeBankName}
+                        onChange={(event) => setChequeBankName(event.target.value)}
+                        maxLength={100}
+                        placeholder="نام بانک"
+                        className="mt-1 w-full rounded-lg border border-slate-200 dark:border-slate-700 bg-white dark:bg-slate-950 px-3 py-2 text-sm"
+                      />
+                    </label>
+                    <label className="block text-[11px] text-slate-600 dark:text-slate-300">
+                      تاریخ سررسید شمسی
+                      <input
+                        value={chequeDueDate}
+                        onChange={(event) => setChequeDueDate(event.target.value)}
+                        maxLength={10}
+                        placeholder="۱۴۰۵/۰۱/۳۱"
+                        className="mt-1 w-full rounded-lg border border-slate-200 dark:border-slate-700 bg-white dark:bg-slate-950 px-3 py-2 text-sm"
+                      />
+                    </label>
+                  </div>
+                )}
                   <div className="flex items-center justify-end gap-2 pt-3 border-t border-slate-200 dark:border-slate-800">
                     <button
                       type="button"
