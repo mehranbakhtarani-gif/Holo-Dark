@@ -2316,7 +2316,6 @@ export function planAtomicInvoiceCommit(input: AtomicInvoicePlanInput): AtomicIn
         partyId: payload.partyId,
         partyName: payload.partyName,
         bankName: chequeBankName.slice(0, 100),
-        branch: 'ثبت از فاکتور',
         amount: Math.round(payload.paidCheque),
         issueDate: chequeIssueDate,
         dueDate: chequeDueDate,
