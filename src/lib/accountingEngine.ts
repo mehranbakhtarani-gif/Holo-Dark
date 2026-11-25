@@ -2285,7 +2285,7 @@ export function planAtomicInvoiceCommit(input: AtomicInvoicePlanInput): AtomicIn
           .replace(/[۰-۹]/g, (digit) => String(digit.charCodeAt(0) - 1776))
           .replace(/[٠-٩]/g, (digit) => String(digit.charCodeAt(0) - 1632));
       const sayadiId = normalizeSayadiDigits(payload.chequeSayadiId ?? '').replace(/\D/g, '');
-      const chequeDueDate = String(payload.chequeDueDate ?? '').trim();
+      const chequeDueDate = normalizeSayadiDigits(payload.chequeDueDate ?? '').trim().replace(/-/g, '/');
       const chequeSerial = String(payload.chequeSerial ?? '').trim();
       const chequeBankName = String(payload.chequeBankName ?? '').trim();
       if (!/^\d{16}$/.test(sayadiId)) {
@@ -2325,6 +2325,14 @@ export function planAtomicInvoiceCommit(input: AtomicInvoicePlanInput): AtomicIn
 
   const invoice: Invoice = {
     ...payload,
+    ...(cheque
+      ? {
+          chequeSayadiId: cheque.sayadiId,
+          chequeSerial: cheque.serial,
+          chequeBankName: cheque.bankName,
+          chequeDueDate: cheque.dueDate,
+        }
+      : {}),
     items: reconciledItems,
     id: invoiceId,
     ownerId,
