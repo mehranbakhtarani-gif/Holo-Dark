@@ -466,22 +466,32 @@ export const AccountingProvider: React.FC<{ children: React.ReactNode }> = ({ ch
     return () => unsub();
   }, []);
 
-  // Atomic multi-device sequential counter using Firestore Transaction so 3 simultaneous devices never collide
+  // Reserve a unique number per fiscal year. Authenticated cloud records must never
+  // fall back to a cache-derived number: offline numbering cannot be globally unique.
   const reserveNextVoucherNumber = useCallback(
-    async (fallbackMax: number): Promise<number> => {
+    async (fiscalYear: string, fallbackMax: number): Promise<number> => {
       if (!user) return fallbackMax + 1;
+      if (typeof navigator !== 'undefined' && !navigator.onLine) {
+        throw new Error('برای جلوگیری از شماره تکراری، ثبت سند در حالت آفلاین مجاز نیست. پس از اتصال اینترنت دوباره تلاش کنید.');
+      }
       const counterRef = doc(db, 'counters', user.uid);
       try {
-        const reserved = await runTransaction(db, async (tx) => {
+        return await runTransaction(db, async (tx) => {
           const snap = await tx.get(counterRef);
-          const currentMax = snap.exists()
-            ? Math.max(Number(snap.data().lastVoucherNumber) || 0, fallbackMax)
-            : fallbackMax;
-          const nextNum = currentMax + 1;
+          const data = snap.exists() ? snap.data() : {};
+          const yearCounters =
+            data.voucherNumbersByFiscalYear && typeof data.voucherNumbersByFiscalYear === 'object'
+              ? data.voucherNumbersByFiscalYear as Record<string, number>
+              : {};
+          const currentYearMax = Math.max(Number(yearCounters[fiscalYear]) || 0, fallbackMax);
+          const nextNum = currentYearMax + 1;
+          const globalMax = Math.max(Number(data.lastVoucherNumber) || 0, nextNum);
+          const nextYearCounters = { ...yearCounters, [fiscalYear]: nextNum };
           if (!snap.exists()) {
             tx.set(counterRef, {
               ownerId: user.uid,
-              lastVoucherNumber: nextNum,
+              lastVoucherNumber: globalMax,
+              voucherNumbersByFiscalYear: nextYearCounters,
               lastInvoiceSeq: 102,
               updatedByDevice: deviceId.slice(0, 64),
               createdAt: serverTimestamp(),
@@ -489,20 +499,19 @@ export const AccountingProvider: React.FC<{ children: React.ReactNode }> = ({ ch
             });
           } else {
             tx.update(counterRef, {
-              lastVoucherNumber: nextNum,
+              lastVoucherNumber: globalMax,
+              voucherNumbersByFiscalYear: nextYearCounters,
               updatedByDevice: deviceId.slice(0, 64),
               updatedAt: serverTimestamp(),
             });
           }
           return nextNum;
         });
-        return reserved;
       } catch (err) {
         if (isFirestoreOfflineError(err)) {
-          return fallbackMax + 1;
+          throw new Error('شماره سند از سرور رزرو نشد؛ برای جلوگیری از شماره تکراری، ثبت انجام نشد. اتصال اینترنت را بررسی کنید.');
         }
-        // Fallback safely without blocking accounting flow if counter doc is still provisioning
-        return fallbackMax + 1;
+        throw err;
       }
     },
     [user, deviceId]
@@ -1248,7 +1257,7 @@ export const AccountingProvider: React.FC<{ children: React.ReactNode }> = ({ ch
         .reduce((max, v) => Math.max(max, v.voucherNumber || 0), 0);
       const nextNumber =
         voucherFy === profile.fiscalYear
-          ? await reserveNextVoucherNumber(sameYearMax)
+          ? await reserveNextVoucherNumber(voucherFy, sameYearMax)
           : sameYearMax + 1;
       const id = generateSafeId('vch');
 
@@ -2375,6 +2384,7 @@ export const AccountingProvider: React.FC<{ children: React.ReactNode }> = ({ ch
               }
             : {}),
           ...(vch.referenceId ? { referenceId: vch.referenceId.slice(0, 128) } : {}),
+          ...(vch.integrityHash ? { integrityHash: vch.integrityHash } : {}),
           lines: annotatedLines.slice(0, 100),
           _version: 1,
           updatedByDevice: deviceId.slice(0, 64),
@@ -2446,6 +2456,9 @@ export const AccountingProvider: React.FC<{ children: React.ReactNode }> = ({ ch
           batch.update(doc(db, 'products', prod.id), {
             stock: prod.stock,
             buyPrice: prod.buyPrice,
+            ...(prod.costingMethod ? { costingMethod: prod.costingMethod } : {}),
+            ...(prod.costLayers ? { costLayers: prod.costLayers } : {}),
+            ...(typeof prod.inventoryValueIrr === 'number' ? { inventoryValueIrr: prod.inventoryValueIrr } : {}),
             _version: prod._version ?? 2,
             updatedByDevice: deviceId.slice(0, 64),
             updatedAt: serverTimestamp(),
@@ -2467,7 +2480,10 @@ export const AccountingProvider: React.FC<{ children: React.ReactNode }> = ({ ch
       if (user) {
         const isOfflineNow = typeof navigator !== 'undefined' && !navigator.onLine;
         if (isOfflineNow) {
-          // Single atomic Firestore writeBatch (products + voucher + cheque + invoice) queued in local IndexedDB
+          if (plan.voucher) {
+            throw new Error('برای جلوگیری از شماره‌گذاری تکراری و مغایرت انبار، ثبت فاکتور مالی در حالت آفلاین متوقف شد. پس از اتصال اینترنت دوباره تلاش کنید.');
+          }
+          // Proforma invoices have no stock or ledger impact and can be queued offline.
           committedInvoice = await commitAtomicOfflineCloudBatch();
         } else {
           // Single atomic Firestore runTransaction: reads live counter & live product stocks,
@@ -2476,10 +2492,17 @@ export const AccountingProvider: React.FC<{ children: React.ReactNode }> = ({ ch
             committedInvoice = await runTransaction(db, async (tx) => {
               const counterRef = doc(db, 'counters', user.uid);
               const counterSnap = await tx.get(counterRef);
-              const currentMax = counterSnap.exists()
-                ? Math.max(Number(counterSnap.data().lastVoucherNumber) || 0, localMaxVoucherNum)
-                : localMaxVoucherNum;
-              const liveNextVoucherNum = currentMax + 1;
+              const counterData = counterSnap.exists() ? counterSnap.data() : {};
+              const yearCounters =
+                counterData.voucherNumbersByFiscalYear &&
+                typeof counterData.voucherNumbersByFiscalYear === 'object'
+                  ? counterData.voucherNumbersByFiscalYear as Record<string, number>
+                  : {};
+              const currentYearMax = Math.max(
+                Number(yearCounters[invoiceFy]) || 0,
+                localMaxVoucherNum
+              );
+              const liveNextVoucherNum = currentYearMax + 1;
 
               // Read live products for every item in the invoice
               const uniqueProductIds = Array.from(new Set(payload.items.map((it) => it.productId)));
@@ -2497,6 +2520,9 @@ export const AccountingProvider: React.FC<{ children: React.ReactNode }> = ({ ch
                         ...base,
                         stock: Number(d.stock) || 0,
                         buyPrice: Number(d.buyPrice) || 0,
+                        ...(d.costingMethod ? { costingMethod: d.costingMethod } : {}),
+                        ...(Array.isArray(d.costLayers) ? { costLayers: d.costLayers } : {}),
+                        ...(typeof d.inventoryValueIrr === 'number' ? { inventoryValueIrr: d.inventoryValueIrr } : {}),
                         _version: Number(d._version) || 1,
                       });
                     }
@@ -2530,7 +2556,8 @@ export const AccountingProvider: React.FC<{ children: React.ReactNode }> = ({ ch
                 if (!counterSnap.exists()) {
                   tx.set(counterRef, {
                     ownerId: user.uid,
-                    lastVoucherNumber: liveNextVoucherNum,
+                    lastVoucherNumber: Math.max(Number(counterData.lastVoucherNumber) || 0, liveNextVoucherNum),
+                    voucherNumbersByFiscalYear: { ...yearCounters, [invoiceFy]: liveNextVoucherNum },
                     lastInvoiceSeq: 102,
                     updatedByDevice: deviceId.slice(0, 64),
                     createdAt: serverTimestamp(),
@@ -2538,7 +2565,8 @@ export const AccountingProvider: React.FC<{ children: React.ReactNode }> = ({ ch
                   });
                 } else {
                   tx.update(counterRef, {
-                    lastVoucherNumber: liveNextVoucherNum,
+                    lastVoucherNumber: Math.max(Number(counterData.lastVoucherNumber) || 0, liveNextVoucherNum),
+                    voucherNumbersByFiscalYear: { ...yearCounters, [invoiceFy]: liveNextVoucherNum },
                     updatedByDevice: deviceId.slice(0, 64),
                     updatedAt: serverTimestamp(),
                   });
@@ -2549,6 +2577,9 @@ export const AccountingProvider: React.FC<{ children: React.ReactNode }> = ({ ch
                 tx.update(doc(db, 'products', prod.id), {
                   stock: prod.stock,
                   buyPrice: prod.buyPrice,
+                  ...(prod.costingMethod ? { costingMethod: prod.costingMethod } : {}),
+                  ...(prod.costLayers ? { costLayers: prod.costLayers } : {}),
+                  ...(typeof prod.inventoryValueIrr === 'number' ? { inventoryValueIrr: prod.inventoryValueIrr } : {}),
                   _version: prod._version ?? 2,
                   updatedByDevice: deviceId.slice(0, 64),
                   updatedAt: serverTimestamp(),
@@ -2575,22 +2606,25 @@ export const AccountingProvider: React.FC<{ children: React.ReactNode }> = ({ ch
               return livePlan.invoice;
             });
           } catch (err) {
-            if (isFirestoreOfflineError(err)) {
-              committedInvoice = await commitAtomicOfflineCloudBatch();
-            } else {
-              const msg =
-                err instanceof Error &&
-                (err.message.includes('موجودی') ||
-                  err.message.includes('تسویه') ||
-                  err.message.includes('تراز'))
-                  ? err.message
-                  : null;
-              if (msg) {
-                showToast(msg, 'error');
-                throw err;
-              }
-              handleFirestoreError(err, OperationType.CREATE, `atomic-invoice/${id}`);
+            const msg =
+              err instanceof Error &&
+              (err.message.includes('موجودی') ||
+                err.message.includes('تسویه') ||
+                err.message.includes('تراز') ||
+                err.message.includes('آفلاین') ||
+                err.message.includes('شماره‌گذاری'))
+                ? err.message
+                : null;
+            if (msg) {
+              showToast(msg, 'error');
+              throw err;
             }
+            if (isFirestoreOfflineError(err)) {
+              const offlineError = new Error('تراکنش فاکتور در سرور تأیید نشد؛ برای جلوگیری از ثبت ناقص یا تکراری، عملیات انجام نشد. وضعیت اتصال را بررسی و سپس فاکتور را از فهرست اسناد کنترل کنید.');
+              showToast(offlineError.message, 'error');
+              throw offlineError;
+            }
+            handleFirestoreError(err, OperationType.CREATE, `atomic-invoice/${id}`);
           }
         }
       } else {
