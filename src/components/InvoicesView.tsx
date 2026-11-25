@@ -203,7 +203,8 @@ export const InvoicesView: React.FC<{ initialIntent?: string; clearIntent?: () =
   const [paidCheque, setPaidCheque] = useState(0);
   const [chequeSayadiId, setChequeSayadiId] = useState('');
   const [chequeSerial, setChequeSerial] = useState('');
-  const [chequeBankName, setChequeBankName] = useState('بانک ملت');
+  const [chequeBankName, setChequeBankName] = useState('');
+  const [chequeIssueDate, setChequeIssueDate] = useState(getTodayShamsi());
   const [chequeDueDate, setChequeDueDate] = useState('');
 
   const brokerParties = useMemo(
@@ -287,7 +288,8 @@ export const InvoicesView: React.FC<{ initialIntent?: string; clearIntent?: () =
     setPaidCheque(0);
     setChequeSayadiId('');
     setChequeSerial('');
-    setChequeBankName('بانک ملت');
+    setChequeBankName('');
+    setChequeIssueDate(date);
     setChequeDueDate('');
     setApplyVat(type !== 'waste');
     setDraftItems((prev) =>
@@ -330,7 +332,8 @@ export const InvoicesView: React.FC<{ initialIntent?: string; clearIntent?: () =
     setPaidCheque(parentInv.paidCheque);
     setChequeSayadiId(parentInv.chequeSayadiId ?? '');
     setChequeSerial(parentInv.chequeSerial ?? '');
-    setChequeBankName(parentInv.chequeBankName ?? 'بانک ملت');
+    setChequeBankName(parentInv.chequeBankName ?? '');
+    setChequeIssueDate(parentInv.chequeIssueDate ?? parentInv.date);
     setChequeDueDate(parentInv.chequeDueDate ?? '');
     setDraftItems(
       parentInv.items.map((it) => ({
@@ -508,6 +511,7 @@ export const InvoicesView: React.FC<{ initialIntent?: string; clearIntent?: () =
       chequeSayadiId,
       chequeSerial,
       chequeBankName,
+      chequeIssueDate,
       chequeDueDate,
       estimatedTotalIrr: grandTotal,
     };
@@ -537,7 +541,8 @@ export const InvoicesView: React.FC<{ initialIntent?: string; clearIntent?: () =
     setPaidCheque(res.paidCheque);
     setChequeSayadiId(res.chequeSayadiId ?? '');
     setChequeSerial(res.chequeSerial ?? '');
-    setChequeBankName(res.chequeBankName ?? 'بانک ملت');
+    setChequeBankName(res.chequeBankName ?? '');
+    setChequeIssueDate(res.chequeIssueDate ?? res.date);
     setChequeDueDate(res.chequeDueDate ?? '');
     const remaining = reservedInvoices.filter((x) => x.id !== res.id);
     setReservedInvoicesSynced(remaining);
@@ -982,6 +987,7 @@ export const InvoicesView: React.FC<{ initialIntent?: string; clearIntent?: () =
         .replace(/[۰-۹]/g, (digit) => String(digit.charCodeAt(0) - 1776))
         .replace(/[٠-٩]/g, (digit) => String(digit.charCodeAt(0) - 1632));
     const normalizedChequeSayadiId = normalizeChequeDigits(chequeSayadiId).replace(/\D/g, '');
+    const normalizedChequeIssueDate = normalizeChequeDigits(chequeIssueDate).replace(/-/g, '/');
     const normalizedChequeDueDate = normalizeChequeDigits(chequeDueDate).replace(/-/g, '/');
     if (safePaidCheque > 0 && invoiceType !== 'proforma' && invoiceType !== 'waste') {
       if (!/^\d{16}$/.test(normalizedChequeSayadiId)) {
@@ -993,10 +999,11 @@ export const InvoicesView: React.FC<{ initialIntent?: string; clearIntent?: () =
         return;
       }
       if (
+        !isValidShamsiDate(normalizedChequeIssueDate) ||
         !isValidShamsiDate(normalizedChequeDueDate) ||
-        normalizedChequeDueDate < date.replace(/-/g, '/')
+        normalizedChequeDueDate < normalizedChequeIssueDate
       ) {
-        showToast('تاریخ سررسید چک معتبر نیست یا قبل از تاریخ فاکتور است.');
+        showToast('تاریخ صدور یا سررسید چک معتبر نیست؛ سررسید نباید قبل از تاریخ صدور باشد.');
         return;
       }
     }
@@ -1060,6 +1067,7 @@ export const InvoicesView: React.FC<{ initialIntent?: string; clearIntent?: () =
               chequeSayadiId: normalizedChequeSayadiId,
               chequeSerial: chequeSerial.trim(),
               chequeBankName: chequeBankName.trim(),
+              chequeIssueDate: normalizedChequeIssueDate,
               chequeDueDate: normalizedChequeDueDate,
             }
           : {}),
@@ -2282,6 +2290,16 @@ export const InvoicesView: React.FC<{ initialIntent?: string; clearIntent?: () =
                         onChange={(event) => setChequeBankName(event.target.value)}
                         maxLength={100}
                         placeholder="نام بانک"
+                        className="mt-1 w-full rounded-lg border border-slate-200 dark:border-slate-700 bg-white dark:bg-slate-950 px-3 py-2 text-sm"
+                      />
+                    </label>
+                    <label className="block text-[11px] text-slate-600 dark:text-slate-300">
+                      تاریخ صدور چک شمسی
+                      <input
+                        value={chequeIssueDate}
+                        onChange={(event) => setChequeIssueDate(event.target.value)}
+                        maxLength={10}
+                        placeholder="۱۴۰۵/۰۱/۲۰"
                         className="mt-1 w-full rounded-lg border border-slate-200 dark:border-slate-700 bg-white dark:bg-slate-950 px-3 py-2 text-sm"
                       />
                     </label>
