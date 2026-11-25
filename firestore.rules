@@ -210,15 +210,7 @@ service cloud.firestore {
         && isOptionalString(data, 'chequeBankName', 100)
         && isOptionalString(data, 'chequeIssueDate', 20)
         && isOptionalString(data, 'chequeDueDate', 20)
-        && (!('chequeSayadiId' in data) || (data.chequeSayadiId is string && data.chequeSayadiId.matches('^[0-9]{16}$')))
-        && (data.paidCheque == 0 || data.invoiceType == 'waste' || (
-          'chequeSayadiId' in data
-          && data.chequeSayadiId.matches('^[0-9]{16}$')
-          && isNonEmptyString(data.chequeSerial, 48)
-          && isNonEmptyString(data.chequeBankName, 100)
-          && isNonEmptyString(data.chequeIssueDate, 20)
-          && isNonEmptyString(data.chequeDueDate, 20)
-        ))
+        && isOptionalString(data, 'chequeSayadiId', 32)
         && data.creditAmount is number && data.creditAmount >= 0
         && data.status in ['issued', 'settled', 'cancelled']
         && isOptionalString(data, 'voucherId', 128)
@@ -687,9 +679,38 @@ service cloud.firestore {
       allow list: if isVerified() && resource.data.ownerId == request.auth.uid;
       allow create: if isValidId(invoiceId) && isVerified()
         && isValidInvoice(incoming())
+        && (incoming().paidCheque == 0 || incoming().invoiceType == 'waste' || (
+          incoming().chequeSayadiId is string
+          && incoming().chequeSayadiId.matches('^[0-9]{16}$')
+          && isNonEmptyString(incoming().chequeSerial, 48)
+          && isNonEmptyString(incoming().chequeBankName, 100)
+          && isNonEmptyString(incoming().chequeIssueDate, 20)
+          && isNonEmptyString(incoming().chequeDueDate, 20)
+        ))
         && incoming().createdAt == request.time
         && incoming().updatedAt == request.time;
-      allow update: if isValidId(invoiceId) && isVerified() && isValidInvoice(incoming()) && (
+      allow update: if isValidId(invoiceId) && isVerified() && isValidInvoice(incoming())
+        && (
+          (
+            incoming().paidCheque == existing().paidCheque
+            && incoming().chequeSayadiId == existing().chequeSayadiId
+            && incoming().chequeSerial == existing().chequeSerial
+            && incoming().chequeBankName == existing().chequeBankName
+            && incoming().chequeIssueDate == existing().chequeIssueDate
+            && incoming().chequeDueDate == existing().chequeDueDate
+          )
+          || incoming().paidCheque == 0
+          || incoming().invoiceType == 'waste'
+          || (
+            incoming().chequeSayadiId is string
+            && incoming().chequeSayadiId.matches('^[0-9]{16}$')
+            && isNonEmptyString(incoming().chequeSerial, 48)
+            && isNonEmptyString(incoming().chequeBankName, 100)
+            && isNonEmptyString(incoming().chequeIssueDate, 20)
+            && isNonEmptyString(incoming().chequeDueDate, 20)
+          )
+        )
+        && (
         isAdmin() || (
           existing().ownerId == request.auth.uid
           && existing().status != 'cancelled'
