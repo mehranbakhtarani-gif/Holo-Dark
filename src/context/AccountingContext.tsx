@@ -3733,6 +3733,7 @@ export const AccountingProvider: React.FC<{ children: React.ReactNode }> = ({ ch
             cheque: plan.cheque,
             invoice: finalInvoice,
             expectedInvoiceType: 'proforma',
+            expectedInvoiceStatus: inv.status,
             expectedInvoiceVersion: inv._version ?? 1,
           });
           if (!saved) {
