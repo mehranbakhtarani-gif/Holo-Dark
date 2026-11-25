@@ -77,6 +77,7 @@ service cloud.firestore {
         && isValidId(data.ownerId)
         && data.lastVoucherNumber is number && data.lastVoucherNumber >= 0
         && (!('lastInvoiceSeq' in data) || (data.lastInvoiceSeq is number && data.lastInvoiceSeq >= 0))
+        && (!('voucherNumbersByFiscalYear' in data) || (data.voucherNumbersByFiscalYear is map && data.voucherNumbersByFiscalYear.size() <= 100))
         && isOptionalString(data, 'updatedByDevice', 64)
         && data.createdAt is timestamp
         && data.updatedAt is timestamp;
@@ -568,7 +569,7 @@ service cloud.firestore {
           && incoming().createdAt == existing().createdAt
           && incoming().updatedAt == request.time
           && incoming().lastVoucherNumber >= existing().lastVoucherNumber
-          && incoming().diff(existing()).affectedKeys().hasOnly(['lastVoucherNumber', 'lastInvoiceSeq', 'updatedByDevice', 'updatedAt'])
+          && incoming().diff(existing()).affectedKeys().hasOnly(['lastVoucherNumber', 'lastInvoiceSeq', 'voucherNumbersByFiscalYear', 'updatedByDevice', 'updatedAt'])
         )
       );
       allow delete: if false;
