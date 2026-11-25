@@ -977,6 +977,29 @@ export const InvoicesView: React.FC<{ initialIntent?: string; clearIntent?: () =
       showToast('لطفاً طرف‌حساب را انتخاب کنید.');
       return;
     }
+    const normalizeChequeDigits = (value: string) =>
+      String(value ?? '')
+        .replace(/[۰-۹]/g, (digit) => String(digit.charCodeAt(0) - 1776))
+        .replace(/[٠-٩]/g, (digit) => String(digit.charCodeAt(0) - 1632));
+    const normalizedChequeSayadiId = normalizeChequeDigits(chequeSayadiId).replace(/\D/g, '');
+    const normalizedChequeDueDate = normalizeChequeDigits(chequeDueDate).replace(/-/g, '/');
+    if (safePaidCheque > 0 && invoiceType !== 'proforma' && invoiceType !== 'waste') {
+      if (!/^\d{16}$/.test(normalizedChequeSayadiId)) {
+        showToast('برای ثبت فاکتور با چک، شناسه صیادی واقعی و دقیقاً ۱۶ رقمی وارد کنید.');
+        return;
+      }
+      if (!chequeSerial.trim() || !chequeBankName.trim()) {
+        showToast('شماره سریال و نام بانک چک را وارد کنید.');
+        return;
+      }
+      if (
+        !isValidShamsiDate(normalizedChequeDueDate) ||
+        normalizedChequeDueDate < date.replace(/-/g, '/')
+      ) {
+        showToast('تاریخ سررسید چک معتبر نیست یا قبل از تاریخ فاکتور است.');
+        return;
+      }
+    }
 
     const prefix =
       invoiceType === 'sale'
@@ -1034,10 +1057,10 @@ export const InvoicesView: React.FC<{ initialIntent?: string; clearIntent?: () =
         paidCheque: invoiceType === 'waste' ? 0 : safePaidCheque,
         ...(safePaidCheque > 0
           ? {
-              chequeSayadiId,
-              chequeSerial,
-              chequeBankName,
-              chequeDueDate,
+              chequeSayadiId: normalizedChequeSayadiId,
+              chequeSerial: chequeSerial.trim(),
+              chequeBankName: chequeBankName.trim(),
+              chequeDueDate: normalizedChequeDueDate,
             }
           : {}),
         creditAmount,
