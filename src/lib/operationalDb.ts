@@ -256,6 +256,7 @@ export async function commitInvoiceOperationalTx(payload: {
   cheque?: Cheque;
   invoice: Invoice;
   expectedInvoiceType?: Invoice['invoiceType'];
+  expectedInvoiceStatus?: Invoice['status'];
   expectedInvoiceVersion?: number;
 }): Promise<boolean> {
   if (!isIndexedDbAvailable()) return false;
@@ -295,6 +296,7 @@ export async function commitInvoiceOperationalTx(payload: {
           if (
             !existing ||
             existing.invoiceType !== payload.expectedInvoiceType ||
+            (payload.expectedInvoiceStatus !== undefined && existing.status !== payload.expectedInvoiceStatus) ||
             (payload.expectedInvoiceVersion !== undefined &&
               (existing._version ?? 1) !== payload.expectedInvoiceVersion)
           ) {
