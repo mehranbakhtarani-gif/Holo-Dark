@@ -580,24 +580,51 @@ export function runIndependentAuditMode(input: IndependentAuditInput): Independe
   const payChqDiff = Math.abs(
     subIrr(baseAudit.reconciliation.glChequesPayable, baseAudit.reconciliation.subChequesPayable)
   );
-  const invalidSayadi = cheques.filter(
-    (c) => (c.status === 'in_box' || c.status === 'deposited') && c.sayadiId.replace(/\D/g, '').length !== 16
+  const normalizeSayadi = (value: string) =>
+    String(value ?? '')
+      .replace(/[۰-۹]/g, (digit) => String(digit.charCodeAt(0) - 1776))
+      .replace(/[٠-٩]/g, (digit) => String(digit.charCodeAt(0) - 1632))
+      .replace(/\D/g, '');
+  const invalidSayadi = cheques.filter((c) => normalizeSayadi(c.sayadiId).length !== 16);
+  const invalidChequeAmounts = cheques.filter(
+    (c) => !Number.isSafeInteger(Number(c.amount)) || Number(c.amount) <= 0
   );
-  if (recBoxDiff >= 1 || recBankDiff >= 1 || payChqDiff >= 1 || invalidSayadi.length > 0) {
+  const sayadiGroups = new Map<string, Cheque[]>();
+  for (const cheque of cheques) {
+    const sayadi = normalizeSayadi(cheque.sayadiId);
+    if (sayadi.length !== 16) continue;
+    const group = sayadiGroups.get(sayadi) ?? [];
+    group.push(cheque);
+    sayadiGroups.set(sayadi, group);
+  }
+  const duplicateSayadi = Array.from(sayadiGroups.entries()).filter(([, group]) => group.length > 1);
+  if (
+    recBoxDiff >= 1 ||
+    recBankDiff >= 1 ||
+    payChqDiff >= 1 ||
+    invalidSayadi.length > 0 ||
+    invalidChequeAmounts.length > 0 ||
+    duplicateSayadi.length > 0
+  ) {
+    const hasLedgerMismatch = recBoxDiff >= 1 || recBankDiff >= 1 || payChqDiff >= 1;
     addFinding({
       codeKey: 'CHQ',
       controlArea: 'cheques',
-      errorType: 'مغایرت خزانه چک‌ها با دفاتر یا شناسه صیادی نامعتبر',
-      severity: recBoxDiff >= 1 || recBankDiff >= 1 || payChqDiff >= 1 ? 'major' : 'warning',
+      errorType: 'مغایرت خزانه چک‌ها با دفاتر، شناسه صیادی تکراری یا اطلاعات نامعتبر',
+      severity: hasLedgerMismatch || duplicateSayadi.length > 0 ? 'major' : 'warning',
       discrepancyAmount: addIrr(addIrr(recBoxDiff, recBankDiff), payChqDiff),
       relatedDocuments: [
         ...(recBoxDiff >= 1 ? [`اختلاف ۱۰۳۰۱: ${recBoxDiff} ریال`] : []),
         ...(recBankDiff >= 1 ? [`اختلاف ۱۰۳۰۲: ${recBankDiff} ریال`] : []),
         ...(payChqDiff >= 1 ? [`اختلاف ۳۰۲۰۱: ${payChqDiff} ریال`] : []),
-        ...invalidSayadi.slice(0, 6).map((c) => `چک ${c.sayadiId} (${c.partyName})`),
+        ...invalidSayadi.slice(0, 6).map((c) => `شناسه صیادی نامعتبر: ${c.sayadiId} (${c.partyName})`),
+        ...invalidChequeAmounts.slice(0, 6).map((c) => `مبلغ نامعتبر چک: ${c.sayadiId} — ${c.amount}`),
+        ...duplicateSayadi.slice(0, 6).map(([sayadi, group]) =>
+          `شناسه صیادی تکراری ${sayadi}: ${group.map((c) => c.id).join(' / ')}`
+        ),
       ],
-      probableCause: 'تغییر وضعیت چک بدون ثبت سند متناظر یا ورود شناسه صیادی غیر ۱۶ رقمی',
-      suggestedFix: 'تطبیق لیست چک‌های فعال و در جریان وصول با گردش معین‌های ۱۰۳۰۱، ۱۰۳۰۲ و ۳۰۲۰۱ و تکمیل کد ۱۶ رقمی صیادی',
+      probableCause: 'ثبت چک تکراری یا با مبلغ/شناسه نامعتبر، یا تغییر وضعیت چک بدون ثبت سند متناظر',
+      suggestedFix: 'رفع شناسه‌های تکراری و مبالغ نامعتبر و تطبیق لیست چک‌های نزد صندوق و در جریان وصول با معین‌های ۱۰۳۰۱، ۱۰۳۰۲ و ۳۰۲۰۱',
     });
   } else {
     verifiedItems.push({
