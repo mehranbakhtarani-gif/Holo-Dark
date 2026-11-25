@@ -2244,52 +2244,257 @@ export const AccountingProvider: React.FC<{ children: React.ReactNode }> = ({ ch
       newStatus: ChequeStatus,
       options?: { bankAccountCode?: string; endorsePartyId?: string }
     ) => {
-      const chq = cheques.find((c) => c.id === chequeId);
-      if (!chq || chq.status === newStatus) return;
+      const cachedCheque = cheques.find((c) => c.id === chequeId);
+      if (!cachedCheque || cachedCheque.status === newStatus) return;
 
-      const plan = planChequeStatusTransition({
-        cheque: chq,
-        newStatus,
-        accounts,
-        parties,
-        bankAccountCode: options?.bankAccountCode,
-        endorsePartyId: options?.endorsePartyId,
-      });
-      if (!plan.ok) {
-        showToast(plan.error || 'تغییر وضعیت درخواستی برای این چک مجاز نیست.', 'error');
-        return;
-      }
-
-      if (user) {
-        try {
-          await updateDoc(doc(db, 'cheques', chequeId), {
-            status: newStatus,
-            updatedAt: serverTimestamp(),
-          });
-        } catch (err) {
-          handleFirestoreError(err, OperationType.UPDATE, `cheques/${chequeId}`);
-        }
-      } else {
-        setCheques((prev) =>
-          prev.map((c) => (c.id === chequeId ? { ...c, status: newStatus } : c))
-        );
-      }
-
-      if (plan.lines.length >= 2) {
-        await createVoucher({
-          date: getTodayShamsi(),
-          description: plan.description,
-          voucherType: 'treasury',
-          status: 'permanent',
-          lines: plan.lines,
-          referenceId: `${chequeId}_${newStatus}_${Date.now()}`,
+      const transitionDate = getTodayShamsi();
+      const voucherId = generateSafeId('vch');
+      const buildVoucher = (
+        cheque: Cheque,
+        plan: ReturnType<typeof planChequeStatusTransition>,
+        voucherNumber: number
+      ): Voucher | undefined => {
+        if (plan.lines.length < 2) return undefined;
+        const validation = validateVoucherPayload({
+          payload: {
+            date: transitionDate,
+            description: plan.description,
+            voucherType: 'treasury',
+            status: 'permanent',
+            lines: plan.lines,
+            referenceId: `${chequeId}_${newStatus}_${voucherId}`,
+            allowDuplicate: true,
+          },
+          accounts,
+          parties,
+          existingVouchers: vouchers,
+          closedFiscalYears: profile.closedFiscalYears,
           allowDuplicate: true,
         });
-      } else {
-        showToast(plan.description || 'وضعیت چک صیادی به‌روزرسانی شد.');
+        if (!validation.valid) {
+          throw new Error(validation.errors[0] || 'سند تغییر وضعیت چک معتبر نیست.');
+        }
+        const base: Voucher = {
+          id: voucherId,
+          ownerId,
+          voucherNumber,
+          date: transitionDate,
+          fiscalYear: validation.fiscalYear,
+          description: plan.description.slice(0, 300),
+          voucherType: 'treasury',
+          status: 'permanent',
+          totalDebit: validation.totalDebit,
+          totalCredit: validation.totalCredit,
+          referenceId: `${chequeId}_${newStatus}_${voucherId}`,
+          lines: validation.sanitizedLines.slice(0, 100),
+          _version: 1,
+          updatedByDevice: deviceId,
+        };
+        return { ...base, integrityHash: computeVoucherIntegrityHash(base) };
+      };
+
+      try {
+        if (user) {
+          const committedVoucher = await runTransaction(db, async (tx) => {
+            const chequeRef = doc(db, 'cheques', chequeId);
+            const chequeSnap = await tx.get(chequeRef);
+            if (!chequeSnap.exists()) {
+              throw new Error('چک در سرور پیدا نشد؛ وضعیت تغییری نکرد.');
+            }
+            const liveData = chequeSnap.data();
+            const liveCheque: Cheque = {
+              ...cachedCheque,
+              ...liveData,
+              id: chequeId,
+              ownerId: liveData.ownerId,
+            } as Cheque;
+            if (liveCheque.status !== cachedCheque.status) {
+              throw new Error('وضعیت چک در دستگاه دیگری تغییر کرده است؛ اطلاعات را تازه‌سازی کنید.');
+            }
+
+            const plan = planChequeStatusTransition({
+              cheque: liveCheque,
+              newStatus,
+              accounts,
+              parties,
+              bankAccountCode: options?.bankAccountCode,
+              endorsePartyId: options?.endorsePartyId,
+            });
+            if (!plan.ok) {
+              throw new Error(plan.error || 'تغییر وضعیت درخواستی برای این چک مجاز نیست.');
+            }
+
+            let voucher: Voucher | undefined;
+            let counterRef: ReturnType<typeof doc> | undefined;
+            let counterSnap: Awaited<ReturnType<typeof tx.get>> | undefined;
+            let nextVoucherNumber = 0;
+
+            if (plan.lines.length >= 2) {
+              const validation = validateVoucherPayload({
+                payload: {
+                  date: transitionDate,
+                  description: plan.description,
+                  voucherType: 'treasury',
+                  status: 'permanent',
+                  lines: plan.lines,
+                  referenceId: `${chequeId}_${newStatus}_${voucherId}`,
+                  allowDuplicate: true,
+                },
+                accounts,
+                parties,
+                existingVouchers: vouchers,
+                closedFiscalYears: profile.closedFiscalYears,
+                allowDuplicate: true,
+              });
+              if (!validation.valid) {
+                throw new Error(validation.errors[0] || 'سند تغییر وضعیت چک معتبر نیست.');
+              }
+              const fy = validation.fiscalYear;
+              const localMax = vouchers
+                .filter((v) => (v.fiscalYear || extractFiscalYearFromDate(v.date)) === fy)
+                .reduce((max, v) => Math.max(max, v.voucherNumber || 0), 0);
+              counterRef = doc(db, 'counters', user.uid);
+              counterSnap = await tx.get(counterRef);
+              const counterData = counterSnap.exists() ? counterSnap.data() : {};
+              const yearCounters =
+                counterData.voucherNumbersByFiscalYear &&
+                typeof counterData.voucherNumbersByFiscalYear === 'object'
+                  ? counterData.voucherNumbersByFiscalYear as Record<string, number>
+                  : {};
+              nextVoucherNumber = getNextFiscalYearVoucherNumber(fy, yearCounters, localMax);
+              voucher = buildVoucher(liveCheque, plan, nextVoucherNumber);
+              if (!voucher) throw new Error('سند خزانه برای این تغییر وضعیت تولید نشد.');
+
+              const nextYearCounters = { ...yearCounters, [fy]: nextVoucherNumber };
+              const globalMax = Math.max(Number(counterData.lastVoucherNumber) || 0, nextVoucherNumber);
+              if (!counterSnap.exists()) {
+                tx.set(counterRef, {
+                  ownerId: user.uid,
+                  lastVoucherNumber: globalMax,
+                  voucherNumbersByFiscalYear: nextYearCounters,
+                  lastInvoiceSeq: 102,
+                  updatedByDevice: deviceId.slice(0, 64),
+                  createdAt: serverTimestamp(),
+                  updatedAt: serverTimestamp(),
+                });
+              } else {
+                tx.update(counterRef, {
+                  lastVoucherNumber: globalMax,
+                  voucherNumbersByFiscalYear: nextYearCounters,
+                  updatedByDevice: deviceId.slice(0, 64),
+                  updatedAt: serverTimestamp(),
+                });
+              }
+
+              tx.set(doc(db, 'vouchers', voucher.id), {
+                ownerId,
+                voucherNumber: voucher.voucherNumber,
+                date: voucher.date,
+                description: voucher.description,
+                voucherType: voucher.voucherType,
+                status: voucher.status,
+                totalDebit: voucher.totalDebit,
+                totalCredit: voucher.totalCredit,
+                ...(voucher.referenceId ? { referenceId: voucher.referenceId.slice(0, 128) } : {}),
+                integrityHash: voucher.integrityHash,
+                lines: voucher.lines,
+                _version: 1,
+                updatedByDevice: deviceId.slice(0, 64),
+                createdAt: serverTimestamp(),
+                updatedAt: serverTimestamp(),
+              });
+            }
+
+            tx.update(chequeRef, {
+              status: newStatus,
+              _version: (Number(liveCheque._version) || 1) + 1,
+              updatedByDevice: deviceId.slice(0, 64),
+              updatedAt: serverTimestamp(),
+            });
+            return voucher;
+          });
+
+          setCheques((prev) =>
+            prev.map((c) =>
+              c.id === chequeId
+                ? { ...c, status: newStatus, _version: (Number(c._version) || 1) + 1 }
+                : c
+            )
+          );
+          if (committedVoucher) setVouchers((prev) => [...prev, committedVoucher]);
+          showToast(
+            committedVoucher
+              ? `وضعیت چک و سند خزانه شماره ${committedVoucher.voucherNumber} به‌صورت اتمیک ثبت شد.`
+              : 'وضعیت چک با موفقیت ثبت شد.'
+          );
+          return;
+        }
+
+        const plan = planChequeStatusTransition({
+          cheque: cachedCheque,
+          newStatus,
+          accounts,
+          parties,
+          bankAccountCode: options?.bankAccountCode,
+          endorsePartyId: options?.endorsePartyId,
+        });
+        if (!plan.ok) throw new Error(plan.error || 'تغییر وضعیت درخواستی برای این چک مجاز نیست.');
+        let localVoucher: Voucher | undefined;
+        if (plan.lines.length >= 2) {
+          const validation = validateVoucherPayload({
+            payload: {
+              date: transitionDate,
+              description: plan.description,
+              voucherType: 'treasury',
+              status: 'permanent',
+              lines: plan.lines,
+              referenceId: `${chequeId}_${newStatus}_${voucherId}`,
+              allowDuplicate: true,
+            },
+            accounts,
+            parties,
+            existingVouchers: vouchers,
+            closedFiscalYears: profile.closedFiscalYears,
+            allowDuplicate: true,
+          });
+          if (!validation.valid) throw new Error(validation.errors[0] || 'سند تغییر وضعیت چک معتبر نیست.');
+          const fy = validation.fiscalYear;
+          const localMax = vouchers
+            .filter((v) => (v.fiscalYear || extractFiscalYearFromDate(v.date)) === fy)
+            .reduce((max, v) => Math.max(max, v.voucherNumber || 0), 0);
+          const nextNumber = getNextFiscalYearVoucherNumber(fy, undefined, localMax);
+          localVoucher = buildVoucher(cachedCheque, plan, nextNumber);
+        }
+        setCheques((prev) =>
+          prev.map((c) =>
+            c.id === chequeId
+              ? { ...c, status: newStatus, _version: (Number(c._version) || 1) + 1 }
+              : c
+          )
+        );
+        if (localVoucher) setVouchers((prev) => [...prev, localVoucher!]);
+        showToast(
+          localVoucher
+            ? `وضعیت چک و سند خزانه شماره ${localVoucher.voucherNumber} ثبت شد.`
+            : 'وضعیت چک با موفقیت ثبت شد.'
+        );
+      } catch (err) {
+        const message = err instanceof Error ? err.message : 'ثبت تغییر وضعیت چک ناموفق بود.';
+        showToast(message, 'error');
+        throw err;
       }
     },
-    [cheques, accounts, parties, user, createVoucher, showToast]
+    [
+      cheques,
+      accounts,
+      parties,
+      vouchers,
+      profile.closedFiscalYears,
+      ownerId,
+      deviceId,
+      user,
+      showToast,
+    ]
   );
 
   const recordQuickTreasury = useCallback(
