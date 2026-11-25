@@ -2167,9 +2167,9 @@ export const AccountingProvider: React.FC<{ children: React.ReactNode }> = ({ ch
         throw new Error('این شناسه صیادی قبلاً در خزانه ثبت شده است.');
       }
 
-      // A deterministic document ID makes concurrent duplicate submissions collide
-      // even when two clients have stale local cheque lists.
-      const id = `chq_${normalizedSayadi}`;
+      // Owner-scoped deterministic IDs make concurrent duplicate submissions
+      // collide without creating cross-company ID collisions.
+      const id = `chq_${ownerId.slice(0, 40)}_${normalizedSayadi}`;
       const full: Cheque = {
         ...payload,
         sayadiId: normalizedSayadi,
