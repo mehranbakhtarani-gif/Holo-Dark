@@ -211,7 +211,7 @@ service cloud.firestore {
         && isOptionalString(data, 'chequeIssueDate', 20)
         && isOptionalString(data, 'chequeDueDate', 20)
         && (!('chequeSayadiId' in data) || (data.chequeSayadiId is string && data.chequeSayadiId.matches('^[0-9]{16}$')))
-        && (data.paidCheque == 0 || data.invoiceType in ['proforma', 'waste'] || (
+        && (data.paidCheque == 0 || data.invoiceType == 'waste' || (
           'chequeSayadiId' in data && 'chequeSerial' in data
           && 'chequeBankName' in data && 'chequeIssueDate' in data && 'chequeDueDate' in data
         ))
