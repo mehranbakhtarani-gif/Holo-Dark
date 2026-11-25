@@ -238,6 +238,39 @@ test('P0: Independent audit detects deposited-cheque GL mismatch on account 1030
   assert.ok(chequeFinding, '10302 subledger/GL mismatch must produce a cheque finding');
   assert.ok(chequeFinding.relatedDocuments.some((item) => item.includes('۱۰۳۰۲')));
   assert.equal(chequeFinding.discrepancyAmount, 100_000);
+
+  const duplicateCheque: Cheque = {
+    id: 'duplicate_cheque_test_2',
+    ownerId: 'owner_test',
+    sayadiId: '1234567890123456',
+    serial: 'SERIAL-002',
+    direction: 'receivable',
+    partyId: ws.customer.id,
+    partyName: ws.customer.name,
+    bankName: 'بانک آزمایشی',
+    amount: 100_000,
+    issueDate: '1405/01/01',
+    dueDate: '1405/02/01',
+    status: 'in_box',
+  };
+  const duplicateReport = runIndependentAuditMode({
+    profile: ws.profile,
+    accounts: ws.accounts,
+    parties: ws.parties,
+    products: ws.products,
+    vouchers: [],
+    invoices: [],
+    cheques: [
+      { ...duplicateCheque, id: 'duplicate_cheque_test_1' },
+      duplicateCheque,
+    ],
+  });
+  const duplicateFinding = duplicateReport.allFindings.find((finding) =>
+    finding.errorType.includes('شناسه صیادی تکراری')
+  );
+  assert.ok(duplicateFinding, 'duplicate Sayadi IDs must be reported as a major treasury finding');
+  assert.equal(duplicateFinding.severity, 'major');
+  assert.ok(duplicateFinding.relatedDocuments.some((item) => item.includes('1234567890123456')));
 });
 
 test('P0: Cheque transition planner rejects duplicate, terminal and invalid-value transitions', () => {
