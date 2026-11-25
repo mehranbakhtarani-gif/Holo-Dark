@@ -5,8 +5,10 @@ import path from 'path';
 import { defineConfig } from 'vite';
 import { VitePWA } from 'vite-plugin-pwa';
 
-export default defineConfig(() => {
+export default defineConfig(({ command }) => {
   return {
+    // GitHub Pages serves this repository under /Holo-Dark/.
+    base: command === 'build' ? '/Holo-Dark/' : '/',
     plugins: [
       react(),
       tailwindcss(),
@@ -14,7 +16,7 @@ export default defineConfig(() => {
         registerType: 'autoUpdate',
         includeAssets: ['icon.svg', 'apple-touch-icon.png', 'pwa-192x192.png', 'pwa-512x512.png', 'pwa-maskable-512x512.png'],
         manifest: {
-          id: '/',
+          id: './',
           name: 'هلو شرکتی Apex — سامانه جامع حسابداری',
           short_name: 'هلو Apex',
           description: 'سامانه جامع حسابداری شرکتی با هسته هلو Apex، داشبورد مدیریت مالی و گزارش‌گیری پیشرفته',
@@ -24,23 +26,23 @@ export default defineConfig(() => {
           orientation: 'any',
           dir: 'rtl',
           lang: 'fa',
-          start_url: '/',
-          scope: '/',
+          start_url: './',
+          scope: './',
           icons: [
             {
-              src: '/pwa-192x192.png',
+              src: 'pwa-192x192.png',
               sizes: '192x192',
               type: 'image/png',
               purpose: 'any',
             },
             {
-              src: '/pwa-512x512.png',
+              src: 'pwa-512x512.png',
               sizes: '512x512',
               type: 'image/png',
               purpose: 'any',
             },
             {
-              src: '/pwa-maskable-512x512.png',
+              src: 'pwa-maskable-512x512.png',
               sizes: '512x512',
               type: 'image/png',
               purpose: 'maskable',
@@ -50,19 +52,19 @@ export default defineConfig(() => {
             {
               name: 'فاکتور فروش (F2)',
               short_name: 'فروش',
-              url: '/?view=invoices&action=new-sale',
+              url: './?view=invoices&action=new-sale',
               icons: [{ src: '/pwa-192x192.png', sizes: '192x192', type: 'image/png' }],
             },
             {
               name: 'ثبت سند حسابداری (F3)',
               short_name: 'سند جدید',
-              url: '/?view=vouchers&action=new-voucher',
+              url: './?view=vouchers&action=new-voucher',
               icons: [{ src: '/pwa-192x192.png', sizes: '192x192', type: 'image/png' }],
             },
             {
               name: 'خزانه‌داری و چک (F7)',
               short_name: 'چک‌ها',
-              url: '/?view=treasury',
+              url: './?view=treasury',
               icons: [{ src: '/pwa-192x192.png', sizes: '192x192', type: 'image/png' }],
             },
           ],
