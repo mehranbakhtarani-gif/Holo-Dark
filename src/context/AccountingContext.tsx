@@ -3231,6 +3231,7 @@ export const AccountingProvider: React.FC<{ children: React.ReactNode }> = ({ ch
       products,
       vouchers,
       invoices,
+      cheques,
       parties,
       partyBalances,
       trialBalance,
