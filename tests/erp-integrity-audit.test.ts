@@ -193,6 +193,53 @@ test('P0: Stocktaking plan keeps inventory valuation and adjustment voucher bala
   assert.equal(plan.voucher.integrityHash, computeVoucherIntegrityHash(plan.voucher));
 });
 
+test('P0: Independent audit detects deposited-cheque GL mismatch on account 10302', () => {
+  const ws = makeFreshCleanWorkspace();
+  const baseVoucher: Voucher = {
+    id: 'voucher_deposited_cheque_gl_mismatch',
+    ownerId: 'owner_test',
+    voucherNumber: 1,
+    date: '1405/01/01',
+    fiscalYear: '1405',
+    description: 'آزمون مغایرت اسناد در جریان وصول',
+    voucherType: 'treasury',
+    status: 'permanent',
+    totalDebit: 100_000,
+    totalCredit: 100_000,
+    lines: [
+      {
+        accountCode: '10302',
+        accountTitle: 'اسناد دریافتنی در جریان وصول',
+        debit: 100_000,
+        credit: 0,
+      },
+      {
+        accountCode: '10101',
+        accountTitle: 'صندوق',
+        debit: 0,
+        credit: 100_000,
+      },
+    ],
+  };
+  const voucher: Voucher = {
+    ...baseVoucher,
+    integrityHash: computeVoucherIntegrityHash(baseVoucher),
+  };
+  const report = runIndependentAuditMode({
+    profile: ws.profile,
+    accounts: ws.accounts,
+    parties: ws.parties,
+    products: ws.products,
+    vouchers: [voucher],
+    invoices: [],
+    cheques: [],
+  });
+  const chequeFinding = report.findings.find((finding) => finding.errorType.includes('خزانه چک‌ها'));
+  assert.ok(chequeFinding, '10302 subledger/GL mismatch must produce a cheque finding');
+  assert.ok(chequeFinding.relatedDocuments.some((item) => item.includes('۱۰۳۰۲')));
+  assert.equal(chequeFinding.discrepancyAmount, 100_000);
+});
+
 test('P0: Cheque transition planner rejects duplicate, terminal and invalid-value transitions', () => {
   const ws = makeFreshCleanWorkspace();
   const baseCheque: Cheque = {
