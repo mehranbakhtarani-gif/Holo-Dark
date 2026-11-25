@@ -3586,6 +3586,12 @@ export const AccountingProvider: React.FC<{ children: React.ReactNode }> = ({ ch
                 ...plan.voucher,
                 description: `سند اتوماتیک تبدیل پیش‌فاکتور به فروش رسمی ${plan.invoice.invoiceNumber} — ${liveProforma.partyName}`,
                 voucherType: 'sales',
+                ...(isFx && liveProforma.currencyCode && liveProforma.exchangeRate
+                  ? {
+                      currencyCode: liveProforma.currencyCode,
+                      exchangeRate: Number(liveProforma.exchangeRate),
+                    }
+                  : {}),
                 referenceId: invoiceId,
                 lines: voucherLines,
               };
