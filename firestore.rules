@@ -228,7 +228,7 @@ service cloud.firestore {
         && data.keys().hasOnly(['ownerId', 'sayadiId', 'serial', 'direction', 'partyId', 'partyName', 'bankName', 'branch', 'amount', 'issueDate', 'dueDate', 'status', 'notes', '_version', 'updatedByDevice', 'createdAt', 'updatedAt'])
         && data.ownerId == request.auth.uid
         && isValidId(data.ownerId)
-        && data.sayadiId is string && data.sayadiId.matches('^[0-9]{16}$')
+        && isNonEmptyString(data.sayadiId, 32)
         && data.direction in ['receivable', 'payable']
         && isNonEmptyString(data.partyId, 128)
         && isNonEmptyString(data.partyName, 160)
@@ -712,9 +712,11 @@ service cloud.firestore {
       allow list: if isVerified() && resource.data.ownerId == request.auth.uid;
       allow create: if isValidId(chequeId) && isVerified()
         && isValidCheque(incoming())
+        && incoming().sayadiId.matches('^[0-9]{16}$')
         && incoming().createdAt == request.time
         && incoming().updatedAt == request.time;
       allow update: if isValidId(chequeId) && isVerified() && isValidCheque(incoming()) && (
+        && (incoming().sayadiId.matches('^[0-9]{16}$') || incoming().sayadiId == existing().sayadiId)
         isAdmin() || (
           existing().ownerId == request.auth.uid
           && existing().status != 'cancelled'
