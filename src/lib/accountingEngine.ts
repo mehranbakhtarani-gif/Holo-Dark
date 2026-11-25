@@ -2332,6 +2332,24 @@ export function planAtomicInvoiceCommit(input: AtomicInvoicePlanInput): AtomicIn
 // STAGE 2: VOUCHER CORE VALIDATION, INTEGRITY HASH & DUPLICATE DETECTION
 // ============================================================================
 
+function isJalaliLeapYear(year: number): boolean {
+  // Break-year algorithm (Jalaali calendar), valid for the supported 1300–1500 range.
+  const breaks = [-61, 9, 38, 199, 426, 686, 756, 818, 1111, 1181, 1210, 1635, 2060, 2097, 2192, 2262, 2324, 2394, 2456, 3178];
+  let jp = breaks[0];
+  let jump = 0;
+  for (let i = 1; i < breaks.length; i++) {
+    const jm = breaks[i];
+    jump = jm - jp;
+    if (year < jm) break;
+    jp = jm;
+  }
+  let n = year - jp;
+  if (jump - n < 6) n = n - jump + Math.floor((jump + 4) / 33) * 33;
+  let leap = (((n + 1) % 33) - 1) % 4;
+  if (leap === -1) leap = 4;
+  return leap === 0;
+}
+
 export function isValidShamsiDate(date: string): boolean {
   if (typeof date !== 'string') return false;
   const match = /^(\d{4})\/(\d{2})\/(\d{2})$/.exec(date.trim());
@@ -2341,7 +2359,7 @@ export function isValidShamsiDate(date: string): boolean {
   const day = Number(match[3]);
   if (year < 1300 || year > 1500) return false;
   if (month < 1 || month > 12) return false;
-  const maxDay = month <= 6 ? 31 : 30;
+  const maxDay = month <= 6 ? 31 : month <= 11 ? 30 : isJalaliLeapYear(year) ? 30 : 29;
   return day >= 1 && day <= maxDay;
 }
 
@@ -2417,6 +2435,27 @@ export interface VoucherValidationResult {
   fingerprint: string;
 }
 
+function parseVoucherAmount(value: unknown): { valid: boolean; amount: number } {
+  if (value === null || value === undefined || value === '') return { valid: true, amount: 0 };
+  if (typeof value !== 'number' && typeof value !== 'string') return { valid: false, amount: 0 };
+  if (typeof value === 'string') {
+    const normalized = value
+      .trim()
+      .replace(/[۰-۹]/g, (d) => String(d.charCodeAt(0) - 1776))
+      .replace(/[٠-٩]/g, (d) => String(d.charCodeAt(0) - 1632))
+      .replace(/[,٬،\s]/g, '');
+    if (normalized === '') return { valid: true, amount: 0 };
+    if (!/^\+?\d+(?:\.\d+)?$/.test(normalized)) return { valid: false, amount: 0 };
+    const parsed = Number(normalized);
+    return Number.isFinite(parsed) && parsed >= 0
+      ? { valid: true, amount: Math.round(parsed) }
+      : { valid: false, amount: 0 };
+  }
+  return Number.isFinite(value) && value >= 0
+    ? { valid: true, amount: Math.round(value) }
+    : { valid: false, amount: 0 };
+}
+
 export function validateVoucherPayload(input: {
   payload: {
     date: string;
@@ -2482,13 +2521,13 @@ export function validateVoucherPayload(input: {
       }
     }
 
-    const rawD = Number(line.debit) || 0;
-    const rawC = Number(line.credit) || 0;
-    if (!Number.isFinite(rawD) || !Number.isFinite(rawC) || rawD < 0 || rawC < 0) {
-      errors.push(`ردیف ${rowNum}: مبالغ بدهکار و بستانکار نمی‌توانند منفی یا نامعتبر باشند.`);
+    const parsedDebit = parseVoucherAmount(line.debit);
+    const parsedCredit = parseVoucherAmount(line.credit);
+    if (!parsedDebit.valid || !parsedCredit.valid) {
+      errors.push(`ردیف ${rowNum}: مبلغ بدهکار یا بستانکار نامعتبر است؛ فقط عدد غیرمنفی مجاز است.`);
     }
-    const d = Math.max(0, Math.round(rawD));
-    const c = Math.max(0, Math.round(rawC));
+    const d = parsedDebit.valid ? parsedDebit.amount : 0;
+    const c = parsedCredit.valid ? parsedCredit.amount : 0;
     if (d === 0 && c === 0) {
       errors.push(`ردیف ${rowNum}: آرتیکل بدون مبلغ (بدهکار = ۰ و بستانکار = ۰) مجاز نیست.`);
     }
