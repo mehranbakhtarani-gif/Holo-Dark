@@ -255,6 +255,8 @@ export async function commitInvoiceOperationalTx(payload: {
   voucher?: Voucher;
   cheque?: Cheque;
   invoice: Invoice;
+  expectedInvoiceType?: Invoice['invoiceType'];
+  expectedInvoiceVersion?: number;
 }): Promise<boolean> {
   if (!isIndexedDbAvailable()) return false;
   const db = await openOperationalDb();
@@ -263,6 +265,7 @@ export async function commitInvoiceOperationalTx(payload: {
   return new Promise((resolve, reject) => {
     let tx: IDBTransaction | null = null;
     let duplicateChequeFound = false;
+    let invoiceConflictFound = false;
     try {
       tx = db.transaction(['meta', 'products', 'vouchers', 'cheques', 'invoices'], 'readwrite');
       const prodStore = tx.objectStore('products');
@@ -284,7 +287,26 @@ export async function commitInvoiceOperationalTx(payload: {
           chequeStore.put(payload.cheque!);
         };
       }
-      tx.objectStore('invoices').put(payload.invoice);
+      const invoiceStore = tx.objectStore('invoices');
+      if (payload.expectedInvoiceType) {
+        const invoiceRead = invoiceStore.get(payload.invoice.id);
+        invoiceRead.onsuccess = () => {
+          const existing = invoiceRead.result as Invoice | undefined;
+          if (
+            !existing ||
+            existing.invoiceType !== payload.expectedInvoiceType ||
+            (payload.expectedInvoiceVersion !== undefined &&
+              (existing._version ?? 1) !== payload.expectedInvoiceVersion)
+          ) {
+            invoiceConflictFound = true;
+            tx?.abort();
+            return;
+          }
+          invoiceStore.put(payload.invoice);
+        };
+      } else {
+        invoiceStore.put(payload.invoice);
+      }
 
       const metaStore = tx.objectStore('meta');
       const revReq = metaStore.get('workspace_meta');
@@ -311,7 +333,9 @@ export async function commitInvoiceOperationalTx(payload: {
         reject(
           duplicateChequeFound
             ? new Error('این شناسه صیادی قبلاً در پایگاه داده محلی ثبت شده است؛ فاکتور ذخیره نشد.')
-            : tx?.error ?? new Error('Atomic invoice IndexedDB transaction aborted')
+            : invoiceConflictFound
+              ? new Error('پیش‌فاکتور در زبانه دیگری تغییر کرده یا قبلاً تبدیل شده است؛ اطلاعات را تازه‌سازی کنید.')
+              : tx?.error ?? new Error('Atomic invoice IndexedDB transaction aborted')
         );
       };
     } catch (err) {
