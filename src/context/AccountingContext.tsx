@@ -2301,7 +2301,7 @@ export const AccountingProvider: React.FC<{ children: React.ReactNode }> = ({ ch
               const counterRef = doc(db, 'counters', user.uid);
               const counterSnap = await tx.get(counterRef);
               const counterData = counterSnap.exists() ? counterSnap.data() : {};
-              if (payload.paidCheque > 0) {
+              if (payload.paidCheque > 0 && payload.invoiceType !== 'proforma' && payload.invoiceType !== 'waste') {
                 const existingCheque = await tx.get(doc(db, 'cheques', plannedChequeId));
                 if (existingCheque.exists()) {
                   throw new Error('این شناسه صیادی قبلاً در سرور ثبت شده است؛ ثبت فاکتور لغو شد.');
@@ -2842,6 +2842,8 @@ export const AccountingProvider: React.FC<{ children: React.ReactNode }> = ({ ch
       const currentPartyBal = partyBalances.get(payload.partyId) ?? 0;
       if (
         payload.paidCheque > 0 &&
+        payload.invoiceType !== 'proforma' &&
+        payload.invoiceType !== 'waste' &&
         cheques.some((item) => normalizeSayadi(item.sayadiId) === normalizedChequeSayadi)
       ) {
         throw new Error('این شناسه صیادی قبلاً در خزانه ثبت شده است.');
