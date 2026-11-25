@@ -1319,6 +1319,7 @@ export const AccountingProvider: React.FC<{ children: React.ReactNode }> = ({ ch
                 }
               : {}),
             ...(full.referenceId ? { referenceId: full.referenceId.slice(0, 128) } : {}),
+            ...(full.integrityHash ? { integrityHash: full.integrityHash } : {}),
             lines: full.lines,
             _version: 1,
             updatedByDevice: deviceId.slice(0, 64),
@@ -1438,6 +1439,7 @@ export const AccountingProvider: React.FC<{ children: React.ReactNode }> = ({ ch
             exchangeRate: safeRate,
             foreignTotalDebit,
             foreignTotalCredit,
+            ...(nextHash ? { integrityHash: nextHash } : {}),
             _version: expectedVersion + 1,
             updatedByDevice: deviceId.slice(0, 64),
             updatedAt: serverTimestamp(),
@@ -1482,6 +1484,7 @@ export const AccountingProvider: React.FC<{ children: React.ReactNode }> = ({ ch
               exchangeRate: safeRate,
               foreignTotalDebit,
               foreignTotalCredit,
+              ...(nextHash ? { integrityHash: nextHash } : {}),
               _version: expectedVersion + 1,
               updatedByDevice: deviceId.slice(0, 64),
               updatedAt: serverTimestamp(),
@@ -1552,17 +1555,18 @@ export const AccountingProvider: React.FC<{ children: React.ReactNode }> = ({ ch
   const finalizeVoucher = useCallback(
     async (voucherId: string) => {
       const target = vouchers.find((v) => v.id === voucherId);
-      if (target) {
-        const fy = target.fiscalYear || extractFiscalYearFromDate(target.date);
-        if (fy && profile.closedFiscalYears?.includes(fy)) {
-          showToast(`سال مالی ${fy} بسته شده است و امکان تغییر وضعیت سند وجود ندارد.`, 'error');
-          return;
-        }
+      if (!target) return;
+      const fy = target.fiscalYear || extractFiscalYearFromDate(target.date);
+      if (fy && profile.closedFiscalYears?.includes(fy)) {
+        showToast(`سال مالی ${fy} بسته شده است و امکان تغییر وضعیت سند وجود ندارد.`, 'error');
+        return;
       }
+      const integrityHash = computeVoucherIntegrityHash(target);
       if (user) {
         try {
           await updateDoc(doc(db, 'vouchers', voucherId), {
             status: 'permanent',
+            integrityHash,
             updatedAt: serverTimestamp(),
           });
         } catch (err) {
@@ -1572,7 +1576,7 @@ export const AccountingProvider: React.FC<{ children: React.ReactNode }> = ({ ch
         setVouchers((prev) =>
           prev.map((v) =>
             v.id === voucherId
-              ? { ...v, status: 'permanent', integrityHash: computeVoucherIntegrityHash(v) }
+              ? { ...v, status: 'permanent', integrityHash }
               : v
           )
         );
