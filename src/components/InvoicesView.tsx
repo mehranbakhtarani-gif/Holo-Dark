@@ -1130,7 +1130,8 @@ export const InvoicesView: React.FC<{ initialIntent?: string; clearIntent?: () =
       setPaidCheque(0);
       setChequeSayadiId('');
       setChequeSerial('');
-      setChequeBankName('بانک ملت');
+      setChequeBankName('');
+      setChequeIssueDate('');
       setChequeDueDate('');
     } catch (err) {
       showToast(err instanceof Error ? err.message : 'خطا در ثبت فاکتور؛ لطفاً مقادیر را بررسی کنید.');
@@ -2647,6 +2648,16 @@ export const InvoicesView: React.FC<{ initialIntent?: string; clearIntent?: () =
                         onChange={(event) => setChequeBankName(event.target.value)}
                         maxLength={100}
                         placeholder="نام بانک"
+                        className="mt-1 w-full rounded-lg border border-slate-200 dark:border-slate-700 bg-white dark:bg-slate-950 px-3 py-2 text-sm"
+                      />
+                    </label>
+                    <label className="block text-[11px] text-slate-600 dark:text-slate-300">
+                      تاریخ صدور چک شمسی
+                      <input
+                        value={chequeIssueDate}
+                        onChange={(event) => setChequeIssueDate(event.target.value)}
+                        maxLength={10}
+                        placeholder="۱۴۰۵/۰۱/۲۰"
                         className="mt-1 w-full rounded-lg border border-slate-200 dark:border-slate-700 bg-white dark:bg-slate-950 px-3 py-2 text-sm"
                       />
                     </label>
