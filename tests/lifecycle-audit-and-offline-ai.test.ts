@@ -86,6 +86,11 @@ test('1. Proforma -> Final Sale conversion syncs FIFO costLayers, Sayadi cheque,
     paidCash: 0,
     paidBank: 0,
     paidCheque,
+    chequeSayadiId: '1234567890123470',
+    chequeSerial: 'PF-CHK-001',
+    chequeBankName: 'بانک تست',
+    chequeIssueDate: '1405/04/10',
+    chequeDueDate: '1405/05/10',
     creditAmount,
   };
 
