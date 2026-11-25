@@ -7,6 +7,7 @@ import {
   computeTrialBalance,
   computeVoucherIntegrityHash,
   planAtomicInvoiceCommit,
+  planStockAdjustmentWithCostLayers,
   planYearEndClosing,
   validateVoucherPayload,
 } from '../src/lib/accountingEngine';
@@ -147,6 +148,49 @@ function makeItem(product: Product, quantity: number, unitPrice: number, vatRate
     lineTotal: lineSub + vatAmount,
   };
 }
+
+test('P0: Stocktaking plan keeps inventory valuation and adjustment voucher balanced', () => {
+  const ws = makeFreshCleanWorkspace();
+  const product: Product = {
+    ...ws.products[0],
+    stock: 100,
+    buyPrice: 5_000_000,
+    inventoryValueIrr: 500_000_000,
+    costingMethod: 'fifo',
+    costLayers: [{
+      layerId: 'layer_stocktake_test',
+      date: '1405/01/01',
+      sourceRef: 'opening_stock_test',
+      warehouse: 'انبار مرکزی',
+      originalQty: 100,
+      remainingQty: 100,
+      unitCostIrr: 5_000_000,
+      totalCostIrr: 500_000_000,
+    }],
+  };
+  const plan = planStockAdjustmentWithCostLayers({
+    product,
+    newStock: 90,
+    date: '1405/03/20',
+    reason: 'آزمون کسری انبار',
+    costingMethod: 'fifo',
+    allowNegativeStock: false,
+    closedFiscalYears: [],
+    accounts: ws.accounts,
+    ownerId: 'owner_test',
+    referenceId: 'stocktake_regression_test',
+    voucherId: 'voucher_stocktake_regression_test',
+    nextVoucherNumber: 99,
+    deviceId: 'test_device',
+  });
+
+  assert.equal(plan.updatedProduct.stock, 90);
+  assert.equal(plan.updatedProduct.inventoryValueIrr, 450_000_000);
+  assert.ok(plan.voucher);
+  assert.equal(plan.voucher.totalDebit, 50_000_000);
+  assert.equal(plan.voucher.totalCredit, 50_000_000);
+  assert.equal(plan.voucher.integrityHash, computeVoucherIntegrityHash(plan.voucher));
+});
 
 // ============================================================================
 // TEST 1: EXPLICIT BALANCE SHEET MANUAL-VS-SYSTEM SCENARIO (END-TO-END)
