@@ -989,7 +989,7 @@ export const InvoicesView: React.FC<{ initialIntent?: string; clearIntent?: () =
     const normalizedChequeSayadiId = normalizeChequeDigits(chequeSayadiId).replace(/\D/g, '');
     const normalizedChequeIssueDate = normalizeChequeDigits(chequeIssueDate).replace(/-/g, '/');
     const normalizedChequeDueDate = normalizeChequeDigits(chequeDueDate).replace(/-/g, '/');
-    if (safePaidCheque > 0 && invoiceType !== 'waste') {
+    if (safePaidCheque > 0) {
       if (!/^\d{16}$/.test(normalizedChequeSayadiId)) {
         showToast('برای ثبت فاکتور با چک، شناسه صیادی واقعی و دقیقاً ۱۶ رقمی وارد کنید.');
         return;
