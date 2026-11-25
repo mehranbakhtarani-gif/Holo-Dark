@@ -72,7 +72,7 @@ service cloud.firestore {
 
     function isValidWorkspaceCounter(data) {
       return data.keys().hasAll(['ownerId', 'lastVoucherNumber', 'createdAt', 'updatedAt'])
-        && data.keys().hasOnly(['ownerId', 'lastVoucherNumber', 'lastInvoiceSeq', 'updatedByDevice', 'createdAt', 'updatedAt'])
+        && data.keys().hasOnly(['ownerId', 'lastVoucherNumber', 'lastInvoiceSeq', 'voucherNumbersByFiscalYear', 'updatedByDevice', 'createdAt', 'updatedAt'])
         && data.ownerId == request.auth.uid
         && isValidId(data.ownerId)
         && data.lastVoucherNumber is number && data.lastVoucherNumber >= 0
