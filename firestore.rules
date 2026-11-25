@@ -641,7 +641,6 @@ service cloud.firestore {
             incoming().diff(existing()).affectedKeys().hasOnly(['stock', '_version', 'updatedByDevice', 'updatedAt']) ||
             incoming().diff(existing()).affectedKeys().hasOnly(['stock', 'buyPrice', 'lotNumber', '_version', 'updatedByDevice', 'updatedAt']) ||
             incoming().diff(existing()).affectedKeys().hasOnly(['stock', 'buyPrice', 'costingMethod', 'costLayers', 'inventoryValueIrr', '_version', 'updatedByDevice', 'updatedAt']) ||
-            incoming().diff(existing()).affectedKeys().hasOnly(['stock', 'buyPrice', 'costingMethod', 'costLayers', 'inventoryValueIrr', '_version', 'updatedByDevice', 'updatedAt']) ||
             incoming().diff(existing()).affectedKeys().hasOnly(['warehouse', '_version', 'updatedByDevice', 'updatedAt']) ||
             incoming().diff(existing()).affectedKeys().hasOnly(['name', 'category', 'warehouse', 'unit', 'secondaryUnit', 'kgPerCarton', 'bobbinUnit', 'bobbinsPerCarton', 'yarnCount', 'lotNumber', 'originCountry', 'buyPrice', 'sellPrice', 'stock', 'reorderPoint', 'vatExempt', '_version', 'updatedByDevice', 'updatedAt'])
           )
