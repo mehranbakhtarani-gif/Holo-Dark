@@ -262,6 +262,7 @@ export async function commitInvoiceOperationalTx(payload: {
 
   return new Promise((resolve, reject) => {
     let tx: IDBTransaction | null = null;
+    let duplicateChequeFound = false;
     try {
       tx = db.transaction(['meta', 'products', 'vouchers', 'cheques', 'invoices'], 'readwrite');
       const prodStore = tx.objectStore('products');
@@ -272,7 +273,16 @@ export async function commitInvoiceOperationalTx(payload: {
         tx.objectStore('vouchers').put(payload.voucher);
       }
       if (payload.cheque) {
-        tx.objectStore('cheques').put(payload.cheque);
+        const chequeStore = tx.objectStore('cheques');
+        const chequeRead = chequeStore.get(payload.cheque.id);
+        chequeRead.onsuccess = () => {
+          if (chequeRead.result) {
+            duplicateChequeFound = true;
+            tx?.abort();
+            return;
+          }
+          chequeStore.put(payload.cheque!);
+        };
       }
       tx.objectStore('invoices').put(payload.invoice);
 
@@ -298,7 +308,11 @@ export async function commitInvoiceOperationalTx(payload: {
       };
       tx.onabort = () => {
         db.close();
-        reject(tx?.error ?? new Error('Atomic invoice IndexedDB transaction aborted'));
+        reject(
+          duplicateChequeFound
+            ? new Error('این شناسه صیادی قبلاً در پایگاه داده محلی ثبت شده است؛ فاکتور ذخیره نشد.')
+            : tx?.error ?? new Error('Atomic invoice IndexedDB transaction aborted')
+        );
       };
     } catch (err) {
       if (tx) {
