@@ -95,6 +95,7 @@ import {
 } from '../lib/audioFeedback';
 import {
   commitInvoiceOperationalTx,
+  commitChequeOperationalTx,
   commitInventoryAdjustmentOperationalTx,
   getOperationalDbStats,
   loadOperationalWorkspace,
@@ -2371,6 +2372,10 @@ export const AccountingProvider: React.FC<{ children: React.ReactNode }> = ({ ch
           const localVoucher = skipVoucher
             ? undefined
             : buildVoucher(getNextFiscalYearVoucherNumber(extractFiscalYearFromDate(payload.issueDate), undefined, localMax));
+          const saved = await commitChequeOperationalTx({ cheque: full, voucher: localVoucher });
+          if (!saved) {
+            throw new Error('پایگاه داده محلی در دسترس نیست؛ چک و سند خزانه ذخیره نشدند.');
+          }
           setCheques((prev) => [full, ...prev]);
           if (localVoucher) setVouchers((prev) => [...prev, localVoucher]);
         }
