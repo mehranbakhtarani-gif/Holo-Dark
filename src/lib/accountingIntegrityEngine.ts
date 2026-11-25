@@ -574,26 +574,30 @@ export function runIndependentAuditMode(input: IndependentAuditInput): Independe
   const recBoxDiff = Math.abs(
     subIrr(baseAudit.reconciliation.glChequesReceivableBox, baseAudit.reconciliation.subChequesReceivableBox)
   );
+  const recBankDiff = Math.abs(
+    subIrr(baseAudit.reconciliation.glChequesReceivableBank, baseAudit.reconciliation.subChequesReceivableBank)
+  );
   const payChqDiff = Math.abs(
     subIrr(baseAudit.reconciliation.glChequesPayable, baseAudit.reconciliation.subChequesPayable)
   );
   const invalidSayadi = cheques.filter(
     (c) => (c.status === 'in_box' || c.status === 'deposited') && c.sayadiId.replace(/\D/g, '').length !== 16
   );
-  if (recBoxDiff >= 1 || payChqDiff >= 1 || invalidSayadi.length > 0) {
+  if (recBoxDiff >= 1 || recBankDiff >= 1 || payChqDiff >= 1 || invalidSayadi.length > 0) {
     addFinding({
       codeKey: 'CHQ',
       controlArea: 'cheques',
       errorType: 'مغایرت خزانه چک‌ها با دفاتر یا شناسه صیادی نامعتبر',
-      severity: recBoxDiff >= 1 || payChqDiff >= 1 ? 'major' : 'warning',
-      discrepancyAmount: addIrr(recBoxDiff, payChqDiff),
+      severity: recBoxDiff >= 1 || recBankDiff >= 1 || payChqDiff >= 1 ? 'major' : 'warning',
+      discrepancyAmount: addIrr(addIrr(recBoxDiff, recBankDiff), payChqDiff),
       relatedDocuments: [
         ...(recBoxDiff >= 1 ? [`اختلاف ۱۰۳۰۱: ${recBoxDiff} ریال`] : []),
+        ...(recBankDiff >= 1 ? [`اختلاف ۱۰۳۰۲: ${recBankDiff} ریال`] : []),
         ...(payChqDiff >= 1 ? [`اختلاف ۳۰۲۰۱: ${payChqDiff} ریال`] : []),
         ...invalidSayadi.slice(0, 6).map((c) => `چک ${c.sayadiId} (${c.partyName})`),
       ],
       probableCause: 'تغییر وضعیت چک بدون ثبت سند متناظر یا ورود شناسه صیادی غیر ۱۶ رقمی',
-      suggestedFix: 'تطبیق لیست چک‌های فعال با گردش معین‌های ۱۰۳۰۱ و ۳۰۲۰۱ و تکمیل کد ۱۶ رقمی صیادی',
+      suggestedFix: 'تطبیق لیست چک‌های فعال و در جریان وصول با گردش معین‌های ۱۰۳۰۱، ۱۰۳۰۲ و ۳۰۲۰۱ و تکمیل کد ۱۶ رقمی صیادی',
     });
   } else {
     verifiedItems.push({
