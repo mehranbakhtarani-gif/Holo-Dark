@@ -237,6 +237,7 @@ test('Atomic Invoice Commit: Plans inventory delta, balanced voucher, Sayadi che
     chequeSayadiId: '1234567890123456',
     chequeSerial: 'TEST-001',
     chequeBankName: 'بانک تست',
+    chequeIssueDate: '1405/07/10',
     chequeDueDate: '1405/07/10',
     creditAmount,
     status: 'issued',
@@ -281,6 +282,7 @@ test('Atomic Invoice Commit: Plans inventory delta, balanced voucher, Sayadi che
   assert.equal(plan.cheque!.sayadiId, '1234567890123456', 'Cheque must retain the actual Sayadi ID supplied by the operator');
   assert.equal(plan.cheque!.serial, 'TEST-001');
   assert.equal(plan.cheque!.bankName, 'بانک تست');
+  assert.equal(plan.cheque!.issueDate, '1405/07/10');
   assert.equal(plan.cheque!.dueDate, '1405/07/10');
   assert.equal(plan.invoice.voucherId, 'vch_atomic_1', 'Invoice must link to planned voucher');
   assert.throws(
@@ -740,6 +742,7 @@ test('Stage 10 [Scenario 8]: Mixed Settlement Sale (Cash + Bank + Cheque + Credi
       chequeSayadiId: '1234567890123457',
       chequeSerial: 'TEST-002',
       chequeBankName: 'بانک تست',
+      chequeIssueDate: '1405/02/05',
       chequeDueDate: '1405/02/05',
       creditAmount: 20_000_000,
       status: 'issued',
@@ -1046,6 +1049,7 @@ test('Stage 10 [Scenario 12]: End-to-End Full Reconciliation (TB, BS, P&L, Cash 
       chequeSayadiId: '1234567890123458',
       chequeSerial: 'TEST-003',
       chequeBankName: 'بانک تست',
+      chequeIssueDate: '1405/01/15',
       chequeDueDate: '1405/01/15',
       creditAmount: 100_000_000,
       status: 'issued',
@@ -1084,6 +1088,7 @@ test('Stage 10 [Scenario 12]: End-to-End Full Reconciliation (TB, BS, P&L, Cash 
       chequeSayadiId: '1234567890123459',
       chequeSerial: 'TEST-004',
       chequeBankName: 'بانک تست',
+      chequeIssueDate: '1405/01/20',
       chequeDueDate: '1405/01/20',
       creditAmount: 50_000_000,
       status: 'issued',
