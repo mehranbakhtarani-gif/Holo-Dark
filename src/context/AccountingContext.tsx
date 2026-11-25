@@ -1907,7 +1907,7 @@ export const AccountingProvider: React.FC<{ children: React.ReactNode }> = ({ ch
           const committed = await runTransaction(db, async (tx) => {
             const counterRef = doc(db, 'counters', user.uid);
             const counterSnap = await tx.get(counterRef);
-            const counterData = counterSnap.exists() ? counterSnap.data() : {};
+            const counterData: Record<string, unknown> = counterSnap.exists() ? (counterSnap.data() as Record<string, unknown>) : {};
             const yearCounters =
               counterData.voucherNumbersByFiscalYear &&
               typeof counterData.voucherNumbersByFiscalYear === 'object'
