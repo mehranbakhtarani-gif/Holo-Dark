@@ -2508,8 +2508,6 @@ export const AccountingProvider: React.FC<{ children: React.ReactNode }> = ({ ch
             }
 
             let voucher: Voucher | undefined;
-            let counterRef: ReturnType<typeof doc> | undefined;
-            let counterSnap: Awaited<ReturnType<typeof tx.get>> | undefined;
             let nextVoucherNumber = 0;
 
             if (plan.lines.length >= 2) {
@@ -2534,8 +2532,8 @@ export const AccountingProvider: React.FC<{ children: React.ReactNode }> = ({ ch
               const localMax = vouchers
                 .filter((v) => (v.fiscalYear || extractFiscalYearFromDate(v.date)) === fy)
                 .reduce((max, v) => Math.max(max, v.voucherNumber || 0), 0);
-              counterRef = doc(db, 'counters', user.uid);
-              counterSnap = await tx.get(counterRef);
+              const counterRef = doc(db, 'counters', user.uid);
+              const counterSnap = await tx.get(counterRef);
               const counterData = counterSnap.exists() ? counterSnap.data() : {};
               const yearCounters =
                 counterData.voucherNumbersByFiscalYear &&
