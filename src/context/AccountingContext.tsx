@@ -3484,7 +3484,6 @@ export const AccountingProvider: React.FC<{ children: React.ReactNode }> = ({ ch
         sourceProducts: Product[],
         nextVoucherNumber: number
       ) => {
-        const matchedParty = parties.find((party) => party.id === sourceInvoice.partyId);
         return planProformaToSaleConversion({
           proforma: sourceInvoice,
           conversionDate,
@@ -3761,7 +3760,6 @@ export const AccountingProvider: React.FC<{ children: React.ReactNode }> = ({ ch
       ownerId,
       deviceId,
       partyBalances,
-      updateProduct,
       user,
       showToast,
     ]
