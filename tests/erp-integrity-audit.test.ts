@@ -210,12 +210,14 @@ test('P0: Independent audit detects deposited-cheque GL mismatch on account 1030
       {
         accountCode: '10302',
         accountTitle: 'اسناد دریافتنی در جریان وصول',
+        description: 'ثبت مانده چک در جریان وصول',
         debit: 100_000,
         credit: 0,
       },
       {
         accountCode: '10101',
         accountTitle: 'صندوق',
+        description: 'حساب مقابل ثبت مانده چک',
         debit: 0,
         credit: 100_000,
       },
