@@ -989,7 +989,7 @@ export const InvoicesView: React.FC<{ initialIntent?: string; clearIntent?: () =
     const normalizedChequeSayadiId = normalizeChequeDigits(chequeSayadiId).replace(/\D/g, '');
     const normalizedChequeIssueDate = normalizeChequeDigits(chequeIssueDate).replace(/-/g, '/');
     const normalizedChequeDueDate = normalizeChequeDigits(chequeDueDate).replace(/-/g, '/');
-    if (safePaidCheque > 0 && invoiceType !== 'proforma' && invoiceType !== 'waste') {
+    if (safePaidCheque > 0 && invoiceType !== 'waste') {
       if (!/^\d{16}$/.test(normalizedChequeSayadiId)) {
         showToast('برای ثبت فاکتور با چک، شناسه صیادی واقعی و دقیقاً ۱۶ رقمی وارد کنید.');
         return;
@@ -1062,7 +1062,7 @@ export const InvoicesView: React.FC<{ initialIntent?: string; clearIntent?: () =
         paidCash: invoiceType === 'waste' ? 0 : safePaidCash,
         paidBank: invoiceType === 'waste' ? 0 : safePaidBank,
         paidCheque: invoiceType === 'waste' ? 0 : safePaidCheque,
-        ...(safePaidCheque > 0 && invoiceType !== 'proforma' && invoiceType !== 'waste'
+        ...(safePaidCheque > 0 && invoiceType !== 'waste'
           ? {
               chequeSayadiId: normalizedChequeSayadiId,
               chequeSerial: chequeSerial.trim(),
@@ -2258,7 +2258,7 @@ export const InvoicesView: React.FC<{ initialIntent?: string; clearIntent?: () =
                     />
                   </div>
                 </div>
-                {safePaidCheque > 0 && invoiceType !== 'proforma' && (
+                {safePaidCheque > 0 && invoiceType !== 'waste' && (
                   <div className="mt-3 grid grid-cols-1 sm:grid-cols-2 gap-3 rounded-lg border border-amber-200 dark:border-amber-900 bg-amber-50/60 dark:bg-amber-950/20 p-3">
                     <div className="sm:col-span-2 text-xs font-semibold text-amber-800 dark:text-amber-300">
                       مشخصات چک واقعی — ثبت بدون شناسه صیادی معتبر مجاز نیست
