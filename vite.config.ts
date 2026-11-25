@@ -7,8 +7,8 @@ import { VitePWA } from 'vite-plugin-pwa';
 
 export default defineConfig(({ command }) => {
   return {
-    // GitHub Pages serves this repository under /Holo-Dark/.
-    base: command === 'build' ? '/Holo-Dark/' : '/',
+    // GitHub Pages uses a repository subpath; Cloudflare Pages serves at the domain root.
+    base: command === 'build' && process.env.GITHUB_PAGES === 'true' ? '/Holo-Dark/' : '/',
     plugins: [
       react(),
       tailwindcss(),
@@ -29,44 +29,14 @@ export default defineConfig(({ command }) => {
           start_url: './',
           scope: './',
           icons: [
-            {
-              src: 'pwa-192x192.png',
-              sizes: '192x192',
-              type: 'image/png',
-              purpose: 'any',
-            },
-            {
-              src: 'pwa-512x512.png',
-              sizes: '512x512',
-              type: 'image/png',
-              purpose: 'any',
-            },
-            {
-              src: 'pwa-maskable-512x512.png',
-              sizes: '512x512',
-              type: 'image/png',
-              purpose: 'maskable',
-            },
+            { src: 'pwa-192x192.png', sizes: '192x192', type: 'image/png', purpose: 'any' },
+            { src: 'pwa-512x512.png', sizes: '512x512', type: 'image/png', purpose: 'any' },
+            { src: 'pwa-maskable-512x512.png', sizes: '512x512', type: 'image/png', purpose: 'maskable' },
           ],
           shortcuts: [
-            {
-              name: 'فاکتور فروش (F2)',
-              short_name: 'فروش',
-              url: './?view=invoices&action=new-sale',
-              icons: [{ src: '/pwa-192x192.png', sizes: '192x192', type: 'image/png' }],
-            },
-            {
-              name: 'ثبت سند حسابداری (F3)',
-              short_name: 'سند جدید',
-              url: './?view=vouchers&action=new-voucher',
-              icons: [{ src: '/pwa-192x192.png', sizes: '192x192', type: 'image/png' }],
-            },
-            {
-              name: 'خزانه‌داری و چک (F7)',
-              short_name: 'چک‌ها',
-              url: './?view=treasury',
-              icons: [{ src: '/pwa-192x192.png', sizes: '192x192', type: 'image/png' }],
-            },
+            { name: 'فاکتور فروش (F2)', short_name: 'فروش', url: './?view=invoices&action=new-sale', icons: [{ src: './pwa-192x192.png', sizes: '192x192', type: 'image/png' }] },
+            { name: 'ثبت سند حسابداری (F3)', short_name: 'سند جدید', url: './?view=vouchers&action=new-voucher', icons: [{ src: './pwa-192x192.png', sizes: '192x192', type: 'image/png' }] },
+            { name: 'خزانه‌داری و چک (F7)', short_name: 'چک‌ها', url: './?view=treasury', icons: [{ src: './pwa-192x192.png', sizes: '192x192', type: 'image/png' }] },
           ],
         },
         workbox: {
@@ -87,13 +57,8 @@ export default defineConfig(({ command }) => {
               handler: 'StaleWhileRevalidate',
               options: {
                 cacheName: 'apex-fx-rates-cache',
-                expiration: {
-                  maxEntries: 8,
-                  maxAgeSeconds: 60 * 60 * 24 * 7,
-                },
-                cacheableResponse: {
-                  statuses: [0, 200],
-                },
+                expiration: { maxEntries: 8, maxAgeSeconds: 60 * 60 * 24 * 7 },
+                cacheableResponse: { statuses: [0, 200] },
               },
             },
             {
@@ -101,13 +66,8 @@ export default defineConfig(({ command }) => {
               handler: 'CacheFirst',
               options: {
                 cacheName: 'apex-local-assets-cache',
-                expiration: {
-                  maxEntries: 40,
-                  maxAgeSeconds: 60 * 60 * 24 * 90,
-                },
-                cacheableResponse: {
-                  statuses: [0, 200],
-                },
+                expiration: { maxEntries: 40, maxAgeSeconds: 60 * 60 * 24 * 90 },
+                cacheableResponse: { statuses: [0, 200] },
               },
             },
             {
@@ -115,13 +75,8 @@ export default defineConfig(({ command }) => {
               handler: 'CacheFirst',
               options: {
                 cacheName: 'google-fonts-cache',
-                expiration: {
-                  maxEntries: 15,
-                  maxAgeSeconds: 60 * 60 * 24 * 365,
-                },
-                cacheableResponse: {
-                  statuses: [0, 200],
-                },
+                expiration: { maxEntries: 15, maxAgeSeconds: 60 * 60 * 24 * 365 },
+                cacheableResponse: { statuses: [0, 200] },
               },
             },
             {
@@ -129,32 +84,19 @@ export default defineConfig(({ command }) => {
               handler: 'CacheFirst',
               options: {
                 cacheName: 'gstatic-fonts-cache',
-                expiration: {
-                  maxEntries: 15,
-                  maxAgeSeconds: 60 * 60 * 24 * 365,
-                },
-                cacheableResponse: {
-                  statuses: [0, 200],
-                },
+                expiration: { maxEntries: 15, maxAgeSeconds: 60 * 60 * 24 * 365 },
+                cacheableResponse: { statuses: [0, 200] },
               },
             },
           ],
         },
-        devOptions: {
-          enabled: true,
-          type: 'module',
-        },
+        devOptions: { enabled: true, type: 'module' },
       }),
-      // Copies src/assets into dist/ so root-relative URLs like
-      // "/src/assets/images/..." (e.g. generate_image output) still resolve
-      // in production builds. Do not remove.
       {
         name: 'copy-unbundled-src-assets',
         apply: 'build',
         closeBundle(error?: Error): void {
-          if (error) {
-            return;
-          }
+          if (error) return;
           const distDir = path.resolve(__dirname, 'dist');
           const srcAssets = path.resolve(__dirname, 'src/assets');
           const distAssets = path.resolve(distDir, 'src/assets');
@@ -164,11 +106,7 @@ export default defineConfig(({ command }) => {
         },
       },
     ],
-    resolve: {
-      alias: {
-        '@': path.resolve(__dirname, '.'),
-      },
-    },
+    resolve: { alias: { '@': path.resolve(__dirname, '.') } },
     server: {
       hmr: process.env.DISABLE_HMR !== 'true',
       watch: process.env.DISABLE_HMR === 'true' ? null : {},
