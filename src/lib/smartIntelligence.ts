@@ -105,6 +105,7 @@ export interface ReservedInvoice {
   chequeSayadiId?: string;
   chequeSerial?: string;
   chequeBankName?: string;
+  chequeIssueDate?: string;
   chequeDueDate?: string;
   estimatedTotalIrr: number;
   note?: string;
