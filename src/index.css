@@ -1,0 +1,219 @@
+@import "tailwindcss";
+@custom-variant dark (&:where(.dark, .dark *));
+
+@layer base {
+  :root {
+    --font-sans: 'Vazirmatn', system-ui, -apple-system, sans-serif;
+    --font-mono: 'IBM Plex Mono', 'Vazirmatn', ui-monospace, monospace;
+    --ease-smooth: cubic-bezier(0.16, 1, 0.3, 1);
+
+    /* Dual-Theme Bento Financial Palette (Crisp Light Mode) */
+    --apex-canvas: #f8fafc;
+    --apex-surface: #ffffff;
+    --apex-surface-subtle: #f1f5f9;
+    --apex-border: rgba(15, 23, 42, 0.08);
+    --apex-ink: #0f172a;
+    --apex-ink-muted: #64748b;
+
+    /* Semantic Financial Module Accents */
+    --apex-primary: #6366f1;      /* Primary Indigo — Charts & Branding */
+    --apex-treasury: #818cf8;     /* Periwinkle Indigo — Expenses & Secondary */
+    --apex-income: #10b981;       /* Vivid Emerald — Positive Trends, In-Stock & Revenue */
+    --apex-alert: #ef4444;        /* Coral Red — Critical & Out of Stock */
+    --apex-warning: #f59e0b;      /* Warm Amber — Low Stock & Due Alerts */
+    --apex-analytics: #6366f1;    /* Indigo — Reports & Intelligence */
+  }
+
+  .dark {
+    --apex-canvas: #0b0f17;
+    --apex-surface: #151a24;
+    --apex-surface-subtle: #161b26;
+    --apex-border: rgba(255, 255, 255, 0.07);
+    --apex-ink: #f8fafc;
+    --apex-ink-muted: #94a3b8;
+  }
+
+  html {
+    font-family: var(--font-sans);
+    scroll-behavior: smooth;
+    -webkit-tap-highlight-color: transparent;
+    background-color: var(--apex-canvas);
+    color: var(--apex-ink);
+  }
+
+  body {
+    font-feature-settings: "tnum" on, "lnum" on;
+    background-color: var(--apex-canvas);
+    color: var(--apex-ink);
+    text-rendering: optimizeLegibility;
+    -webkit-font-smoothing: antialiased;
+  }
+
+  /* High-visibility accessible keyboard focus ring for rapid accounting data entry */
+  :is(button, a, input, select, textarea, [tabindex]):focus-visible {
+    outline: 2px solid #6366f1;
+    outline-offset: 2px;
+  }
+
+  /* Faded activity placeholders that vanish immediately when the user focuses/selects any field */
+  input::placeholder,
+  textarea::placeholder {
+    color: rgba(100, 116, 139, 0.62);
+    opacity: 1;
+    transition: opacity 110ms var(--ease-smooth), color 110ms var(--ease-smooth);
+  }
+
+  .dark input::placeholder,
+  .dark textarea::placeholder {
+    color: rgba(148, 163, 184, 0.52);
+  }
+
+  input:focus::placeholder,
+  textarea:focus::placeholder {
+    color: transparent !important;
+    opacity: 0 !important;
+  }
+
+  /* Crisp tactile micro-interaction on buttons without layout shift */
+  button:not(:disabled):active {
+    transform: scale(0.985);
+    transition: transform 110ms var(--ease-smooth);
+  }
+}
+
+.tabular-nums {
+  font-variant-numeric: tabular-nums;
+}
+
+.font-code {
+  font-family: var(--font-mono);
+  font-variant-numeric: tabular-nums;
+}
+
+/* Soft financial surface elevation */
+.apex-surface {
+  background-color: var(--apex-surface);
+  border-color: var(--apex-border);
+}
+
+.apex-kpi-positive {
+  color: var(--apex-income);
+}
+
+.apex-kpi-negative {
+  color: var(--apex-alert);
+}
+
+@keyframes apex-tx-flash {
+  0% {
+    opacity: 0;
+    transform: translateY(6px) scale(0.985);
+  }
+  100% {
+    opacity: 1;
+    transform: translateY(0) scale(1);
+  }
+}
+
+.apex-tx-enter {
+  animation: apex-tx-flash 180ms var(--ease-smooth) both;
+}
+
+/* Subtle primary-theme pulse wave for active PeerJS Mesh sync controls */
+@keyframes apex-mesh-pulse-wave {
+  0% {
+    box-shadow: 0 0 0 0 color-mix(in srgb, var(--apex-primary) 42%, transparent);
+  }
+  70% {
+    box-shadow: 0 0 0 9px color-mix(in srgb, var(--apex-primary) 0%, transparent);
+  }
+  100% {
+    box-shadow: 0 0 0 0 color-mix(in srgb, var(--apex-primary) 0%, transparent);
+  }
+}
+
+.dark .apex-mesh-pulse-wave,
+.dark .apex-mesh-pulse-wave-fast {
+  --apex-mesh-ring-color: rgba(45, 212, 191, 0.42);
+}
+
+@keyframes apex-mesh-pulse-wave-dark {
+  0% {
+    box-shadow: 0 0 0 0 rgba(45, 212, 191, 0.42);
+  }
+  70% {
+    box-shadow: 0 0 0 9px rgba(45, 212, 191, 0);
+  }
+  100% {
+    box-shadow: 0 0 0 0 rgba(45, 212, 191, 0);
+  }
+}
+
+.apex-mesh-pulse-wave {
+  animation: apex-mesh-pulse-wave 2.4s cubic-bezier(0.22, 1, 0.36, 1) infinite;
+}
+
+.apex-mesh-pulse-wave-fast {
+  animation: apex-mesh-pulse-wave 1.25s cubic-bezier(0.22, 1, 0.36, 1) infinite;
+}
+
+.dark .apex-mesh-pulse-wave {
+  animation: apex-mesh-pulse-wave-dark 2.4s cubic-bezier(0.22, 1, 0.36, 1) infinite;
+}
+
+.dark .apex-mesh-pulse-wave-fast {
+  animation: apex-mesh-pulse-wave-dark 1.25s cubic-bezier(0.22, 1, 0.36, 1) infinite;
+}
+
+/* Safe-area bottom spacing for notched mobile devices */
+.pb-safe {
+  padding-bottom: max(0.35rem, env(safe-area-inset-bottom));
+}
+
+/* Custom sleek scrollbar for high-density financial tables */
+::-webkit-scrollbar {
+  width: 6px;
+  height: 6px;
+}
+
+::-webkit-scrollbar-track {
+  background: transparent;
+}
+
+::-webkit-scrollbar-thumb {
+  background: rgba(100, 116, 139, 0.28);
+  border-radius: 3px;
+}
+
+::-webkit-scrollbar-thumb:hover {
+  background: rgba(15, 118, 110, 0.55);
+}
+
+/* Respect user motion preferences strictly */
+@media (prefers-reduced-motion: reduce) {
+  *,
+  *::before,
+  *::after {
+    animation-duration: 0.01ms !important;
+    animation-iteration-count: 1 !important;
+    transition-duration: 0.01ms !important;
+    scroll-behavior: auto !important;
+  }
+}
+
+/* Print styles for official invoices, vouchers, and financial reports */
+@media print {
+  .no-print {
+    display: none !important;
+  }
+  body {
+    background: #ffffff !important;
+    color: #0f172a !important;
+  }
+  .print-container {
+    box-shadow: none !important;
+    border: none !important;
+    margin: 0 !important;
+    padding: 0 !important;
+  }
+}
