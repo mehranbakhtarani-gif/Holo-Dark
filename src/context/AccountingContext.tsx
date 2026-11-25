@@ -62,6 +62,7 @@ import {
   computeTrialBalance,
   computeVoucherIntegrityHash,
   extractFiscalYearFromDate,
+  getNextFiscalYearVoucherNumber,
   planAtomicInvoiceCommit,
   planChequeStatusTransition,
   planInvoiceCancellation,
@@ -483,8 +484,7 @@ export const AccountingProvider: React.FC<{ children: React.ReactNode }> = ({ ch
             data.voucherNumbersByFiscalYear && typeof data.voucherNumbersByFiscalYear === 'object'
               ? data.voucherNumbersByFiscalYear as Record<string, number>
               : {};
-          const currentYearMax = Math.max(Number(yearCounters[fiscalYear]) || 0, fallbackMax);
-          const nextNum = currentYearMax + 1;
+          const nextNum = getNextFiscalYearVoucherNumber(fiscalYear, yearCounters, fallbackMax);
           const globalMax = Math.max(Number(data.lastVoucherNumber) || 0, nextNum);
           const nextYearCounters = { ...yearCounters, [fiscalYear]: nextNum };
           if (!snap.exists()) {
@@ -1255,10 +1255,7 @@ export const AccountingProvider: React.FC<{ children: React.ReactNode }> = ({ ch
       const sameYearMax = vouchers
         .filter((v) => (v.fiscalYear || extractFiscalYearFromDate(v.date)) === voucherFy)
         .reduce((max, v) => Math.max(max, v.voucherNumber || 0), 0);
-      const nextNumber =
-        voucherFy === profile.fiscalYear
-          ? await reserveNextVoucherNumber(voucherFy, sameYearMax)
-          : sameYearMax + 1;
+      const nextNumber = await reserveNextVoucherNumber(voucherFy, sameYearMax);
       const id = generateSafeId('vch');
 
       const normCode = normalizeCurrencyCode(payload.currencyCode);
@@ -2480,7 +2477,7 @@ export const AccountingProvider: React.FC<{ children: React.ReactNode }> = ({ ch
       if (user) {
         const isOfflineNow = typeof navigator !== 'undefined' && !navigator.onLine;
         if (isOfflineNow) {
-          if (plan.voucher) {
+          if (payload.invoiceType !== 'proforma') {
             throw new Error('برای جلوگیری از شماره‌گذاری تکراری و مغایرت انبار، ثبت فاکتور مالی در حالت آفلاین متوقف شد. پس از اتصال اینترنت دوباره تلاش کنید.');
           }
           // Proforma invoices have no stock or ledger impact and can be queued offline.
@@ -2498,11 +2495,11 @@ export const AccountingProvider: React.FC<{ children: React.ReactNode }> = ({ ch
                 typeof counterData.voucherNumbersByFiscalYear === 'object'
                   ? counterData.voucherNumbersByFiscalYear as Record<string, number>
                   : {};
-              const currentYearMax = Math.max(
-                Number(yearCounters[invoiceFy]) || 0,
+              const liveNextVoucherNum = getNextFiscalYearVoucherNumber(
+                invoiceFy,
+                yearCounters,
                 localMaxVoucherNum
               );
-              const liveNextVoucherNum = currentYearMax + 1;
 
               // Read live products for every item in the invoice
               const uniqueProductIds = Array.from(new Set(payload.items.map((it) => it.productId)));
