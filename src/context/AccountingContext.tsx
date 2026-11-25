@@ -2478,7 +2478,9 @@ export const AccountingProvider: React.FC<{ children: React.ReactNode }> = ({ ch
         const isOfflineNow = typeof navigator !== 'undefined' && !navigator.onLine;
         if (isOfflineNow) {
           if (payload.invoiceType !== 'proforma') {
-            throw new Error('برای جلوگیری از شماره‌گذاری تکراری و مغایرت انبار، ثبت فاکتور مالی در حالت آفلاین متوقف شد. پس از اتصال اینترنت دوباره تلاش کنید.');
+            const offlineError = new Error('برای جلوگیری از شماره‌گذاری تکراری و مغایرت انبار، ثبت فاکتور مالی در حالت آفلاین متوقف شد. پس از اتصال اینترنت دوباره تلاش کنید.');
+            showToast(offlineError.message, 'error');
+            throw offlineError;
           }
           // Proforma invoices have no stock or ledger impact and can be queued offline.
           committedInvoice = await commitAtomicOfflineCloudBatch();
