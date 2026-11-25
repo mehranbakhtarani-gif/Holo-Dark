@@ -12,6 +12,7 @@ import {
   computeTrialBalance,
   computeVatSummaryReport,
   computeVoucherIntegrityHash,
+  getNextFiscalYearVoucherNumber,
   isValidShamsiDate,
   filterVouchersForReport,
   planAtomicInvoiceCommit,
@@ -46,6 +47,15 @@ const tests: TestCase[] = [];
 function test(name: string, fn: () => void | Promise<void>) {
   tests.push({ name, fn });
 }
+
+test('P0: Fiscal-year voucher counters remain independent and honor legacy cached maxima', () => {
+  const counters = { '1404': 42, '1405': 7 };
+  assert.equal(getNextFiscalYearVoucherNumber('1404', counters, 40), 43);
+  assert.equal(getNextFiscalYearVoucherNumber('1405', counters, 9), 10);
+  assert.equal(getNextFiscalYearVoucherNumber('1406', counters, 3), 4);
+  assert.equal(getNextFiscalYearVoucherNumber('1405', undefined, 12), 13);
+  assert.equal(getNextFiscalYearVoucherNumber('1405', counters, Number.NaN), 8);
+});
 
 test('P0: Jalali date validation rejects Esfand 30 in common years and accepts it in leap years', () => {
   assert.equal(isValidShamsiDate('1400/12/30'), false);
