@@ -697,7 +697,11 @@ service cloud.firestore {
     }
 
     match /cheques/{chequeId} {
-      allow get: if isValidId(chequeId) && isVerified() && (existing().ownerId == request.auth.uid || isAdmin());
+      allow get: if isValidId(chequeId) && isVerified() && (
+        !exists(/databases/$(database)/documents/cheques/$(chequeId))
+        || existing().ownerId == request.auth.uid
+        || isAdmin()
+      );
       allow list: if isVerified() && resource.data.ownerId == request.auth.uid;
       allow create: if isValidId(chequeId) && isVerified()
         && isValidCheque(incoming())
