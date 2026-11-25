@@ -278,7 +278,27 @@ test('Atomic Invoice Commit: Plans inventory delta, balanced voucher, Sayadi che
   assert.equal(plan.voucher!.totalDebit, plan.voucher!.totalCredit, 'Voucher must be balanced');
   assert.ok(plan.cheque, 'Sayadi cheque must be created atomically when paidCheque > 0');
   assert.equal(plan.cheque!.amount, paidCheque, 'Cheque amount must match invoice paidCheque');
+  assert.equal(plan.cheque!.sayadiId, '1234567890123456', 'Cheque must retain the actual Sayadi ID supplied by the operator');
+  assert.equal(plan.cheque!.serial, 'TEST-001');
+  assert.equal(plan.cheque!.bankName, 'بانک تست');
+  assert.equal(plan.cheque!.dueDate, '1405/07/10');
   assert.equal(plan.invoice.voucherId, 'vch_atomic_1', 'Invoice must link to planned voucher');
+  assert.throws(
+    () =>
+      planAtomicInvoiceCommit({
+        invoiceId: 'inv_atomic_missing_sayadi',
+        voucherId: 'vch_atomic_missing_sayadi',
+        chequeId: 'chq_atomic_missing_sayadi',
+        nextVoucherNumber: 902,
+        ownerId: 'test_owner',
+        deviceId: 'dev_test',
+        payload: { ...payload, chequeSayadiId: '' },
+        products: seed.products,
+        party,
+        currentPartyBalance: 0,
+      }),
+    /شناسه صیادی واقعی/
+  );
 });
 
 test('Atomic Invoice Commit: Rejects completely on insufficient stock, settlement mismatch, or cash overdraft', () => {
