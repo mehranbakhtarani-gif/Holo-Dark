@@ -8,6 +8,7 @@ import {
   computeVoucherIntegrityHash,
   planAtomicInvoiceCommit,
   planStockAdjustmentWithCostLayers,
+  planChequeStatusTransition,
   planYearEndClosing,
   validateVoucherPayload,
 } from '../src/lib/accountingEngine';
@@ -57,7 +58,7 @@ import {
   postSandboxInvoice,
   postSandboxVoucher,
 } from '../src/lib/sandboxEngine';
-import { CompanyProfile, Invoice, Party, Product, Voucher } from '../src/types/accounting';
+import { Cheque, CompanyProfile, Invoice, Party, Product, Voucher } from '../src/types/accounting';
 
 const tests: { name: string; fn: () => Promise<void> | void }[] = [];
 function test(name: string, fn: () => Promise<void> | void) {
@@ -190,6 +191,56 @@ test('P0: Stocktaking plan keeps inventory valuation and adjustment voucher bala
   assert.equal(plan.voucher.totalDebit, 50_000_000);
   assert.equal(plan.voucher.totalCredit, 50_000_000);
   assert.equal(plan.voucher.integrityHash, computeVoucherIntegrityHash(plan.voucher));
+});
+
+test('P0: Cheque transition planner rejects duplicate, terminal and invalid-value transitions', () => {
+  const ws = makeFreshCleanWorkspace();
+  const baseCheque: Cheque = {
+    id: 'cheque_transition_test',
+    ownerId: 'owner_test',
+    sayadiId: '1234567890123456',
+    serial: 'SERIAL-001',
+    direction: 'receivable',
+    partyId: ws.parties[0].id,
+    partyName: ws.parties[0].name,
+    bankName: 'بانک آزمایشی',
+    amount: 25_000_000,
+    issueDate: '1405/01/01',
+    dueDate: '1405/02/01',
+    status: 'in_box',
+  };
+
+  const duplicate = planChequeStatusTransition({
+    cheque: baseCheque,
+    newStatus: 'in_box',
+    accounts: ws.accounts,
+    parties: ws.parties,
+  });
+  assert.equal(duplicate.ok, false);
+
+  const invalidAmount = planChequeStatusTransition({
+    cheque: { ...baseCheque, amount: 0 },
+    newStatus: 'deposited',
+    accounts: ws.accounts,
+    parties: ws.parties,
+  });
+  assert.equal(invalidAmount.ok, false);
+
+  const cleared = planChequeStatusTransition({
+    cheque: { ...baseCheque, status: 'cleared' },
+    newStatus: 'in_box',
+    accounts: ws.accounts,
+    parties: ws.parties,
+  });
+  assert.equal(cleared.ok, false);
+
+  const payableEndorse = planChequeStatusTransition({
+    cheque: { ...baseCheque, direction: 'payable' },
+    newStatus: 'endorsed',
+    accounts: ws.accounts,
+    parties: ws.parties,
+  });
+  assert.equal(payableEndorse.ok, false);
 });
 
 // ============================================================================
