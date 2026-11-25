@@ -2253,7 +2253,7 @@ export const InvoicesView: React.FC<{ initialIntent?: string; clearIntent?: () =
                       onValueChange={(num) => setPaidCheque(num)}
                       placeholder="مبلغ چک"
                       unitLabel="ریال"
-                      hint="جمع چک‌های دریافتی/پرداختی"
+                      hint="مبلغ یک فقره چک صیادی؛ ثبت چند چک در یک فاکتور فعلاً پشتیبانی نمی‌شود"
                       className="py-1.5 text-xs rounded-lg border border-slate-200 dark:border-slate-700 bg-white dark:bg-slate-950"
                     />
                   </div>
@@ -2609,7 +2609,7 @@ export const InvoicesView: React.FC<{ initialIntent?: string; clearIntent?: () =
                         onValueChange={(num) => setPaidCheque(Math.max(0, num))}
                         placeholder="مبلغ چک به ریال"
                         unitLabel="ریال"
-                        hint="بخش پرداختی با چک صیادی"
+                        hint="مبلغ یک فقره چک؛ هر فاکتور فعلاً یک شناسه صیادی می‌پذیرد"
                         className="py-2 rounded-lg border border-slate-200 dark:border-slate-700 bg-white dark:bg-slate-950"
                       />
                     </div>
