@@ -693,11 +693,11 @@ service cloud.firestore {
         && (
           (
             incoming().paidCheque == existing().paidCheque
-            && incoming().chequeSayadiId == existing().chequeSayadiId
-            && incoming().chequeSerial == existing().chequeSerial
-            && incoming().chequeBankName == existing().chequeBankName
-            && incoming().chequeIssueDate == existing().chequeIssueDate
-            && incoming().chequeDueDate == existing().chequeDueDate
+            && incoming().get('chequeSayadiId', '') == existing().get('chequeSayadiId', '')
+            && incoming().get('chequeSerial', '') == existing().get('chequeSerial', '')
+            && incoming().get('chequeBankName', '') == existing().get('chequeBankName', '')
+            && incoming().get('chequeIssueDate', '') == existing().get('chequeIssueDate', '')
+            && incoming().get('chequeDueDate', '') == existing().get('chequeDueDate', '')
           )
           || incoming().paidCheque == 0
           || incoming().invoiceType == 'waste'
