@@ -2271,8 +2271,9 @@ export function planAtomicInvoiceCommit(input: AtomicInvoicePlanInput): AtomicIn
         integrityHash: computeVoucherIntegrityHash(baseVoucher),
       };
     }
+  }
 
-    // Validate real cheque metadata for every invoice that carries a cheque settlement.
+  // Validate real cheque metadata for every invoice that carries a cheque settlement.
     // Proformas do not post a ledger voucher yet, but retain the actual cheque details
     // so conversion to a final sale never fabricates a Sayadi identifier.
     let chequeDetails:
