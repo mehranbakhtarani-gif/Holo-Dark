@@ -2301,6 +2301,12 @@ export const AccountingProvider: React.FC<{ children: React.ReactNode }> = ({ ch
               const counterRef = doc(db, 'counters', user.uid);
               const counterSnap = await tx.get(counterRef);
               const counterData = counterSnap.exists() ? counterSnap.data() : {};
+              if (payload.paidCheque > 0) {
+                const existingCheque = await tx.get(doc(db, 'cheques', plannedChequeId));
+                if (existingCheque.exists()) {
+                  throw new Error('این شناسه صیادی قبلاً در سرور ثبت شده است؛ ثبت فاکتور لغو شد.');
+                }
+              }
               const yearCounters =
                 counterData.voucherNumbersByFiscalYear &&
                 typeof counterData.voucherNumbersByFiscalYear === 'object'
@@ -2806,7 +2812,16 @@ export const AccountingProvider: React.FC<{ children: React.ReactNode }> = ({ ch
     async (payload: Omit<Invoice, 'id' | 'ownerId' | 'voucherId'>): Promise<Invoice> => {
       const id = generateSafeId('inv');
       const plannedVoucherId = generateSafeId('vch');
-      const plannedChequeId = generateSafeId('chq');
+      const normalizeSayadi = (value: string) =>
+        String(value ?? '')
+          .replace(/[۰-۹]/g, (digit) => String(digit.charCodeAt(0) - 1776))
+          .replace(/[٠-٩]/g, (digit) => String(digit.charCodeAt(0) - 1632))
+          .replace(/\D/g, '');
+      const normalizedChequeSayadi = normalizeSayadi(payload.chequeSayadiId ?? '');
+      const plannedChequeId =
+        payload.paidCheque > 0 && /^\d{16}$/.test(normalizedChequeSayadi)
+          ? `chq_${ownerId.slice(0, 40)}_${normalizedChequeSayadi}`
+          : generateSafeId('chq');
       const invoiceFy = extractFiscalYearFromDate(payload.date) || profile.fiscalYear;
       const localMaxVoucherNum = vouchers
         .filter((v) => (v.fiscalYear || extractFiscalYearFromDate(v.date)) === invoiceFy)
@@ -2825,6 +2840,12 @@ export const AccountingProvider: React.FC<{ children: React.ReactNode }> = ({ ch
 
       const selectedParty = parties.find((p) => p.id === payload.partyId);
       const currentPartyBal = partyBalances.get(payload.partyId) ?? 0;
+      if (
+        payload.paidCheque > 0 &&
+        cheques.some((item) => normalizeSayadi(item.sayadiId) === normalizedChequeSayadi)
+      ) {
+        throw new Error('این شناسه صیادی قبلاً در خزانه ثبت شده است.');
+      }
 
       // Helper to serialize an Invoice for Firestore rules compliance
       const serializeInvoiceForFirestore = (inv: Invoice) => ({
@@ -2856,6 +2877,10 @@ export const AccountingProvider: React.FC<{ children: React.ReactNode }> = ({ ch
         paidCash: inv.paidCash,
         paidBank: inv.paidBank,
         paidCheque: inv.paidCheque,
+        ...(inv.chequeSayadiId ? { chequeSayadiId: normalizeSayadi(inv.chequeSayadiId) } : {}),
+        ...(inv.chequeSerial ? { chequeSerial: inv.chequeSerial.trim().slice(0, 48) } : {}),
+        ...(inv.chequeBankName ? { chequeBankName: inv.chequeBankName.trim().slice(0, 100) } : {}),
+        ...(inv.chequeDueDate ? { chequeDueDate: inv.chequeDueDate.slice(0, 20) } : {}),
         creditAmount: inv.creditAmount,
         status: inv.status,
         ...(inv.voucherId ? { voucherId: inv.voucherId } : {}),
