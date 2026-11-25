@@ -267,11 +267,22 @@ export async function commitInvoiceOperationalTx(payload: {
     let tx: IDBTransaction | null = null;
     let duplicateChequeFound = false;
     let invoiceConflictFound = false;
+    let productConflictFound = false;
     try {
       tx = db.transaction(['meta', 'products', 'vouchers', 'cheques', 'invoices'], 'readwrite');
       const prodStore = tx.objectStore('products');
       for (const prod of payload.updatedProducts) {
-        prodStore.put(prod);
+        const productRead = prodStore.get(prod.id);
+        productRead.onsuccess = () => {
+          const existing = productRead.result as Product | undefined;
+          const expectedVersion = Math.max(1, (prod._version ?? 2) - 1);
+          if (!existing || (existing._version ?? 1) !== expectedVersion) {
+            productConflictFound = true;
+            tx?.abort();
+            return;
+          }
+          prodStore.put(prod);
+        };
       }
       if (payload.voucher) {
         tx.objectStore('vouchers').put(payload.voucher);
@@ -337,7 +348,9 @@ export async function commitInvoiceOperationalTx(payload: {
             ? new Error('این شناسه صیادی قبلاً در پایگاه داده محلی ثبت شده است؛ فاکتور ذخیره نشد.')
             : invoiceConflictFound
               ? new Error('پیش‌فاکتور در زبانه دیگری تغییر کرده یا قبلاً تبدیل شده است؛ اطلاعات را تازه‌سازی کنید.')
-              : tx?.error ?? new Error('Atomic invoice IndexedDB transaction aborted')
+              : productConflictFound
+                ? new Error('موجودی یا بهای تمام‌شده کالا در زبانه دیگری تغییر کرده است؛ اطلاعات را تازه‌سازی و فاکتور را دوباره ثبت کنید.')
+                : tx?.error ?? new Error('Atomic invoice IndexedDB transaction aborted')
         );
       };
     } catch (err) {
