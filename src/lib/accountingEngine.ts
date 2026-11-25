@@ -2272,14 +2272,22 @@ export function planAtomicInvoiceCommit(input: AtomicInvoicePlanInput): AtomicIn
       };
     }
 
-    // 5. Build Sayadi Cheque record atomically if paidCheque > 0 (all 4 invoice types supported!)
-    if (
-      payload.paidCheque > 0 &&
-      (payload.invoiceType === 'sale' ||
-        payload.invoiceType === 'purchase' ||
-        payload.invoiceType === 'sale_return' ||
-        payload.invoiceType === 'purchase_return')
-    ) {
+    // Validate real cheque metadata for every invoice that carries a cheque settlement.
+    // Proformas do not post a ledger voucher yet, but retain the actual cheque details
+    // so conversion to a final sale never fabricates a Sayadi identifier.
+    let chequeDetails:
+      | {
+          sayadiId: string;
+          serial: string;
+          bankName: string;
+          issueDate: string;
+          dueDate: string;
+        }
+      | undefined;
+    if (payload.paidCheque > 0) {
+      if (payload.invoiceType === 'waste') {
+        throw new Error('فاکتور ضایعات داخلی نمی‌تواند با چک تسویه شود.');
+      }
       const normalizeSayadiDigits = (value: string) =>
         String(value ?? '')
           .replace(/[۰-۹]/g, (digit) => String(digit.charCodeAt(0) - 1776))
@@ -2302,6 +2310,24 @@ export function planAtomicInvoiceCommit(input: AtomicInvoicePlanInput): AtomicIn
       ) {
         throw new Error('تاریخ صدور یا سررسید چک معتبر نیست؛ سررسید نباید قبل از تاریخ صدور باشد.');
       }
+      chequeDetails = {
+        sayadiId,
+        serial: chequeSerial.slice(0, 48),
+        bankName: chequeBankName.slice(0, 100),
+        issueDate: chequeIssueDate,
+        dueDate: chequeDueDate,
+      };
+    }
+
+    // Only ledger-posting invoice types create a cheque subledger record now.
+    // Proformas keep the validated details for the eventual conversion step.
+    if (
+      chequeDetails &&
+      (payload.invoiceType === 'sale' ||
+        payload.invoiceType === 'purchase' ||
+        payload.invoiceType === 'sale_return' ||
+        payload.invoiceType === 'purchase_return')
+    ) {
       const cId = chequeId || `chq_inv_${invoiceId}`;
       const direction: Cheque['direction'] =
         payload.invoiceType === 'sale' || payload.invoiceType === 'purchase_return'
@@ -2310,32 +2336,31 @@ export function planAtomicInvoiceCommit(input: AtomicInvoicePlanInput): AtomicIn
       cheque = {
         id: cId,
         ownerId,
-        sayadiId,
-        serial: chequeSerial.slice(0, 48),
+        sayadiId: chequeDetails.sayadiId,
+        serial: chequeDetails.serial,
         direction,
         partyId: payload.partyId,
         partyName: payload.partyName,
-        bankName: chequeBankName.slice(0, 100),
+        bankName: chequeDetails.bankName,
         amount: Math.round(payload.paidCheque),
-        issueDate: chequeIssueDate,
-        dueDate: chequeDueDate,
+        issueDate: chequeDetails.issueDate,
+        dueDate: chequeDetails.dueDate,
         status: 'in_box',
         notes: `ثبت اتمیک بابت فاکتور ${payload.invoiceNumber}`,
         _version: 1,
         updatedByDevice: deviceId,
       };
     }
-  }
 
   const invoice: Invoice = {
     ...payload,
-    ...(cheque
+    ...(chequeDetails
       ? {
-          chequeSayadiId: cheque.sayadiId,
-          chequeSerial: cheque.serial,
-          chequeBankName: cheque.bankName,
-          chequeIssueDate: cheque.issueDate,
-          chequeDueDate: cheque.dueDate,
+          chequeSayadiId: chequeDetails.sayadiId,
+          chequeSerial: chequeDetails.serial,
+          chequeBankName: chequeDetails.bankName,
+          chequeIssueDate: chequeDetails.issueDate,
+          chequeDueDate: chequeDetails.dueDate,
         }
       : {}),
     items: reconciledItems,
