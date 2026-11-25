@@ -234,7 +234,7 @@ test('P0: Independent audit detects deposited-cheque GL mismatch on account 1030
     invoices: [],
     cheques: [],
   });
-  const chequeFinding = report.findings.find((finding) => finding.errorType.includes('خزانه چک‌ها'));
+  const chequeFinding = report.allFindings.find((finding) => finding.errorType.includes('خزانه چک‌ها'));
   assert.ok(chequeFinding, '10302 subledger/GL mismatch must produce a cheque finding');
   assert.ok(chequeFinding.relatedDocuments.some((item) => item.includes('۱۰۳۰۲')));
   assert.equal(chequeFinding.discrepancyAmount, 100_000);
