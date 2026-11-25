@@ -2143,6 +2143,9 @@ export const AccountingProvider: React.FC<{ children: React.ReactNode }> = ({ ch
       if (!Number.isSafeInteger(amount) || amount <= 0) {
         throw new Error('مبلغ چک باید عدد صحیح مثبت و قابل ثبت به ریال باشد.');
       }
+      if (!payload.serial?.trim() || !payload.bankName?.trim()) {
+        throw new Error('شماره سریال و نام بانک برای ثبت چک الزامی است.');
+      }
       if (!isValidShamsiDate(payload.issueDate) || !isValidShamsiDate(payload.dueDate)) {
         throw new Error('تاریخ صدور یا سررسید چک معتبر نیست.');
       }
@@ -2173,7 +2176,13 @@ export const AccountingProvider: React.FC<{ children: React.ReactNode }> = ({ ch
       const full: Cheque = {
         ...payload,
         sayadiId: normalizedSayadi,
+        serial: payload.serial.trim().slice(0, 48),
         partyName: party.name,
+        bankName: payload.bankName.trim().slice(0, 100),
+        ...(payload.branch?.trim() ? { branch: payload.branch.trim().slice(0, 100) } : {}),
+        ...(payload.notes?.trim() ? { notes: payload.notes.trim().slice(0, 300) } : {}),
+        issueDate: payload.issueDate.slice(0, 20),
+        dueDate: payload.dueDate.slice(0, 20),
         amount,
         id,
         ownerId,
