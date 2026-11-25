@@ -273,6 +273,10 @@ export interface Invoice {
   paidCash: number;
   paidBank: number;
   paidCheque: number;
+  chequeSayadiId?: string;
+  chequeSerial?: string;
+  chequeBankName?: string;
+  chequeDueDate?: string;
   creditAmount: number;
   status: InvoiceStatus;
   voucherId?: string;
