@@ -2882,6 +2882,7 @@ export const AccountingProvider: React.FC<{ children: React.ReactNode }> = ({ ch
         ...(inv.chequeSayadiId ? { chequeSayadiId: normalizeSayadi(inv.chequeSayadiId) } : {}),
         ...(inv.chequeSerial ? { chequeSerial: inv.chequeSerial.trim().slice(0, 48) } : {}),
         ...(inv.chequeBankName ? { chequeBankName: inv.chequeBankName.trim().slice(0, 100) } : {}),
+        ...(inv.chequeIssueDate ? { chequeIssueDate: inv.chequeIssueDate.slice(0, 20) } : {}),
         ...(inv.chequeDueDate ? { chequeDueDate: inv.chequeDueDate.slice(0, 20) } : {}),
         creditAmount: inv.creditAmount,
         status: inv.status,
