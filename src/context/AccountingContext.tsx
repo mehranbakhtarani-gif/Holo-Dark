@@ -3450,17 +3450,45 @@ export const AccountingProvider: React.FC<{ children: React.ReactNode }> = ({ ch
         showToast('نقش فعال مجوز تبدیل پیش‌فاکتور و صدور فاکتور فروش قطعی را ندارد.');
         return;
       }
-      const inv = invoices.find((i) => i.id === invoiceId);
+      const inv = invoices.find((item) => item.id === invoiceId);
       if (!inv || inv.invoiceType !== 'proforma' || inv.status === 'cancelled') return;
 
       const conversionDate = getTodayShamsi();
-      const nextNum = vouchers.reduce((m, v) => Math.max(m, v.voucherNumber || 0), 0) + 1;
-      let plan;
-      try {
-        plan = planProformaToSaleConversion({
-          proforma: inv,
+      const plannedVoucherId = generateSafeId('vch');
+      const normalizeSayadi = (value: string) =>
+        String(value ?? '')
+          .replace(/[۰-۹]/g, (digit) => String(digit.charCodeAt(0) - 1776))
+          .replace(/[٠-٩]/g, (digit) => String(digit.charCodeAt(0) - 1632))
+          .replace(/\D/g, '');
+      const normalizedSayadi = normalizeSayadi(inv.chequeSayadiId ?? '');
+      const plannedChequeId =
+        inv.paidCheque > 0 && /^\d{16}$/.test(normalizedSayadi)
+          ? `chq_${ownerId.slice(0, 40)}_${normalizedSayadi}`
+          : generateSafeId('chq');
+
+      if (
+        inv.paidCheque > 0 &&
+        cheques.some((item) => normalizeSayadi(item.sayadiId) === normalizedSayadi)
+      ) {
+        showToast('این شناسه صیادی قبلاً در خزانه ثبت شده است؛ تبدیل پیش‌فاکتور انجام نشد.', 'error');
+        return;
+      }
+
+      const fiscalYear = extractFiscalYearFromDate(conversionDate) || profile.fiscalYear;
+      const localMax = vouchers
+        .filter((voucher) => (voucher.fiscalYear || extractFiscalYearFromDate(voucher.date)) === fiscalYear)
+        .reduce((max, voucher) => Math.max(max, voucher.voucherNumber || 0), 0);
+
+      const buildFinalPlan = (
+        sourceInvoice: Invoice,
+        sourceProducts: Product[],
+        nextVoucherNumber: number
+      ) => {
+        const matchedParty = parties.find((party) => party.id === sourceInvoice.partyId);
+        return planProformaToSaleConversion({
+          proforma: sourceInvoice,
           conversionDate,
-          products,
+          products: sourceProducts,
           parties,
           existingInvoices: invoices,
           existingVouchers: vouchers,
@@ -3468,95 +3496,259 @@ export const AccountingProvider: React.FC<{ children: React.ReactNode }> = ({ ch
           allowNegativeStock: false,
           closedFiscalYears: profile.closedFiscalYears ?? [],
           ownerId,
-          voucherId: generateSafeId('vch'),
-          nextVoucherNumber: nextNum,
-          chequeId: `chq_inv_${inv.id}`,
+          voucherId: plannedVoucherId,
+          nextVoucherNumber,
+          chequeId: plannedChequeId,
           deviceId,
           partyBalances,
         });
-      } catch (err) {
-        showToast(err instanceof Error ? err.message : 'خطا در تبدیل پیش‌فاکتور به فاکتور فروش.');
-        return;
-      }
-
-      // Apply exact FIFO/MWA product updates (stock, buyPrice, costLayers, inventoryValueIrr)
-      for (const [pid, delta] of plan.productDeltas.entries()) {
-        await updateProduct(pid, {
-          stock: delta.stock,
-          buyPrice: delta.buyPrice,
-          costLayers: delta.costLayers,
-          inventoryValueIrr: delta.inventoryValueIrr,
-        });
-      }
-
-      // Issue FX-aware sealed permanent voucher
-      let createdVoucherId = plan.voucher?.id;
-      if (plan.voucher) {
-        const isFx = isForeignCurrency(inv.currencyCode) && Number(inv.exchangeRate) > 0;
-        const vLines =
-          isFx && inv.exchangeRate
-            ? annotateVoucherLinesWithCurrency(plan.voucher.lines, inv.exchangeRate, 2)
-            : plan.voucher.lines;
-        const createdVoucher = await createVoucher({
-          date: plan.voucher.date,
-          description: `سند اتوماتیک تبدیل پیش‌فاکتور به فروش رسمی ${plan.invoice.invoiceNumber} — ${inv.partyName}`,
-          voucherType: 'sales',
-          status: 'permanent',
-          lines: vLines,
-          referenceId: inv.id,
-          ...(isFx && inv.currencyCode && inv.exchangeRate
-            ? { currencyCode: inv.currencyCode, exchangeRate: inv.exchangeRate }
-            : {}),
-        });
-        createdVoucherId = createdVoucher.id;
-      }
-
-      // Register Sayadi receivable cheque if proforma had paidCheque > 0 (keeps GL 10301 reconciled!)
-      if (plan.cheque) {
-        if (user) {
-          try {
-            await setDoc(doc(db, 'cheques', plan.cheque.id), {
-              ...plan.cheque,
-              createdAt: serverTimestamp(),
-              updatedAt: serverTimestamp(),
-            });
-          } catch (err) {
-            handleFirestoreError(err, OperationType.CREATE, `cheques/${plan.cheque.id}`);
-          }
-        } else {
-          setCheques((prev) => [plan.cheque!, ...prev]);
-        }
-      }
-
-      const finalInvoice: Invoice = {
-        ...plan.invoice,
-        voucherId: createdVoucherId,
       };
 
-      if (user) {
-        try {
-          await updateDoc(doc(db, 'invoices', invoiceId), {
-            invoiceNumber: finalInvoice.invoiceNumber,
-            invoiceType: 'sale',
-            date: finalInvoice.date,
-            status: finalInvoice.status,
-            voucherId: createdVoucherId ?? null,
-            items: finalInvoice.items.slice(0, 100),
-            _version: finalInvoice._version ?? (inv._version ?? 1) + 1,
-            updatedByDevice: deviceId.slice(0, 64),
-            updatedAt: serverTimestamp(),
+      try {
+        if (user) {
+          const committed = await runTransaction(db, async (tx) => {
+            const invoiceRef = doc(db, 'invoices', invoiceId);
+            const invoiceSnap = await tx.get(invoiceRef);
+            if (!invoiceSnap.exists()) {
+              throw new Error('پیش‌فاکتور در سرور پیدا نشد؛ تبدیل انجام نشد.');
+            }
+            const liveInvoiceData = invoiceSnap.data();
+            const liveProforma: Invoice = {
+              ...inv,
+              ...liveInvoiceData,
+              id: invoiceId,
+              ownerId: liveInvoiceData.ownerId,
+            } as Invoice;
+            if (
+              liveProforma.invoiceType !== 'proforma' ||
+              liveProforma.status === 'cancelled' ||
+              (Number(liveProforma._version) || 1) !== (inv._version ?? 1)
+            ) {
+              throw new Error('پیش‌فاکتور در دستگاه دیگری تغییر کرده یا قبلاً تبدیل شده است؛ اطلاعات را تازه‌سازی کنید.');
+            }
+
+            const counterRef = doc(db, 'counters', user.uid);
+            const counterSnap = await tx.get(counterRef);
+            const counterData: Record<string, unknown> = counterSnap.exists()
+              ? (counterSnap.data() as Record<string, unknown>)
+              : {};
+            const yearCounters =
+              counterData.voucherNumbersByFiscalYear &&
+              typeof counterData.voucherNumbersByFiscalYear === 'object'
+                ? counterData.voucherNumbersByFiscalYear as Record<string, number>
+                : {};
+            const nextVoucherNumber = getNextFiscalYearVoucherNumber(
+              fiscalYear,
+              yearCounters,
+              localMax
+            );
+
+            let chequeSnap: Awaited<ReturnType<typeof tx.get>> | undefined;
+            if (liveProforma.paidCheque > 0) {
+              chequeSnap = await tx.get(doc(db, 'cheques', plannedChequeId));
+              if (chequeSnap.exists()) {
+                throw new Error('این شناسه صیادی قبلاً در سرور ثبت شده است؛ تبدیل پیش‌فاکتور لغو شد.');
+              }
+            }
+
+            const productIds = Array.from(new Set(liveProforma.items.map((item) => item.productId)));
+            const liveProductMap = new Map<string, Product>();
+            for (const productId of productIds) {
+              const productSnap = await tx.get(doc(db, 'products', productId));
+              if (!productSnap.exists()) {
+                throw new Error(`کالای ${productId} در سرور پیدا نشد؛ تبدیل پیش‌فاکتور لغو شد.`);
+              }
+              const cachedProduct = products.find((product) => product.id === productId);
+              if (!cachedProduct) {
+                throw new Error(`اطلاعات پایه کالای ${productId} در حافظه برنامه موجود نیست.`);
+              }
+              const data = productSnap.data();
+              liveProductMap.set(productId, {
+                ...cachedProduct,
+                stock: Number(data.stock) || 0,
+                buyPrice: Number(data.buyPrice) || 0,
+                ...(data.costingMethod ? { costingMethod: data.costingMethod } : {}),
+                ...(Array.isArray(data.costLayers) ? { costLayers: data.costLayers } : {}),
+                ...(typeof data.inventoryValueIrr === 'number' ? { inventoryValueIrr: data.inventoryValueIrr } : {}),
+                _version: Number(data._version) || 1,
+              });
+            }
+            const liveProducts = products.map((product) => liveProductMap.get(product.id) ?? product);
+            const plan = buildFinalPlan(liveProforma, liveProducts, nextVoucherNumber);
+
+            let voucherToCommit: Voucher | undefined;
+            if (plan.voucher) {
+              const isFx = isForeignCurrency(liveProforma.currencyCode) && Number(liveProforma.exchangeRate) > 0;
+              const voucherLines =
+                isFx && liveProforma.exchangeRate
+                  ? annotateVoucherLinesWithCurrency(plan.voucher.lines, liveProforma.exchangeRate, 2)
+                  : plan.voucher.lines;
+              const baseVoucher: Voucher = {
+                ...plan.voucher,
+                description: `سند اتوماتیک تبدیل پیش‌فاکتور به فروش رسمی ${plan.invoice.invoiceNumber} — ${liveProforma.partyName}`,
+                voucherType: 'sales',
+                referenceId: invoiceId,
+                lines: voucherLines,
+              };
+              voucherToCommit = {
+                ...baseVoucher,
+                integrityHash: computeVoucherIntegrityHash(baseVoucher),
+              };
+            }
+
+            const finalInvoice: Invoice = {
+              ...plan.invoice,
+              voucherId: voucherToCommit?.id,
+              _version: (Number(liveProforma._version) || 1) + 1,
+            };
+
+            // All transaction reads are complete. Stock, voucher, cheque, counter and invoice
+            // are now committed as one indivisible Firestore transaction.
+            for (const product of plan.updatedProducts) {
+              tx.update(doc(db, 'products', product.id), {
+                stock: product.stock,
+                buyPrice: product.buyPrice,
+                ...(product.costingMethod ? { costingMethod: product.costingMethod } : {}),
+                ...(product.costLayers ? { costLayers: product.costLayers } : {}),
+                ...(typeof product.inventoryValueIrr === 'number' ? { inventoryValueIrr: product.inventoryValueIrr } : {}),
+                _version: product._version ?? 2,
+                updatedByDevice: deviceId.slice(0, 64),
+                updatedAt: serverTimestamp(),
+              });
+            }
+
+            if (voucherToCommit) {
+              const nextYearCounters = { ...yearCounters, [fiscalYear]: nextVoucherNumber };
+              const globalMax = Math.max(Number(counterData.lastVoucherNumber) || 0, nextVoucherNumber);
+              if (!counterSnap.exists()) {
+                tx.set(counterRef, {
+                  ownerId: user.uid,
+                  lastVoucherNumber: globalMax,
+                  voucherNumbersByFiscalYear: nextYearCounters,
+                  lastInvoiceSeq: 102,
+                  updatedByDevice: deviceId.slice(0, 64),
+                  createdAt: serverTimestamp(),
+                  updatedAt: serverTimestamp(),
+                });
+              } else {
+                tx.update(counterRef, {
+                  lastVoucherNumber: globalMax,
+                  voucherNumbersByFiscalYear: nextYearCounters,
+                  updatedByDevice: deviceId.slice(0, 64),
+                  updatedAt: serverTimestamp(),
+                });
+              }
+              tx.set(doc(db, 'vouchers', voucherToCommit.id), {
+                ownerId,
+                voucherNumber: voucherToCommit.voucherNumber,
+                date: voucherToCommit.date,
+                description: voucherToCommit.description,
+                voucherType: voucherToCommit.voucherType,
+                status: voucherToCommit.status,
+                totalDebit: voucherToCommit.totalDebit,
+                totalCredit: voucherToCommit.totalCredit,
+                referenceId: invoiceId,
+                integrityHash: voucherToCommit.integrityHash,
+                lines: voucherToCommit.lines,
+                ...(isForeignCurrency(liveProforma.currencyCode) && liveProforma.exchangeRate
+                  ? { currencyCode: liveProforma.currencyCode, exchangeRate: liveProforma.exchangeRate }
+                  : {}),
+                _version: voucherToCommit._version ?? 1,
+                updatedByDevice: deviceId.slice(0, 64),
+                createdAt: serverTimestamp(),
+                updatedAt: serverTimestamp(),
+              });
+            }
+
+            if (plan.cheque) {
+              tx.set(doc(db, 'cheques', plan.cheque.id), {
+                ownerId,
+                sayadiId: plan.cheque.sayadiId,
+                serial: plan.cheque.serial,
+                direction: plan.cheque.direction,
+                partyId: plan.cheque.partyId,
+                partyName: plan.cheque.partyName,
+                bankName: plan.cheque.bankName,
+                ...(plan.cheque.branch ? { branch: plan.cheque.branch.slice(0, 100) } : {}),
+                amount: plan.cheque.amount,
+                issueDate: plan.cheque.issueDate,
+                dueDate: plan.cheque.dueDate,
+                status: plan.cheque.status,
+                ...(plan.cheque.notes ? { notes: plan.cheque.notes.slice(0, 300) } : {}),
+                _version: plan.cheque._version ?? 1,
+                updatedByDevice: deviceId.slice(0, 64),
+                createdAt: serverTimestamp(),
+                updatedAt: serverTimestamp(),
+              });
+            }
+
+            tx.update(invoiceRef, {
+              invoiceNumber: finalInvoice.invoiceNumber,
+              invoiceType: 'sale',
+              date: finalInvoice.date,
+              status: finalInvoice.status,
+              voucherId: voucherToCommit?.id ?? null,
+              items: finalInvoice.items.slice(0, 100),
+              _version: finalInvoice._version,
+              updatedByDevice: deviceId.slice(0, 64),
+              updatedAt: serverTimestamp(),
+            });
+
+            return {
+              updatedProducts: plan.updatedProducts,
+              voucher: voucherToCommit,
+              cheque: plan.cheque,
+              invoice: finalInvoice,
+            };
           });
-        } catch (err) {
-          handleFirestoreError(err, OperationType.UPDATE, `invoices/${invoiceId}`);
+
+          setProducts((prev) =>
+            prev.map((product) =>
+              committed.updatedProducts.find((updated) => updated.id === product.id) ?? product
+            )
+          );
+          if (committed.voucher) setVouchers((prev) => [...prev, committed.voucher!]);
+          if (committed.cheque) setCheques((prev) => [committed.cheque!, ...prev]);
+          setInvoices((prev) => prev.map((item) => (item.id === invoiceId ? committed.invoice : item)));
+        } else {
+          const nextVoucherNumber = getNextFiscalYearVoucherNumber(
+            fiscalYear,
+            undefined,
+            localMax
+          );
+          const plan = buildFinalPlan(inv, products, nextVoucherNumber);
+          const finalInvoice: Invoice = {
+            ...plan.invoice,
+            voucherId: plan.voucher?.id,
+            _version: (Number(inv._version) || 1) + 1,
+          };
+          const saved = await commitInvoiceOperationalTx({
+            updatedProducts: plan.updatedProducts,
+            voucher: plan.voucher,
+            cheque: plan.cheque,
+            invoice: finalInvoice,
+            expectedInvoiceType: 'proforma',
+            expectedInvoiceVersion: inv._version ?? 1,
+          });
+          if (!saved) {
+            throw new Error('پایگاه داده محلی در دسترس نیست؛ تبدیل پیش‌فاکتور ذخیره نشد.');
+          }
+          setProducts((prev) =>
+            prev.map((product) =>
+              plan.updatedProducts.find((updated) => updated.id === product.id) ?? product
+            )
+          );
+          if (plan.voucher) setVouchers((prev) => [...prev, plan.voucher!]);
+          if (plan.cheque) setCheques((prev) => [plan.cheque!, ...prev]);
+          setInvoices((prev) => prev.map((item) => (item.id === invoiceId ? finalInvoice : item)));
+          void getOperationalDbStats().then(setOperationalDbStats).catch(() => {});
         }
-      } else {
-        setInvoices((prev) => prev.map((i) => (i.id === invoiceId ? finalInvoice : i)));
+
+        showToast('پیش‌فاکتور به‌صورت اتمیک به فاکتور فروش تبدیل شد؛ موجودی، سند، چک و دفتر کل هم‌زمان ثبت شدند.');
+      } catch (err) {
+        const message = err instanceof Error ? err.message : 'خطا در تبدیل اتمیک پیش‌فاکتور به فاکتور فروش.';
+        showToast(message, 'error');
       }
-      showToast(
-        `پیش‌فاکتور با موفقیت به فاکتور فروش رسمی ${finalInvoice.invoiceNumber} تبدیل، موجودی لایه‌ای کسر و سند قطعی صادر شد.${
-          plan.cheque ? ' (چک صیادی نیز در خزانه‌داری ثبت شد)' : ''
-        }`
-      );
     },
     [
       activeOperator,
@@ -3564,12 +3756,12 @@ export const AccountingProvider: React.FC<{ children: React.ReactNode }> = ({ ch
       products,
       parties,
       vouchers,
+      cheques,
       profile,
       ownerId,
       deviceId,
       partyBalances,
       updateProduct,
-      createVoucher,
       user,
       showToast,
     ]
