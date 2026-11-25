@@ -2258,7 +2258,7 @@ export const InvoicesView: React.FC<{ initialIntent?: string; clearIntent?: () =
                     />
                   </div>
                 </div>
-                {safePaidCheque > 0 && invoiceType !== 'waste' && (
+                {safePaidCheque > 0 && (
                   <div className="mt-3 grid grid-cols-1 sm:grid-cols-2 gap-3 rounded-lg border border-amber-200 dark:border-amber-900 bg-amber-50/60 dark:bg-amber-950/20 p-3">
                     <div className="sm:col-span-2 text-xs font-semibold text-amber-800 dark:text-amber-300">
                       مشخصات چک واقعی — ثبت بدون شناسه صیادی معتبر مجاز نیست
