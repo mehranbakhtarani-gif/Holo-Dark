@@ -572,6 +572,7 @@ test('3. Credit Purchase + Mixed Sale Settlement with Sayadi Cheque & Treasury L
       chequeSayadiId: '1234567890123460',
       chequeSerial: 'TEST-005',
       chequeBankName: 'بانک تست',
+      chequeIssueDate: '1405/04/10',
       chequeDueDate: '1405/04/10',
       creditAmount: 40_000_000,
       status: 'issued',
