@@ -315,6 +315,78 @@ export async function commitInvoiceOperationalTx(payload: {
 }
 
 /**
+ * Atomically creates a cheque and its opening ledger voucher in local mode.
+ * The deterministic cheque ID is checked inside the same IndexedDB transaction,
+ * so two tabs cannot both register the same Sayadi identifier.
+ */
+export async function commitChequeOperationalTx(payload: {
+  cheque: Cheque;
+  voucher?: Voucher;
+}): Promise<boolean> {
+  if (!isIndexedDbAvailable()) return false;
+  const db = await openOperationalDb();
+  const committedAt = new Date().toISOString();
+
+  return new Promise((resolve, reject) => {
+    let tx: IDBTransaction | null = null;
+    let duplicateFound = false;
+    try {
+      tx = db.transaction(['meta', 'cheques', 'vouchers'], 'readwrite');
+      const chequeStore = tx.objectStore('cheques');
+      const existingRequest = chequeStore.get(payload.cheque.id);
+      existingRequest.onsuccess = () => {
+        if (existingRequest.result) {
+          duplicateFound = true;
+          tx?.abort();
+          return;
+        }
+        chequeStore.put(payload.cheque);
+        if (payload.voucher) tx?.objectStore('vouchers').put(payload.voucher);
+
+        const metaStore = tx!.objectStore('meta');
+        const revisionRequest = metaStore.get('workspace_meta');
+        revisionRequest.onsuccess = () => {
+          const existing = revisionRequest.result as { localRevision?: number } | undefined;
+          metaStore.put({
+            key: 'workspace_meta',
+            localRevision: (existing?.localRevision ?? 0) + 1,
+            updatedAt: committedAt,
+            schemaVersion: OP_DB_VERSION,
+          });
+        };
+      };
+
+      tx.oncomplete = () => {
+        db.close();
+        resolve(true);
+      };
+      tx.onerror = () => {
+        db.close();
+        reject(tx?.error ?? new Error('Atomic cheque IndexedDB commit failed'));
+      };
+      tx.onabort = () => {
+        db.close();
+        reject(
+          duplicateFound
+            ? new Error('این شناسه صیادی قبلاً در پایگاه داده محلی ثبت شده است.')
+            : tx?.error ?? new Error('Atomic cheque IndexedDB transaction aborted')
+        );
+      };
+    } catch (err) {
+      if (tx) {
+        try {
+          tx.abort();
+        } catch {
+          // Ignore an already completed or aborted transaction.
+        }
+      }
+      db.close();
+      reject(err);
+    }
+  });
+}
+
+/**
  * Commits an inventory stocktaking adjustment and its ledger voucher atomically.
  * No in-memory state should be updated unless this transaction completes.
  */
