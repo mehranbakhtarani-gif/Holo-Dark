@@ -2368,6 +2368,20 @@ export function extractFiscalYearFromDate(date: string): string {
   return match ? match[1] : '';
 }
 
+export function getNextFiscalYearVoucherNumber(
+  fiscalYear: string,
+  counters: Record<string, number> | undefined,
+  fallbackMax: number
+): number {
+  const persisted = Number(counters?.[fiscalYear]);
+  const cached = Number(fallbackMax);
+  const persistedMax = Number.isFinite(persisted) && persisted > 0 ? Math.floor(persisted) : 0;
+  const cachedMax = Number.isFinite(cached) && cached > 0 ? Math.floor(cached) : 0;
+  return Math.max(persistedMax, cachedMax) + 1;
+}
+
+
+
 export function accountRequiresParty(accountCode: string, account?: Account): boolean {
   if (account?.requiresParty === true) return true;
   if (account?.requiresParty === false) return false;
