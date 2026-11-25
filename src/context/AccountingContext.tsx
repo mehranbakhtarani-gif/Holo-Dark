@@ -94,6 +94,7 @@ import {
 } from '../lib/audioFeedback';
 import {
   commitInvoiceOperationalTx,
+  commitInventoryAdjustmentOperationalTx,
   getOperationalDbStats,
   loadOperationalWorkspace,
   OperationalDbStats,
@@ -1816,127 +1817,250 @@ export const AccountingProvider: React.FC<{ children: React.ReactNode }> = ({ ch
     [user]
   );
 
-  const adjustProductStockWithVoucher = useCallback(
-    async (productId: string, countedStock: number, reason: string) => {
-      const prod = products.find((p) => p.id === productId);
-      if (!prod) return;
-      const today = getTodayShamsi();
-      const refId = generateSafeId('stk');
-      let plan;
-      try {
-        plan = planStockAdjustmentWithCostLayers({
-          product: prod,
-          newStock: countedStock,
-          date: today,
-          reason,
-          costingMethod: profile.defaultCostingMethod ?? 'fifo',
-          allowNegativeStock: false,
-          closedFiscalYears: profile.closedFiscalYears ?? [],
-          accounts,
+  const commitStockAdjustmentBatch = useCallback(
+    async (
+      entries: { productId: string; countedStock: number }[],
+      reason: string,
+      referenceId: string
+    ): Promise<number> => {
+      if (entries.length === 0) return 0;
+      if (entries.length > 450) {
+        throw new Error('هر نوبت انبارگردانی حداکثر می‌تواند ۴۵۰ قلم کالا داشته باشد.');
+      }
+      const productIds = entries.map((entry) => entry.productId);
+      if (new Set(productIds).size !== productIds.length) {
+        throw new Error('در یک عملیات انبارگردانی، هر کالا باید فقط یک‌بار وارد شود.');
+      }
+
+      const date = getTodayShamsi();
+      const fiscalYear = extractFiscalYearFromDate(date) || profile.fiscalYear;
+      const localMaxVoucherNumber = vouchers
+        .filter((v) => (v.fiscalYear || extractFiscalYearFromDate(v.date)) === fiscalYear)
+        .reduce((max, v) => Math.max(max, v.voucherNumber || 0), 0);
+      const voucherId = generateSafeId('vch');
+
+      const buildPlans = (sourceProducts: Product[], nextVoucherNumber: number) => {
+        const productMap = new Map(sourceProducts.map((product) => [product.id, product]));
+        const plans: ReturnType<typeof planStockAdjustmentWithCostLayers>[] = [];
+        for (const entry of entries) {
+          const product = productMap.get(entry.productId);
+          if (!product) throw new Error(`کالای ${entry.productId} در اطلاعات معتبر انبار پیدا نشد.`);
+          plans.push(
+            planStockAdjustmentWithCostLayers({
+              product,
+              newStock: entry.countedStock,
+              date,
+              reason,
+              costingMethod: profile.defaultCostingMethod ?? 'fifo',
+              allowNegativeStock: false,
+              closedFiscalYears: profile.closedFiscalYears ?? [],
+              accounts,
+              ownerId,
+              referenceId: `${referenceId}_${product.id}`,
+              voucherId,
+              nextVoucherNumber,
+              deviceId,
+            })
+          );
+        }
+        return plans.filter((plan) => Math.abs(plan.diffQty) >= 0.001);
+      };
+
+      const buildVoucher = (
+        plans: ReturnType<typeof planStockAdjustmentWithCostLayers>[],
+        nextVoucherNumber: number
+      ): Voucher | undefined => {
+        const lines = plans.flatMap((plan) => plan.voucher?.lines ?? []);
+        if (lines.length === 0) return undefined;
+        const totalDebit = lines.reduce((sum, line) => sum + Math.max(0, Math.round(Number(line.debit) || 0)), 0);
+        const totalCredit = lines.reduce((sum, line) => sum + Math.max(0, Math.round(Number(line.credit) || 0)), 0);
+        if (totalDebit <= 0 || totalDebit !== totalCredit) {
+          throw new Error('سند تجمیعی انبارگردانی تراز نیست؛ هیچ تغییری در موجودی ذخیره نشد.');
+        }
+        const baseVoucher: Voucher = {
+          id: voucherId,
           ownerId,
-          referenceId: refId,
-          voucherId: generateSafeId('vch'),
-          nextVoucherNumber:
-            vouchers.reduce((m, v) => Math.max(m, v.voucherNumber || 0), 0) + 1,
-          deviceId,
-        });
-      } catch (err) {
-        showToast(err instanceof Error ? err.message : 'خطا در تعدیل موجودی انبارگردانی.');
-        return;
-      }
-
-      if (Math.abs(plan.diffQty) < 0.001) {
-        showToast('موجودی شمارش‌شده با موجودی سیستمی برابر است؛ نیازی به تعدیل نیست.');
-        return;
-      }
-
-      await updateProduct(prod.id, {
-        stock: plan.productDelta.stock,
-        buyPrice: plan.productDelta.buyPrice,
-        costLayers: plan.productDelta.costLayers,
-        inventoryValueIrr: plan.productDelta.inventoryValueIrr,
-      });
-
-      if (plan.voucher) {
-        await createVoucher({
-          date: plan.voucher.date,
-          description: plan.voucher.description,
+          voucherNumber: nextVoucherNumber,
+          date,
+          fiscalYear,
+          description: `سند تجمیعی انبارگردانی (${plans.length} قلم کالا) — ${reason || 'اصلاح موجودی فیزیکی'}`,
           voucherType: 'general',
           status: 'permanent',
-          lines: plan.voucher.lines,
-          referenceId: refId,
-        });
-      } else {
-        showToast('موجودی انبارگردانی با موفقیت تعدیل شد.');
+          totalDebit,
+          totalCredit,
+          referenceId,
+          lines,
+          _version: 1,
+          updatedByDevice: deviceId,
+        };
+        return { ...baseVoucher, integrityHash: computeVoucherIntegrityHash(baseVoucher) };
+      };
+
+      try {
+        if (user) {
+          if (typeof navigator !== 'undefined' && !navigator.onLine) {
+            throw new Error('برای جلوگیری از مغایرت موجودی و دفتر کل، انبارگردانی مالی در حالت آفلاین مجاز نیست.');
+          }
+          const committed = await runTransaction(db, async (tx) => {
+            const counterRef = doc(db, 'counters', user.uid);
+            const counterSnap = await tx.get(counterRef);
+            const counterData = counterSnap.exists() ? counterSnap.data() : {};
+            const yearCounters =
+              counterData.voucherNumbersByFiscalYear &&
+              typeof counterData.voucherNumbersByFiscalYear === 'object'
+                ? counterData.voucherNumbersByFiscalYear as Record<string, number>
+                : {};
+
+            const liveProducts: Product[] = [];
+            for (const productId of productIds) {
+              const productRef = doc(db, 'products', productId);
+              const productSnap = await tx.get(productRef);
+              if (!productSnap.exists()) {
+                throw new Error(`کالا با شناسه ${productId} در سرور وجود ندارد؛ انبارگردانی لغو شد.`);
+              }
+              const cachedProduct = products.find((product) => product.id === productId);
+              if (!cachedProduct) {
+                throw new Error(`اطلاعات پایه کالای ${productId} در حافظه برنامه موجود نیست.`);
+              }
+              const data = productSnap.data();
+              liveProducts.push({
+                ...cachedProduct,
+                stock: Number(data.stock) || 0,
+                buyPrice: Number(data.buyPrice) || 0,
+                ...(data.costingMethod ? { costingMethod: data.costingMethod } : {}),
+                ...(Array.isArray(data.costLayers) ? { costLayers: data.costLayers } : {}),
+                ...(typeof data.inventoryValueIrr === 'number' ? { inventoryValueIrr: data.inventoryValueIrr } : {}),
+                _version: Number(data._version) || 1,
+              });
+            }
+
+            const nextVoucherNumber = getNextFiscalYearVoucherNumber(
+              fiscalYear,
+              yearCounters,
+              localMaxVoucherNumber
+            );
+            const plans = buildPlans(liveProducts, nextVoucherNumber);
+            const updatedProducts = plans.map((plan) => plan.updatedProduct);
+            const voucher = buildVoucher(plans, nextVoucherNumber);
+            if (updatedProducts.length === 0) {
+              return { updatedProducts, voucher: undefined, changedCount: 0 };
+            }
+
+            // All reads are complete. Product valuation, voucher and counter are committed together.
+            for (const product of updatedProducts) {
+              tx.update(doc(db, 'products', product.id), {
+                stock: product.stock,
+                buyPrice: product.buyPrice,
+                ...(product.costingMethod ? { costingMethod: product.costingMethod } : {}),
+                ...(product.costLayers ? { costLayers: product.costLayers } : {}),
+                ...(typeof product.inventoryValueIrr === 'number' ? { inventoryValueIrr: product.inventoryValueIrr } : {}),
+                _version: product._version ?? 2,
+                updatedByDevice: deviceId.slice(0, 64),
+                updatedAt: serverTimestamp(),
+              });
+            }
+
+            if (voucher) {
+              const nextYearCounters = { ...yearCounters, [fiscalYear]: nextVoucherNumber };
+              const globalMax = Math.max(Number(counterData.lastVoucherNumber) || 0, nextVoucherNumber);
+              if (!counterSnap.exists()) {
+                tx.set(counterRef, {
+                  ownerId: user.uid,
+                  lastVoucherNumber: globalMax,
+                  voucherNumbersByFiscalYear: nextYearCounters,
+                  lastInvoiceSeq: 102,
+                  updatedByDevice: deviceId.slice(0, 64),
+                  createdAt: serverTimestamp(),
+                  updatedAt: serverTimestamp(),
+                });
+              } else {
+                tx.update(counterRef, {
+                  lastVoucherNumber: globalMax,
+                  voucherNumbersByFiscalYear: nextYearCounters,
+                  updatedByDevice: deviceId.slice(0, 64),
+                  updatedAt: serverTimestamp(),
+                });
+              }
+              tx.set(doc(db, 'vouchers', voucher.id), {
+                ownerId,
+                voucherNumber: voucher.voucherNumber,
+                date: voucher.date,
+                description: voucher.description,
+                voucherType: voucher.voucherType,
+                status: voucher.status,
+                totalDebit: voucher.totalDebit,
+                totalCredit: voucher.totalCredit,
+                referenceId,
+                integrityHash: voucher.integrityHash,
+                lines: voucher.lines,
+                _version: 1,
+                updatedByDevice: deviceId.slice(0, 64),
+                createdAt: serverTimestamp(),
+                updatedAt: serverTimestamp(),
+              });
+            }
+
+            return { updatedProducts, voucher, changedCount: updatedProducts.length };
+          });
+
+          if (committed.changedCount === 0) return 0;
+          const updatedMap = new Map(committed.updatedProducts.map((product) => [product.id, product]));
+          setProducts((previous) => previous.map((product) => updatedMap.get(product.id) ?? product));
+          if (committed.voucher) setVouchers((previous) => [committed.voucher!, ...previous]);
+          return committed.changedCount;
+        }
+
+        const nextVoucherNumber = getNextFiscalYearVoucherNumber(fiscalYear, undefined, localMaxVoucherNumber);
+        const plans = buildPlans(products, nextVoucherNumber);
+        const updatedProducts = plans.map((plan) => plan.updatedProduct);
+        if (updatedProducts.length === 0) return 0;
+        const voucher = buildVoucher(plans, nextVoucherNumber);
+        const saved = await commitInventoryAdjustmentOperationalTx({ updatedProducts, voucher });
+        if (!saved) {
+          throw new Error('پایگاه داده محلی در دسترس نیست؛ برای جلوگیری از ثبت ناقص، انبارگردانی ذخیره نشد.');
+        }
+        const updatedMap = new Map(updatedProducts.map((product) => [product.id, product]));
+        setProducts((previous) => previous.map((product) => updatedMap.get(product.id) ?? product));
+        if (voucher) setVouchers((previous) => [voucher, ...previous]);
+        void getOperationalDbStats().then(setOperationalDbStats).catch(() => {});
+        return updatedProducts.length;
+      } catch (err) {
+        const message = err instanceof Error ? err.message : 'خطا در ثبت اتمیک انبارگردانی.';
+        showToast(message, 'error');
+        throw err;
       }
     },
-    [products, profile, accounts, ownerId, vouchers, deviceId, updateProduct, createVoucher, showToast]
+    [products, vouchers, user, profile, accounts, ownerId, deviceId, showToast]
+  );
+
+  const adjustProductStockWithVoucher = useCallback(
+    async (productId: string, countedStock: number, reason: string) => {
+      const referenceId = generateSafeId('stk');
+      const changedCount = await commitStockAdjustmentBatch(
+        [{ productId, countedStock }],
+        reason,
+        referenceId
+      );
+      if (changedCount > 0) {
+        showToast('انبارگردانی و سند حسابداری با موفقیت و به‌صورت اتمیک ثبت شد.');
+      } else {
+        showToast('موجودی شمارش‌شده با موجودی سیستمی برابر است؛ نیازی به تعدیل نیست.');
+      }
+    },
+    [commitStockAdjustmentBatch, showToast]
   );
 
   const bulkStocktakingWithVoucher = useCallback(
     async (items: { productId: string; countedStock: number }[], reason: string) => {
-      const today = getTodayShamsi();
-      const batchRefId = generateSafeId('stk_bulk');
-      const voucherLines: VoucherLine[] = [];
-      let changedCount = 0;
-
-      for (const entry of items) {
-        const prod = products.find((p) => p.id === entry.productId);
-        if (!prod) continue;
-        let plan;
-        try {
-          plan = planStockAdjustmentWithCostLayers({
-            product: prod,
-            newStock: entry.countedStock,
-            date: today,
-            reason,
-            costingMethod: profile.defaultCostingMethod ?? 'fifo',
-            allowNegativeStock: false,
-            closedFiscalYears: profile.closedFiscalYears ?? [],
-            accounts,
-            ownerId,
-            referenceId: `${batchRefId}_${prod.id}`,
-            voucherId: generateSafeId('vch'),
-            nextVoucherNumber: 1,
-            deviceId,
-          });
-        } catch (err) {
-          showToast(err instanceof Error ? err.message : `خطا در تعدیل کالای «${prod.name}».`);
-          return;
-        }
-        if (Math.abs(plan.diffQty) < 0.001) continue;
-
-        changedCount += 1;
-        await updateProduct(prod.id, {
-          stock: plan.productDelta.stock,
-          buyPrice: plan.productDelta.buyPrice,
-          costLayers: plan.productDelta.costLayers,
-          inventoryValueIrr: plan.productDelta.inventoryValueIrr,
-        });
-        if (plan.voucher && plan.voucher.lines.length >= 2) {
-          voucherLines.push(...plan.voucher.lines);
-        }
-      }
-
-      if (changedCount === 0) {
-        showToast('تغییری در موجودی شمارش‌شده نسبت به سیستم وجود نداشت.');
-        return;
-      }
-
-      if (voucherLines.length >= 2) {
-        await createVoucher({
-          date: today,
-          description: `سند تجمیعی انبارگردانی (${changedCount} قلم کالا) — ${reason}`,
-          voucherType: 'general',
-          status: 'permanent',
-          lines: voucherLines,
-          referenceId: batchRefId,
-        });
+      const referenceId = generateSafeId('stk_bulk');
+      const changedCount = await commitStockAdjustmentBatch(items, reason, referenceId);
+      if (changedCount > 0) {
+        showToast(`انبارگردانی ${changedCount} قلم کالا و سند تجمیعی آن به‌صورت اتمیک ثبت شد.`);
       } else {
-        showToast(`موجودی ${changedCount} قلم کالا با موفقیت اصلاح شد.`);
+        showToast('تغییری در موجودی شمارش‌شده نسبت به سیستم وجود نداشت.');
       }
     },
-    [products, profile, accounts, ownerId, deviceId, updateProduct, createVoucher, showToast]
+    [commitStockAdjustmentBatch, showToast]
   );
 
   const bulkUpdateProductPrices = useCallback(
