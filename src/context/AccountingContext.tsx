@@ -2301,12 +2301,6 @@ export const AccountingProvider: React.FC<{ children: React.ReactNode }> = ({ ch
               const counterRef = doc(db, 'counters', user.uid);
               const counterSnap = await tx.get(counterRef);
               const counterData = counterSnap.exists() ? counterSnap.data() : {};
-              if (payload.paidCheque > 0 && payload.invoiceType !== 'proforma' && payload.invoiceType !== 'waste') {
-                const existingCheque = await tx.get(doc(db, 'cheques', plannedChequeId));
-                if (existingCheque.exists()) {
-                  throw new Error('این شناسه صیادی قبلاً در سرور ثبت شده است؛ ثبت فاکتور لغو شد.');
-                }
-              }
               const yearCounters =
                 counterData.voucherNumbersByFiscalYear &&
                 typeof counterData.voucherNumbersByFiscalYear === 'object'
@@ -3043,6 +3037,12 @@ export const AccountingProvider: React.FC<{ children: React.ReactNode }> = ({ ch
               const counterRef = doc(db, 'counters', user.uid);
               const counterSnap = await tx.get(counterRef);
               const counterData = counterSnap.exists() ? counterSnap.data() : {};
+              if (payload.paidCheque > 0 && payload.invoiceType !== 'proforma' && payload.invoiceType !== 'waste') {
+                const existingCheque = await tx.get(doc(db, 'cheques', plannedChequeId));
+                if (existingCheque.exists()) {
+                  throw new Error('این شناسه صیادی قبلاً در سرور ثبت شده است؛ ثبت فاکتور لغو شد.');
+                }
+              }
               const yearCounters =
                 counterData.voucherNumbersByFiscalYear &&
                 typeof counterData.voucherNumbersByFiscalYear === 'object'
