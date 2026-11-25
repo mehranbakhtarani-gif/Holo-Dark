@@ -2147,8 +2147,11 @@ export const AccountingProvider: React.FC<{ children: React.ReactNode }> = ({ ch
       if (!['receivable', 'payable'].includes(payload.direction)) {
         throw new Error('نوع چک دریافتنی یا پرداختنی معتبر نیست.');
       }
-      if (!['in_box', 'deposited', 'endorsed', 'cleared', 'bounced', 'cancelled'].includes(payload.status)) {
-        throw new Error('وضعیت اولیه چک معتبر نیست.');
+      if (payload.status !== 'in_box') {
+        throw new Error('چک جدید باید ابتدا با وضعیت «در صندوق» ثبت شود؛ تغییر وضعیت فقط از گردش خزانه انجام می‌شود.');
+      }
+      if (payload.dueDate.replace(/-/g, '/') < payload.issueDate.replace(/-/g, '/')) {
+        throw new Error('تاریخ سررسید چک نمی‌تواند قبل از تاریخ صدور باشد.');
       }
       const party = parties.find((item) => item.id === payload.partyId);
       if (!party) throw new Error('طرف‌حساب انتخاب‌شده برای چک وجود ندارد.');
@@ -2386,11 +2389,22 @@ export const AccountingProvider: React.FC<{ children: React.ReactNode }> = ({ ch
       chequeId: string,
       patch: Partial<Pick<Cheque, 'bankName' | 'branch' | 'dueDate' | 'notes'>>
     ) => {
+      const current = cheques.find((item) => item.id === chequeId);
+      if (!current) throw new Error('چک موردنظر در خزانه پیدا نشد.');
+      if (patch.bankName !== undefined && !patch.bankName.trim()) {
+        throw new Error('نام بانک نمی‌تواند خالی باشد.');
+      }
+      if (patch.dueDate !== undefined) {
+        if (!isValidShamsiDate(patch.dueDate)) throw new Error('تاریخ سررسید چک معتبر نیست.');
+        if (patch.dueDate.replace(/-/g, '/') < current.issueDate.replace(/-/g, '/')) {
+          throw new Error('تاریخ سررسید چک نمی‌تواند قبل از تاریخ صدور باشد.');
+        }
+      }
       if (user) {
         try {
           const payload: Record<string, unknown> = { updatedAt: serverTimestamp() };
-          if (patch.bankName !== undefined) payload.bankName = patch.bankName.slice(0, 100);
-          if (patch.branch !== undefined) payload.branch = patch.branch.slice(0, 100);
+          if (patch.bankName !== undefined) payload.bankName = patch.bankName.trim().slice(0, 100);
+          if (patch.branch !== undefined) payload.branch = patch.branch.trim().slice(0, 100);
           if (patch.dueDate !== undefined) payload.dueDate = patch.dueDate.slice(0, 20);
           if (patch.notes !== undefined) payload.notes = patch.notes.slice(0, 300);
           await updateDoc(doc(db, 'cheques', chequeId), payload);
@@ -2402,7 +2416,7 @@ export const AccountingProvider: React.FC<{ children: React.ReactNode }> = ({ ch
       }
       showToast('مشخصات چک صیادی ویرایش شد.');
     },
-    [user, showToast]
+    [cheques, user, showToast]
   );
 
   const updateChequeStatus = useCallback(
