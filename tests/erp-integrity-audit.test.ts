@@ -244,7 +244,7 @@ test('P0: Independent audit detects deposited-cheque GL mismatch on account 1030
   const duplicateCheque: Cheque = {
     id: 'duplicate_cheque_test_2',
     ownerId: 'owner_test',
-    sayadiId: '1234567890123456',
+    sayadiId: '۱۲۳۴۵۶۷۸۹۰۱۲۳۴۵۶',
     serial: 'SERIAL-002',
     direction: 'receivable',
     partyId: ws.customer.id,
