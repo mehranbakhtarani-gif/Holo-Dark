@@ -42,7 +42,7 @@ export interface MeshRelayEnvelope {
 }
 
 /** Replaces compacted relay metadata with a self-consistent full merged snapshot before forwarding. */
-export function hydrateCompactedRelayPayload<T extends { snapshotJson: string; payloadHash: string }>(
+export function hydrateCompactedRelayPayload<T extends { snapshotJson?: string; payloadHash: string }>(
   item: T,
   fallbackSnapshotJson: string,
   fallbackPayloadHash: string
