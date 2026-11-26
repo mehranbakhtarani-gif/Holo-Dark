@@ -422,6 +422,20 @@ service cloud.firestore {
         && data.updatedAt is timestamp;
     }
 
+    function isValidRbacPermissions(permissions) {
+      return permissions is map
+        && permissions.keys().hasAll(['canCreateVoucher', 'canFinalizeVoucher', 'canIssueInvoice', 'canEditInventory', 'canManageTreasury', 'canManageCurrencies', 'canManageSettings', 'canDeleteRecords'])
+        && permissions.keys().hasOnly(['canCreateVoucher', 'canFinalizeVoucher', 'canIssueInvoice', 'canEditInventory', 'canManageTreasury', 'canManageCurrencies', 'canManageSettings', 'canDeleteRecords'])
+        && permissions.canCreateVoucher is bool
+        && permissions.canFinalizeVoucher is bool
+        && permissions.canIssueInvoice is bool
+        && permissions.canEditInventory is bool
+        && permissions.canManageTreasury is bool
+        && permissions.canManageCurrencies is bool
+        && permissions.canManageSettings is bool
+        && permissions.canDeleteRecords is bool;
+    }
+
     function isValidRbacOperator(data) {
       return data.keys().hasAll(['ownerId', 'fullName', 'role', 'active', 'permissions', 'createdAt', 'updatedAt'])
         && data.keys().hasOnly(['ownerId', 'fullName', 'role', 'email', 'active', 'permissions', 'createdAt', 'updatedAt'])
@@ -431,7 +445,7 @@ service cloud.firestore {
         && data.role in ['finance_manager', 'accountant', 'warehouse_keeper', 'sales_officer', 'treasurer', 'auditor_readonly']
         && isOptionalString(data, 'email', 200)
         && data.active is bool
-        && data.permissions is map
+        && isValidRbacPermissions(data.permissions)
         && data.createdAt is timestamp
         && data.updatedAt is timestamp;
     }
