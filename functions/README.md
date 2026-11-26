@@ -112,3 +112,8 @@ AccountingContext resolves the authenticated caller's Workspace before cloud hyd
 ### Workspace-native voucher draft lifecycle
 
 The `mutateWorkspaceVoucher` callable supports atomic `create`, `update`, `delete`, and `finalize` operations for staged vouchers. Draft updates and deletions require the current envelope version and a unique workspace-scoped operation ID. Updates preserve the server-assigned voucher number and original creation timestamp; deletions create a versioned tombstone rather than physically removing the staged record. Permanent vouchers cannot be edited or deleted. All operations require a verified caller, active workspace membership, an allowed finance role, a verified/frozen migration manifest, and a frozen read barrier. No operation writes to legacy root voucher collections.
+
+
+### Workspace-native voucher reversal
+
+The `mutateWorkspaceVoucher` callable also supports `reverse`. It reads the permanent source voucher, verifies its server-comparable integrity seal and expected envelope version, rejects an existing reversal, derives the reversal lines on the server, allocates the next fiscal-year voucher number, creates the reversal draft, advances the counter, and marks the source envelope as reversed in one Firestore transaction. The source envelope version is incremented. Reversal idempotency hashes the complete request payload. A reversal remains a draft and must be finalized through the existing finalize operation. No legacy-root voucher or counter writes occur.
