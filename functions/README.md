@@ -57,3 +57,9 @@ The verification phase rereads each current source page and compares its digest 
 `listWorkspaceStagedRecords` provides read-only, paginated access to a verified staging snapshot. It checks verified email, the active workspace record, and the caller's active membership document on every request. Current membership role—not a potentially stale custom claim—determines the collection allowlist. Reads are unavailable until the migration manifest is `verified`. Each request returns at most 100 records and caps the serialized response below 7 MiB.
 
 This callable does not implement dual-write or replace the application's legacy root-collection queries. Firestore Rules remain default-deny for the staging namespace; do not grant direct client access or perform a production cutover based only on this gateway.
+
+## Atomic dual-write bridge (limited scaffold)
+
+`writeWorkspaceRecord` is an idempotent callable bridge for the initial core collections (`accounts`, `products`, `vouchers`, `invoices`). It checks live membership/role, validates a conservative subset of each core schema, and commits the root record plus its staging envelope and operation ledger in one transaction in the same named Firestore database.
+
+The callable is **not yet wired into AccountingContext**. Do not use it as a production cutover: invoice posting, inventory/voucher multi-document operations, cancellation, counters, and the remaining collections still require transaction-aware adapters. Only call it after staging verification; a verified snapshot can become stale if legacy writes continue.
