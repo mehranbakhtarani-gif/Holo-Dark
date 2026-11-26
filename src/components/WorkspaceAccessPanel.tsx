@@ -2,6 +2,7 @@ import React, { useCallback, useEffect, useMemo, useState } from 'react';
 import { User, getIdTokenResult } from 'firebase/auth';
 import { getFunctions, httpsCallable } from 'firebase/functions';
 import { auth } from '../lib/firebase';
+import { WorkspaceMigrationPanel } from './WorkspaceMigrationPanel';
 
 type WorkspaceRole = 'finance_manager' | 'accountant' | 'warehouse_keeper' | 'sales_officer' | 'treasurer' | 'auditor_readonly';
 type Member = { uid: string; email: string; role: WorkspaceRole | 'owner'; active: boolean; createdAt?: string };
@@ -125,6 +126,7 @@ export const WorkspaceAccessPanel: React.FC<{ user: User | null }> = ({ user }) 
       {error && <p role="alert" className="text-xs text-rose-600">{error}</p>}
       {canBootstrap && !isOwner && <button type="button" disabled={busy || !user?.emailVerified || Boolean(inviteToken.trim())} onClick={() => void bootstrap()} className="rounded-lg border border-indigo-300 px-3 py-2 text-xs font-semibold disabled:opacity-50">راه‌اندازی فضای کاری برای این حساب (مالک)</button>}
       {isOwner && <>
+        <WorkspaceMigrationPanel />
         <form onSubmit={(e) => { e.preventDefault(); void createInvitation(); }} className="grid grid-cols-1 sm:grid-cols-3 gap-2">
           <input type="email" required value={email} onChange={(e) => setEmail(e.target.value)} placeholder="ایمیل دعوت‌شونده" dir="ltr" className="min-w-0 rounded-lg border px-3 py-2 text-xs dark:bg-slate-900 dark:border-slate-700" />
           <select value={role} onChange={(e) => setRole(e.target.value as WorkspaceRole)} className="rounded-lg border px-3 py-2 text-xs dark:bg-slate-900 dark:border-slate-700">
