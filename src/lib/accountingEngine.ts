@@ -3898,14 +3898,20 @@ export function planInvoiceCancellation(input: {
       const targetRemovalCostIrr =
         invoice.invoiceType === 'purchase' ? agg.netPurchaseCostIrr : agg.recordedCostIrr;
 
-      const matchingLayers = nextLayers.filter((l) => l.sourceRef === invoice.id);
+      // Purchase receipts are keyed by sourceRef; sale-return layers are keyed by their
+      // return movement ID in layerId while retaining the original sale in sourceRef.
+      const isInvoiceLayer = (layer: InventoryCostLayer) =>
+        invoice.invoiceType === 'sale_return'
+          ? layer.layerId.startsWith(`ret_${invoice.id}_`)
+          : layer.sourceRef === invoice.id;
+      const matchingLayers = nextLayers.filter(isInvoiceLayer);
       const matchingQty = roundQty(matchingLayers.reduce((s, l) => s + l.remainingQty, 0));
 
       if (matchingQty + 0.001 >= agg.qty) {
         let toRemove = agg.qty;
         const rebuilt: InventoryCostLayer[] = [];
         for (const layer of nextLayers) {
-          if (layer.sourceRef === invoice.id && toRemove > 0.0001) {
+          if (isInvoiceLayer(layer) && toRemove > 0.0001) {
             const take = Math.min(layer.remainingQty, toRemove);
             const rem = roundQty(layer.remainingQty - take);
             toRemove = roundQty(toRemove - take);
