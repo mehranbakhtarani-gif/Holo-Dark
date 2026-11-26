@@ -764,7 +764,17 @@ export const createTrackedWarehouseTransfer = onCall({ region: REGION, timeoutSe
     const ext = extensionSnap.data() as Record<string, unknown>;
     if (ext.ownerId !== workspaceId) throw new HttpsError('permission-denied', 'سند انتقال متعلق به این فضای کاری نیست.');
     const transfers = Array.isArray(ext.trackedWarehouseTransfers) ? ext.trackedWarehouseTransfers as Record<string, unknown>[] : [];
-    if (transfers.some((t) => t && t.id === transferId)) throw new HttpsError('already-exists', 'شناسه حواله تکراری است.');
+    const existingTransfer = transfers.find((t) => t && t.id === transferId);
+    if (existingTransfer) {
+      if (existingTransfer.productId === productId && existingTransfer.transferNumber === transferNumber
+          && existingTransfer.fromWarehouse === fromWarehouse.trim()
+          && existingTransfer.toWarehouse === toWarehouse.trim()
+          && Number(existingTransfer.qty) === Math.round(qty * 10000) / 10000
+          && existingTransfer.date === date) {
+        return { status: 'replayed', transfer: existingTransfer, productVersion };
+      }
+      throw new HttpsError('already-exists', 'شناسه حواله قبلاً با اطلاعات دیگری استفاده شده است.');
+    }
     if (transfers.length >= 100) throw new HttpsError('resource-exhausted', 'ظرفیت اسناد انتقال فضای کاری تکمیل است.');
     const layers = Array.isArray(productData.costLayers) ? productData.costLayers as Record<string, unknown>[] : [];
     if (!layers.length) throw new HttpsError('failed-precondition', 'لایه‌های بهای تمام‌شده کالا موجود نیست؛ ابتدا بهای FIFO کالا را بازسازی کنید.');
