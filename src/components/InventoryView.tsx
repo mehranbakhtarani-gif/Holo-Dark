@@ -405,7 +405,10 @@ export const InventoryView: React.FC<{ initialIntent?: string; clearIntent?: () 
           qty: quantity,
           date,
         });
-        transferRecord = committed.transfer as unknown as TrackedWarehouseTransfer;
+        transferRecord = {
+          ...(committed.transfer as unknown as TrackedWarehouseTransfer),
+          updatedAt: new Date().toISOString(),
+        };
       } else {
         const saved = await updateProduct(selectedProduct.id, {
           stock: planned.updatedProduct.stock,
@@ -414,7 +417,10 @@ export const InventoryView: React.FC<{ initialIntent?: string; clearIntent?: () 
           inventoryValueIrr: planned.updatedProduct.inventoryValueIrr,
         });
         if (!saved) return;
-        transferRecord = planned.transferRecord;
+        transferRecord = {
+          ...planned.transferRecord,
+          updatedAt: new Date().toISOString(),
+        };
         updateExtensions((prev) => ({
           ...prev,
           trackedWarehouseTransfers: [
@@ -452,6 +458,7 @@ export const InventoryView: React.FC<{ initialIntent?: string; clearIntent?: () 
           ...transfer,
           status: 'received',
           receivedDate,
+          updatedAt: new Date().toISOString(),
           ...(committed.receivedEventSequence ? {
             receivedEventSequence: committed.receivedEventSequence,
             receivedEventSequenceSource: 'online' as const,
@@ -470,7 +477,10 @@ export const InventoryView: React.FC<{ initialIntent?: string; clearIntent?: () 
           inventoryValueIrr: result.updatedProduct.inventoryValueIrr,
         });
         if (!saved) return;
-        updatedTransfer = result.updatedTransfer;
+        updatedTransfer = {
+          ...result.updatedTransfer,
+          updatedAt: new Date().toISOString(),
+        };
         updateExtensions((prev) => ({
           ...prev,
           trackedWarehouseTransfers: prev.trackedWarehouseTransfers.map((item) =>
