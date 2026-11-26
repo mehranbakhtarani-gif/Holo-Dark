@@ -46,8 +46,8 @@ import {
 } from '../lib/firebaseCloudBackup';
 import {
   clearPendingSyncOutboxOperations,
+  clearSyncOutboxOperationsForScope,
   enqueueSyncOutboxOperation,
-  markSyncOutboxOperationStatus,
 } from '../lib/operationalDb';
 import { getTodayShamsi, toPersianDigits } from '../lib/format';
 import { playSuccessChime, playWarningTone } from '../lib/audioFeedback';
@@ -63,17 +63,7 @@ import {
   type SyncConflictResolutionChoice,
 } from '../lib/syncConflictResolver';
 import { useOnlineStatus } from './usePWAInstall';
-
-/** Fast deterministic FNV-1a fingerprint ignoring volatile exportedAt timestamp */
-function fingerprintWorkspacePayload(rawJson: string): string {
-  const normalized = rawJson.replace(/"exportedAt"\s*:\s*"[^"]*"/, '"exportedAt":""');
-  let hash = 0x811c9dc5;
-  for (let i = 0; i < normalized.length; i++) {
-    hash ^= normalized.charCodeAt(i);
-    hash = Math.imul(hash, 0x01000193);
-  }
-  return `${normalized.length}_${(hash >>> 0).toString(16)}`;
-}
+import { createSyncOperationId, fingerprintWorkspacePayload } from '../lib/syncFingerprint';
 
 const LAST_FB_BACKUP_KEY = 'holoo_apex_firebase_last_backup_v1';
 
@@ -231,7 +221,6 @@ export function useDualCloudSync() {
   const fbInFlightRef = useRef(false);
   const lastSbSyncedHashRef = useRef<string | null>(null);
   const lastFbSyncedHashRef = useRef<string | null>(null);
-  const pendingOperationRef = useRef<{ hash: string; operationId: string } | null>(null);
   const suppressNextAutoSyncRef = useRef(false);
   const sbBootstrappedActorRef = useRef<string | null>(null);
   const fbBootstrappedUidRef = useRef<string | null>(null);
@@ -450,7 +439,7 @@ export function useDualCloudSync() {
     async (silent = false): Promise<boolean> => {
       if (fbInFlightRef.current) return false;
       const snapshotJson = exportBackupJson();
-      const snapshotHash = fingerprintWorkspacePayload(snapshotJson);
+      const snapshotHash = await fingerprintWorkspacePayload(snapshotJson);
 
       if (silent && lastFbSyncedHashRef.current === snapshotHash && loadOfflineOutbox().length === 0) {
         return true;
@@ -571,7 +560,7 @@ export function useDualCloudSync() {
         suppressNextAutoSyncRef.current = true;
         const imported = importBackupJson(res.snapshotJson);
         if (imported) {
-          const hash = fingerprintWorkspacePayload(res.snapshotJson);
+          const hash = await fingerprintWorkspacePayload(res.snapshotJson);
           lastFbSyncedHashRef.current = hash;
           const rev = res.revision || 1;
           setLastFirebaseRevision(rev);
@@ -796,12 +785,26 @@ export function useDualCloudSync() {
         return true;
       }
 
-      // Deterministic idempotency key per payload hash so network retries are 100% idempotent
-      const operationId =
-        pendingOperationRef.current && pendingOperationRef.current.hash === snapshotHash
-          ? pendingOperationRef.current.operationId
-          : `op_${Date.now().toString(36)}_${snapshotHash.slice(0, 16)}`;
-      pendingOperationRef.current = { hash: snapshotHash, operationId };
+      const syncWorkspaceId = supabaseWorkspaceId || 'default';
+      const syncClientRevision = lastSupabaseRevisionRef.current;
+      const operationId = await createSyncOperationId({
+        target: 'supabase',
+        workspaceId: syncWorkspaceId,
+        deviceId,
+        clientRevision: syncClientRevision,
+        payloadHash: snapshotHash,
+      });
+      const syncOutboxRecord = {
+        operationId,
+        target: 'supabase' as const,
+        workspaceId: syncWorkspaceId,
+        deviceId,
+        clientRevision: syncClientRevision,
+        payloadHash: snapshotHash,
+        createdAt: new Date().toISOString(),
+        retryCount: 0,
+        status: 'pending' as const,
+      };
 
       if (!isOnline) {
         const updated = enqueueOfflineOutboxItem({
@@ -811,17 +814,14 @@ export function useDualCloudSync() {
           productCount: products.length,
         });
         setOutbox(updated);
-        void enqueueSyncOutboxOperation({
-          operationId,
-          target: 'supabase',
-          workspaceId: supabaseWorkspaceId || 'default',
-          deviceId,
-          clientRevision: lastSupabaseRevisionRef.current,
-          payloadHash: snapshotHash,
-          createdAt: new Date().toISOString(),
-          retryCount: 0,
-          status: 'pending',
-        });
+        try {
+          await enqueueSyncOutboxOperation(syncOutboxRecord);
+        } catch (error) {
+          const message = error instanceof Error ? error.message : 'ذخیره پایدار صف همگام‌سازی ناموفق بود.';
+          setLastSupabaseError(message);
+          if (!silent) showToast(message);
+          return false;
+        }
         if (!silent) {
           showToast('دستگاه آفلاین است؛ تغییرات با کلید یکتا در صف همگام‌سازی ذخیره شد.');
         }
@@ -851,17 +851,7 @@ export function useDualCloudSync() {
       sbInFlightRef.current = true;
       setIsSupabaseSyncing(true);
       try {
-        void enqueueSyncOutboxOperation({
-          operationId,
-          target: 'supabase',
-          workspaceId: supabaseWorkspaceId || 'default',
-          deviceId,
-          clientRevision: lastSupabaseRevisionRef.current,
-          payloadHash: snapshotHash,
-          createdAt: new Date().toISOString(),
-          retryCount: 0,
-          status: 'pending',
-        });
+        await enqueueSyncOutboxOperation(syncOutboxRecord);
 
         const activeDefaultMode = conflictDefaultModeRef.current;
         const effectivePolicy = syncConflictModeToCloudPolicy(activeDefaultMode);
@@ -943,9 +933,12 @@ export function useDualCloudSync() {
         saveLastSupabaseSyncAt(stamp);
         clearOfflineOutbox();
         setOutbox([]);
-        pendingOperationRef.current = null;
-        void markSyncOutboxOperationStatus(operationId, 'synced');
-        void clearPendingSyncOutboxOperations();
+        // The accepted full snapshot supersedes earlier pending snapshots in this same sync scope.
+        try {
+          await clearSyncOutboxOperationsForScope('supabase', syncWorkspaceId, deviceId);
+        } catch {
+          // Keep the durable operation for an idempotent replay if local cleanup fails.
+        }
 
         if (Array.isArray(res.data.retainedBackups)) {
           setSupabaseBackups(normalizeSupabaseBackups(res.data.retainedBackups));
@@ -968,7 +961,7 @@ export function useDualCloudSync() {
           logActivity('همگام‌سازی Supabase', 'حل خودکار تداخل (بازگردانی نسخه ابری)', note);
           if (res.data.remoteSnapshotJson) {
             suppressNextAutoSyncRef.current = true;
-            lastSbSyncedHashRef.current = fingerprintWorkspacePayload(res.data.remoteSnapshotJson);
+            lastSbSyncedHashRef.current = await fingerprintWorkspacePayload(res.data.remoteSnapshotJson);
             importBackupJson(res.data.remoteSnapshotJson);
           }
           playSuccessChime();
@@ -1043,7 +1036,7 @@ export function useDualCloudSync() {
         suppressNextAutoSyncRef.current = true;
         const imported = importBackupJson(res.snapshotJson);
         if (imported) {
-          lastSbSyncedHashRef.current = fingerprintWorkspacePayload(res.snapshotJson);
+          lastSbSyncedHashRef.current = await fingerprintWorkspacePayload(res.snapshotJson);
           const rev = res.revision || 1;
           setLastSupabaseRevision(rev);
           saveLastSupabaseRevision(rev);
@@ -1439,7 +1432,7 @@ export function useDualCloudSync() {
             showToast('بازیابی نسخه ابری ناموفق بود؛ لطفاً دوباره تلاش کنید.');
             return false;
           }
-          lastSbSyncedHashRef.current = fingerprintWorkspacePayload(
+          lastSbSyncedHashRef.current = await fingerprintWorkspacePayload(
             pendingConflict.remoteSnapshotJson
           );
           setLastSupabaseRevision(pendingConflict.remoteRevision);
@@ -1453,7 +1446,6 @@ export function useDualCloudSync() {
           saveLastSupabaseSyncAt(stamp);
           clearOfflineOutbox();
           setOutbox([]);
-          pendingOperationRef.current = null;
           void clearPendingSyncOutboxOperations();
           setPendingConflict(null);
 
@@ -1467,11 +1459,29 @@ export function useDualCloudSync() {
 
         // choice === 'keep_local': push latest local snapshot onto cloud cleanly
         const localJson = exportBackupJson();
-        const localHash = fingerprintWorkspacePayload(localJson);
-        const opId = `op_resolve_local_${Date.now().toString(36)}_${localHash.slice(0, 12)}`;
+        const localHash = await fingerprintWorkspacePayload(localJson);
+        const resolveWorkspaceId = supabaseWorkspaceId || 'default';
+        const resolveOperationId = await createSyncOperationId({
+          target: 'supabase',
+          workspaceId: resolveWorkspaceId,
+          deviceId,
+          clientRevision: pendingConflict.remoteRevision,
+          payloadHash: localHash,
+        });
+        await enqueueSyncOutboxOperation({
+          operationId: resolveOperationId,
+          target: 'supabase',
+          workspaceId: resolveWorkspaceId,
+          deviceId,
+          clientRevision: pendingConflict.remoteRevision,
+          payloadHash: localHash,
+          createdAt: new Date().toISOString(),
+          retryCount: 0,
+          status: 'pending',
+        });
         const pushRes = await pushSnapshotToSupabase({
           idToken: supabaseSessionToken,
-          operationId: opId,
+          operationId: resolveOperationId,
           deviceId,
           deviceLabel,
           conflictPolicy: 'last_write_wins',
@@ -1506,8 +1516,11 @@ export function useDualCloudSync() {
         }
         clearOfflineOutbox();
         setOutbox([]);
-        pendingOperationRef.current = null;
-        void clearPendingSyncOutboxOperations();
+        try {
+          await clearSyncOutboxOperationsForScope('supabase', resolveWorkspaceId, deviceId);
+        } catch {
+          // Retain the operation so the next retry can be recognized as an idempotent replay.
+        }
         setPendingConflict(null);
 
         const note = `آخرین تغییر محلی حفظ و به‌عنوان نسخه #${toPersianDigits(pushRes.data.serverRevision)} در ابر ثبت شد${defaultSuffix}.`;
