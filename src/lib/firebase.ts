@@ -265,3 +265,27 @@ export async function mutateWorkspaceCoreRecord<T = Record<string, unknown>>(
   const result = await callable(input);
   return result.data;
 }
+
+export interface WorkspaceVoucherMutationInput {
+  operation: 'create' | 'finalize';
+  documentId: string;
+  operationId: string;
+  expectedVersion?: number;
+  integrityHash?: string;
+  data?: Record<string, unknown>;
+}
+export interface WorkspaceVoucherMutationResult {
+  status: 'committed' | 'replayed';
+  operationId: string;
+  version: number;
+  voucherNumber: number;
+}
+export async function mutateWorkspaceVoucher(
+  input: WorkspaceVoucherMutationInput
+): Promise<WorkspaceVoucherMutationResult> {
+  const callable = httpsCallable<WorkspaceVoucherMutationInput, WorkspaceVoucherMutationResult>(
+    functions, 'mutateWorkspaceVoucher'
+  );
+  const result = await callable(input);
+  return result.data;
+}
