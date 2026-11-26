@@ -162,6 +162,7 @@ export const InvoicesView: React.FC<{ initialIntent?: string; clearIntent?: () =
   const [moadianType, setMoadianType] = useState<MoadianInvoiceType>('type1');
   const [moadianPattern, setMoadianPattern] = useState<MoadianPatternCode>('sales_goods');
   const [correctiveRefInvoice, setCorrectiveRefInvoice] = useState<Invoice | null>(null);
+  const [returnSourceInvoiceId, setReturnSourceInvoiceId] = useState('');
   const [showSettlementModal, setShowSettlementModal] = useState(false);
   const [showAiScanner, setShowAiScanner] = useState(false);
   const [aiInvoiceText, setAiInvoiceText] = useState('');
@@ -211,6 +212,13 @@ export const InvoicesView: React.FC<{ initialIntent?: string; clearIntent?: () =
     () => parties.find((p) => p.id === partyId),
     [parties, partyId]
   );
+
+  const returnSourceInvoices = useMemo(() => {
+    const expectedType =
+      invoiceType === 'sale_return' ? 'sale' : invoiceType === 'purchase_return' ? 'purchase' : null;
+    if (!expectedType) return [];
+    return invoices.filter((inv) => inv.invoiceType === expectedType && inv.status !== 'cancelled');
+  }, [invoices, invoiceType]);
 
   const applyTierDiscountToRows = (pct: number) => {
     const safePct = Math.max(0, Math.min(50, pct));
@@ -289,6 +297,7 @@ export const InvoicesView: React.FC<{ initialIntent?: string; clearIntent?: () =
 
   const openComposerWithType = (type: InvoiceType) => {
     setCorrectiveRefInvoice(null);
+    setReturnSourceInvoiceId('');
     setInvoiceType(type);
     setApplyVat(type !== 'waste');
     setDraftItems((prev) =>
@@ -1007,6 +1016,9 @@ export const InvoicesView: React.FC<{ initialIntent?: string; clearIntent?: () =
         invoiceNumber,
         taxSerial,
         invoiceType,
+        ...(invoiceType === 'sale_return' || invoiceType === 'purchase_return'
+          ? { sourceInvoiceId: returnSourceInvoiceId || undefined }
+          : {}),
         date,
         partyId: party.id,
         partyName: invoiceType === 'waste' ? 'انبار ضایعات داخلی شرکت' : party.name,
@@ -1624,6 +1636,43 @@ export const InvoicesView: React.FC<{ initialIntent?: string; clearIntent?: () =
                 ))}
               </select>
             </div>
+            {(invoiceType === 'sale_return' || invoiceType === 'purchase_return') && (
+              <div className="lg:col-span-2">
+                <label className="block text-xs font-medium text-slate-600 dark:text-slate-400 mb-1">
+                  فاکتور اصلی مرجع برگشت
+                </label>
+                <select
+                  value={returnSourceInvoiceId}
+                  onChange={(e) => {
+                    const nextId = e.target.value;
+                    setReturnSourceInvoiceId(nextId);
+                    const source = returnSourceInvoices.find((inv) => inv.id === nextId);
+                    if (source) {
+                      setPartyId(source.partyId);
+                      setWarehouse(source.warehouse);
+                      setCurrencyCode(normalizeCurrencyCode(source.currencyCode));
+                      setExchangeRate(
+                        isForeignCurrency(source.currencyCode) && source.exchangeRate
+                          ? source.exchangeRate
+                          : 1
+                      );
+                      setApplyVat(source.vatAmount > 0);
+                    }
+                  }}
+                  className="w-full px-3 py-2 text-xs rounded-lg border border-slate-200 dark:border-slate-700 bg-white dark:bg-slate-950 text-slate-900 dark:text-white"
+                >
+                  <option value="">بدون ارجاع به فاکتور مشخص</option>
+                  {returnSourceInvoices.map((source) => (
+                    <option key={source.id} value={source.id}>
+                      {source.invoiceNumber} — {source.partyName} — {source.date}
+                    </option>
+                  ))}
+                </select>
+                <p className="mt-1 text-[10px] text-slate-500">
+                  با انتخاب فاکتور اصلی، سقف مقدار برگشت و طرف‌حساب در ثبت نهایی کنترل می‌شود.
+                </p>
+              </div>
+            )}
             <div className="lg:col-span-2">
               <label className="block text-xs font-medium text-slate-600 dark:text-slate-400 mb-1">
                 طرف‌حساب (کارخانه بافندگی / تأمین‌کننده)
