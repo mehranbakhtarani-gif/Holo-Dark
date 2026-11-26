@@ -8,6 +8,7 @@ import {
 } from '@firebase/rules-unit-testing';
 import {
   doc,
+  getDoc,
   serverTimestamp,
   setDoc,
   updateDoc,
@@ -257,4 +258,34 @@ test('return ACL rejects mismatched mutation IDs and fails closed for legacy sou
     status: 'cancelled',
     updatedAt: serverTimestamp(),
   }));
+});
+
+
+test('warehouse transfer event authority ledger is server-only', async () => {
+  await testEnv.clearFirestore();
+  const uid = 'rules_transfer_authority_owner';
+  const db = testEnv.authenticatedContext(uid, { email_verified: true }).firestore();
+  const authorityRef = doc(db, 'warehouseTransferEventAuthority', `${uid}_transfer_001_dispatch`);
+
+  // The extension array is client-writable for offline outbox delivery, but its
+  // sequence/provenance source must live in a collection clients cannot forge.
+  await assertFails(setDoc(authorityRef, {
+    ownerId: uid,
+    transferId: 'transfer_001',
+    kind: 'dispatch',
+    eventSequence: 44,
+    source: 'online',
+    createdAt: serverTimestamp(),
+  }));
+  await testEnv.withSecurityRulesDisabled(async (context) => {
+    await setDoc(doc(context.firestore(), 'warehouseTransferEventAuthority', `${uid}_transfer_001_dispatch`), {
+      ownerId: uid,
+      transferId: 'transfer_001',
+      kind: 'dispatch',
+      eventSequence: 44,
+      source: 'online',
+      createdAt: serverTimestamp(),
+    });
+  });
+  await assertFails(getDoc(authorityRef));
 });
