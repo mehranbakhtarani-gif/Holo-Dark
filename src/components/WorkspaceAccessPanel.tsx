@@ -1,6 +1,7 @@
 import React, { useCallback, useEffect, useMemo, useState } from 'react';
 import { User, getIdTokenResult } from 'firebase/auth';
 import { getFunctions, httpsCallable } from 'firebase/functions';
+import { auth } from '../lib/firebase';
 
 type WorkspaceRole = 'finance_manager' | 'accountant' | 'warehouse_keeper' | 'sales_officer' | 'treasurer' | 'auditor_readonly';
 type Member = { uid: string; email: string; role: WorkspaceRole | 'owner'; active: boolean; createdAt?: string };
@@ -26,7 +27,7 @@ export const WorkspaceAccessPanel: React.FC<{ user: User | null }> = ({ user }) 
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState('');
 
-  const functions = useMemo(() => user ? getFunctions(user.app, 'us-central1') : null, [user]);
+  const functions = useMemo(() => user ? getFunctions(auth.app, 'us-central1') : null, [user]);
   const call = useCallback(async <T,>(name: string, data?: Record<string, unknown>) => {
     if (!functions) throw new Error('ابتدا وارد حساب Firebase شوید.');
     const callable = httpsCallable<Record<string, unknown>, T>(functions, name);
