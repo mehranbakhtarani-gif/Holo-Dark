@@ -267,10 +267,10 @@ export function computeMultiWarehouseMatrix(params: {
         unit: p.unit,
         costingMethod: state.costingMethod,
         physicalQty: roundQtyFixed(bucket.qty, 4),
-        reservedQty: roundQtyFixed(reservedQty, 2),
-        availableToSellQty: roundQtyFixed(availableToSellQty, 2),
-        inTransitInQty: roundQtyFixed(inTransitInQty, 2),
-        inTransitOutQty: roundQtyFixed(inTransitOutQty, 2),
+        reservedQty: roundQtyFixed(reservedQty, 4),
+        availableToSellQty: roundQtyFixed(availableToSellQty, 4),
+        inTransitInQty: roundQtyFixed(inTransitInQty, 4),
+        inTransitOutQty: roundQtyFixed(inTransitOutQty, 4),
         valuationIrr: bucket.valIrr,
         unitCostIrr,
         reorderPoint: p.reorderPoint,
@@ -293,10 +293,10 @@ export function computeMultiWarehouseMatrix(params: {
       totalValuationIrr: 0,
     };
     existing.skuCount += 1;
-    existing.totalPhysicalQty = roundQtyFixed(existing.totalPhysicalQty + pos.physicalQty, 2);
-    existing.totalReservedQty = roundQtyFixed(existing.totalReservedQty + pos.reservedQty, 2);
-    existing.totalAvailableQty = roundQtyFixed(existing.totalAvailableQty + pos.availableToSellQty, 2);
-    existing.totalInTransitQty = roundQtyFixed(existing.totalInTransitQty + pos.inTransitInQty, 2);
+    existing.totalPhysicalQty = roundQtyFixed(existing.totalPhysicalQty + pos.physicalQty, 4);
+    existing.totalReservedQty = roundQtyFixed(existing.totalReservedQty + pos.reservedQty, 4);
+    existing.totalAvailableQty = roundQtyFixed(existing.totalAvailableQty + pos.availableToSellQty, 4);
+    existing.totalInTransitQty = roundQtyFixed(existing.totalInTransitQty + pos.inTransitInQty, 4);
     existing.totalValuationIrr = addIrr(existing.totalValuationIrr, pos.valuationIrr);
     summaryMap.set(pos.warehouse, existing);
   }
