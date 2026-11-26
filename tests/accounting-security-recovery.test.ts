@@ -927,6 +927,178 @@ test('Invoice cancellation: cancelling a FIFO sales return removes only its rest
   assert.equal(restoredLayers[0].totalCostIrr, 120_000_000);
 });
 
+test('Invoice cancellation restores sale stock to the invoice warehouse, not the product default warehouse', () => {
+  const seed = createHolooSeedData('test_owner');
+  const product: Product = {
+    ...seed.products[0],
+    id: 'prd_cancel_multiwarehouse',
+    warehouse: 'انبار ب',
+    stock: 6,
+    buyPrice: 100,
+    costingMethod: 'fifo',
+    inventoryValueIrr: 600,
+    costLayers: [
+      {
+        layerId: 'layer_a',
+        date: '1405/01/01',
+        sourceRef: 'purchase_a',
+        warehouse: 'انبار الف',
+        originalQty: 5,
+        remainingQty: 3,
+        unitCostIrr: 100,
+        totalCostIrr: 300,
+      },
+      {
+        layerId: 'layer_b',
+        date: '1405/01/02',
+        sourceRef: 'purchase_b',
+        warehouse: 'انبار ب',
+        originalQty: 3,
+        remainingQty: 3,
+        unitCostIrr: 100,
+        totalCostIrr: 300,
+      },
+    ],
+  };
+  const sale: Invoice = {
+    id: 'inv_sale_cancel_multiwarehouse',
+    ownerId: 'test_owner',
+    invoiceNumber: 'S-MW-1',
+    invoiceType: 'sale',
+    date: '1405/01/03',
+    partyId: seed.parties[0].id,
+    partyName: seed.parties[0].name,
+    warehouse: 'انبار الف',
+    subtotal: 200,
+    discount: 0,
+    vatAmount: 0,
+    grandTotal: 200,
+    paidCash: 200,
+    paidBank: 0,
+    paidCheque: 0,
+    creditAmount: 0,
+    status: 'settled',
+    items: [{
+      productId: product.id,
+      sku: product.sku,
+      productName: product.name,
+      unit: product.unit,
+      quantity: 2,
+      unitPrice: 100,
+      unitCostSnapshot: 100,
+      totalCostIrr: 200,
+      discount: 0,
+      vatAmount: 0,
+      lineTotal: 200,
+      consumedLayers: [{ layerId: 'layer_a', qty: 2, unitCostIrr: 100, totalCostIrr: 200 }],
+    }],
+  };
+
+  const plan = planInvoiceCancellation({
+    invoice: sale,
+    cancellationDate: '1405/01/04',
+    products: [product],
+    vouchers: [],
+    cheques: [],
+    costingMethod: 'fifo',
+    ownerId: 'test_owner',
+    reversalVoucherId: 'vch_cancel_multiwarehouse',
+    nextVoucherNumber: 91,
+    deviceId: 'dev_test',
+  });
+  const restored = plan.updatedProducts[0];
+  assert.ok(restored);
+  const qtyByWarehouse = new Map<string, number>();
+  for (const layer of restored.costLayers ?? []) {
+    qtyByWarehouse.set(layer.warehouse, (qtyByWarehouse.get(layer.warehouse) ?? 0) + layer.remainingQty);
+  }
+  assert.equal(restored.stock, 8);
+  assert.equal(qtyByWarehouse.get('انبار الف'), 5);
+  assert.equal(qtyByWarehouse.get('انبار ب'), 3);
+});
+
+test('Purchase cancellation fails closed when the originating layer is insufficient instead of consuming another warehouse', () => {
+  const seed = createHolooSeedData('test_owner');
+  const product: Product = {
+    ...seed.products[0],
+    id: 'prd_cancel_purchase_multiwarehouse',
+    warehouse: 'انبار ب',
+    stock: 10,
+    buyPrice: 100,
+    costingMethod: 'fifo',
+    inventoryValueIrr: 1_000,
+    costLayers: [
+      {
+        layerId: 'layer_purchase_partial',
+        date: '1405/01/01',
+        sourceRef: 'inv_purchase_to_cancel',
+        warehouse: 'انبار الف',
+        originalQty: 5,
+        remainingQty: 3,
+        unitCostIrr: 100,
+        totalCostIrr: 300,
+      },
+      {
+        layerId: 'layer_other_warehouse',
+        date: '1405/01/02',
+        sourceRef: 'other_purchase',
+        warehouse: 'انبار ب',
+        originalQty: 7,
+        remainingQty: 7,
+        unitCostIrr: 100,
+        totalCostIrr: 700,
+      },
+    ],
+  };
+  const purchase: Invoice = {
+    id: 'inv_purchase_to_cancel',
+    ownerId: 'test_owner',
+    invoiceNumber: 'P-MW-1',
+    invoiceType: 'purchase',
+    date: '1405/01/01',
+    partyId: seed.parties[1].id,
+    partyName: seed.parties[1].name,
+    warehouse: 'انبار الف',
+    subtotal: 500,
+    discount: 0,
+    vatAmount: 0,
+    grandTotal: 500,
+    paidCash: 0,
+    paidBank: 0,
+    paidCheque: 0,
+    creditAmount: 500,
+    status: 'settled',
+    items: [{
+      productId: product.id,
+      sku: product.sku,
+      productName: product.name,
+      unit: product.unit,
+      quantity: 5,
+      unitPrice: 100,
+      unitCostSnapshot: 100,
+      totalCostIrr: 500,
+      discount: 0,
+      vatAmount: 0,
+      lineTotal: 500,
+    }],
+  };
+  assert.throws(
+    () => planInvoiceCancellation({
+      invoice: purchase,
+      cancellationDate: '1405/01/04',
+      products: [product],
+      vouchers: [],
+      cheques: [],
+      costingMethod: 'fifo',
+      ownerId: 'test_owner',
+      reversalVoucherId: 'vch_cancel_purchase_multiwarehouse',
+      nextVoucherNumber: 92,
+      deviceId: 'dev_test',
+    }),
+    /لایه‌های بهای تمام‌شدهٔ همان فاکتور/
+  );
+});
+
 test('Stage 10 [Scenario 8]: Mixed Settlement Sale (Cash + Bank + Cheque + Credit + 10% VAT) & Negative Stock Guard', () => {
   const seed = createHolooSeedData('test_owner');
   const party = seed.parties[0];
@@ -1671,6 +1843,22 @@ test('Iran Statutory Payroll Engine: Applies 1404 vs 1405 Budget Law progressive
   const p1405 = getStatutoryParamsForYear('1405');
   assert.equal(validateStatutoryParams(p1405).length, 0);
   assert.equal(validateStatutoryParams({ ...p1405, vatRate: 0.9 }).length > 0, true);
+  assert.equal(
+    validateStatutoryParams({ ...p1405, monthlyTaxBrackets: p1405.monthlyTaxBrackets.slice(0, -1) }).length > 0,
+    true,
+    'tax brackets must include a final unbounded rate so income above the last threshold is taxed'
+  );
+  assert.equal(
+    validateStatutoryParams({
+      ...p1405,
+      monthlyTaxBrackets: [{ upToMonthlyIrr: null, rate: 0.1 }, ...p1405.monthlyTaxBrackets.slice(1)],
+    }).length > 0,
+    true,
+    'an unbounded bracket must not appear before the final bracket'
+  );
+  assert.equal(validateStatutoryParams({ ...p1405, childAllowancePerChildIrr: Number.NaN }).length > 0, true);
+  assert.equal(validateStatutoryParams({ ...p1405, overtimeMultiplier: 0 }).length > 0, true);
+  assert.equal(validateStatutoryParams({ ...p1405, monthlyWorkingHoursBase: Number.NaN }).length > 0, true);
 });
 
 test('Smart Audit Engine: Detects permanent voucher tamper-seal breach without mutating original records', () => {
