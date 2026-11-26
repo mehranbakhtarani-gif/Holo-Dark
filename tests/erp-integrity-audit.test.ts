@@ -1847,7 +1847,7 @@ test('Warehouse matrix preserves four-decimal reserved and in-transit quantities
       { layerId: 'matrix_transit', date: '1405/01/02', sourceRef: 'transfer', warehouse: 'در راه → انبار مقصد', originalQty: 0.1234, remainingQty: 0.1234, unitCostIrr: 1000, totalCostIrr: 123 },
     ],
   };
-  const transfer: TrackedWarehouseTransfer = {
+  const transfer = {
     id: 'matrix_transfer', transferNumber: 'MAT-TRF', date: '1405/01/02',
     productId: product.id, sku: product.sku, productName: product.name,
     fromWarehouse: 'انبار مبدأ', toWarehouse: 'انبار مقصد', qty: 0.1234,
