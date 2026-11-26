@@ -805,7 +805,6 @@ service cloud.firestore {
             && !('lastReturnMutationId' in incoming())
           )
         )
-        && isValidReturnSource(incoming())
         && (
           !(incoming().invoiceType in ['sale_return', 'purchase_return'])
           || hasAtomicReturnRevisionBump(
@@ -820,7 +819,7 @@ service cloud.firestore {
         && incoming().createdAt == request.time
         && incoming().updatedAt == request.time;
       allow update: if isValidId(invoiceId) && isVerified() && isValidInvoice(incoming()) && (
-        isAdmin() || (
+        (
           existing().ownerId == request.auth.uid
           && existing().status != 'cancelled'
           && (
@@ -903,7 +902,7 @@ service cloud.firestore {
               && incoming().diff(existing()).affectedKeys().hasOnly(['invoiceNumber', 'invoiceType', 'status', 'voucherId', 'items', 'returnRevision', 'activeReturnCount', '_version', 'updatedByDevice', 'updatedAt'])
             )
           )
-        )
+        ) || isAdmin()
       );
       allow delete: if isValidId(invoiceId) && isVerified() && (isAdmin() || (existing().ownerId == request.auth.uid && existing().invoiceType == 'proforma'));
     }
