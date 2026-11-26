@@ -1,6 +1,7 @@
 import assert from 'node:assert/strict';
 import {
   mergeWorkspacesDeterministicLWW,
+  isAuthorizedOutboxPeerAck,
   SYNCABLE_WORKSPACE_COLLECTIONS,
   MESH_DEVICES,
   safeParseJsonObject,
@@ -230,6 +231,22 @@ runTest('3b. LWW merge converges when same-device writes share an identical time
   const recordB = JSON.parse(zetaThenAlpha.mergedSnapshotJson).vouchers[0];
   assert.equal(recordA.description, 'zeta');
   assert.deepEqual(recordA, recordB);
+});
+
+runTest('3c. outbox ACKs are accepted only from required P2P peers', () => {
+  const p2pItem = {
+    target: 'p2p_mesh' as const,
+    requiredPeers: ['holoo-mesh-mehran-phone1', 'holoo-mesh-mehran-phone2'],
+  };
+  const folderItem = {
+    target: 'local_folder' as const,
+    requiredPeers: [],
+  };
+
+  assert.equal(isAuthorizedOutboxPeerAck(p2pItem, 'holoo-mesh-mehran-phone1'), true);
+  assert.equal(isAuthorizedOutboxPeerAck(p2pItem, 'holoo-mesh-mehran-laptop'), false);
+  assert.equal(isAuthorizedOutboxPeerAck(folderItem, 'holoo-mesh-mehran-phone1'), false);
+  assert.equal(isAuthorizedOutboxPeerAck({ target: 'p2p_mesh', requiredPeers: [] }, 'holoo-mesh-mehran-phone2'), false);
 });
 
 runTest('4. safeParseJsonObject strips prototype pollution payloads', () => {
