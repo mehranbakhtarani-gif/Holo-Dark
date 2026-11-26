@@ -643,6 +643,54 @@ test('workspace-native warehouse transfer receipt updates staged product and ext
   }), 'FAILED_PRECONDITION');
 });
 
+test('warehouse transfer creation splits source FIFO layers and persists the in-transit voucher atomically', async () => {
+  const owner = await createVerifiedUser('warehouse-create-owner');
+  await call('bootstrapWorkspace', owner.token);
+  await refreshUserToken(owner);
+  const productId = `create-transfer-product-${owner.uid}`;
+  const transferId = `trf-create-${owner.uid}`;
+  const now = Timestamp.now();
+  await firestore.collection('products').doc(productId).set({
+    ownerId: owner.uid, sku: 'TRANSFER-01', name: 'Transfer fixture',
+    category: 'raw', warehouse: 'انبار مرکزی', unit: 'kg',
+    buyPrice: 1000, sellPrice: 1500, stock: 7, reorderPoint: 0,
+    vatExempt: false, inventoryValueIrr: 10000,
+    costLayers: [
+      { layerId: 'source-layer-1', sourceRef: 'purchase-1', date: '1405/01/01', originalQty: 3, remainingQty: 3, unitCostIrr: 1000, totalCostIrr: 3000, warehouse: 'انبار مرکزی' },
+      { layerId: 'source-layer-2', sourceRef: 'purchase-2', date: '1405/01/02', originalQty: 2, remainingQty: 2, unitCostIrr: 1000, totalCostIrr: 2000, warehouse: 'انبار مرکزی' },
+      { layerId: 'other-warehouse-layer', sourceRef: 'purchase-3', date: '1405/01/03', originalQty: 2, remainingQty: 2, unitCostIrr: 2500, totalCostIrr: 5000, warehouse: 'انبار دیگر' },
+    ], createdAt: now, updatedAt: now,
+  });
+  const extensionRef = firestore.collection('workspaceExtensions').doc(owner.uid);
+  await extensionRef.set({ ownerId: owner.uid, trackedWarehouseTransfers: [], _version: 1, createdAt: now, updatedAt: now });
+  const result = await call('createTrackedWarehouseTransfer', owner.token, {
+    productId, transferId, transferNumber: 'TR-CREATE-01',
+    fromWarehouse: 'انبار مرکزی', toWarehouse: 'انبار مقصد',
+    qty: 4, date: '1405/08/01',
+  });
+  assert.equal(result.status, 'committed');
+  assert.equal(result.transfer.status, 'in_transit');
+  assert.equal(result.transfer.qty, 4);
+  assert.equal(result.transfer.transferredCostIrr, 4000);
+  const productAfter = await firestore.collection('products').doc(productId).get();
+  const extensionAfter = await extensionRef.get();
+  assert.equal(productAfter.get('stock'), 7);
+  assert.equal(productAfter.get('inventoryValueIrr'), 10000);
+  const layers = productAfter.get('costLayers');
+  assert.equal(layers.find((layer) => layer.layerId === 'source-layer-2').remainingQty, 1);
+  assert.equal(layers.find((layer) => layer.layerId === 'source-layer-2').totalCostIrr, 1000);
+  assert.equal(layers.find((layer) => layer.layerId === 'other-warehouse-layer').remainingQty, 2);
+  assert.equal(layers.filter((layer) => layer.warehouse === 'در راه → انبار مقصد').length, 2);
+  assert.equal(extensionAfter.get('trackedWarehouseTransfers.0.id'), transferId);
+  assert.equal(extensionAfter.get('trackedWarehouseTransfers.0.status'), 'in_transit');
+  assert.equal(extensionAfter.get('_version'), 2);
+  await expectCallableError(call('createTrackedWarehouseTransfer', owner.token, {
+    productId, transferId: `trf-create-replay-${owner.uid}`, transferNumber: 'TR-OVER',
+    fromWarehouse: 'انبار مرکزی', toWarehouse: 'انبار مقصد',
+    qty: 99, date: '1405/08/01',
+  }), 'FAILED_PRECONDITION');
+});
+
 test('warehouse transfer receipt commits FIFO layers and transfer status atomically', async () => {
   const owner = await createVerifiedUser('warehouse-receipt-owner');
   await call('bootstrapWorkspace', owner.token);
