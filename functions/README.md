@@ -38,3 +38,8 @@ Membership authority is stored in `workspaceMemberships/{workspaceId}_{uid}`. Cl
 
 ## Named database SDK note
 The Functions use the supported `@google-cloud/firestore` client with an explicit `projectId` and `databaseId`. The Admin SDK's named-database `getFirestore(app, databaseId)` API is documented as preview, so it is deliberately not used here. The Firebase Admin SDK is retained only for Auth custom-claims management.
+
+
+## Workspace emulator integration tests
+
+Install Functions dependencies with `npm install` in this directory. Start the configured Auth, Firestore, and Functions emulators from the repository root using `firebase emulators:start --only auth,firestore,functions`. In a second terminal, run `npm run test:emulator` from `functions/`. The test harness creates isolated verified Auth Emulator users and exercises the callable endpoints against the Functions and Firestore emulators. It uses only emulator endpoints and does not deploy or mutate production resources. The harness expects the project ID and emulator ports declared in the repository Firebase configuration; override `FIREBASE_PROJECT_ID`, `AUTH_EMULATOR_HOST`, or `FUNCTIONS_EMULATOR_HOST` only when running a deliberately separate emulator stack.
