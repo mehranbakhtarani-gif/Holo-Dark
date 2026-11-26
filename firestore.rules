@@ -209,7 +209,30 @@ service cloud.firestore {
         && data.createdAt is timestamp
         && data.updatedAt is timestamp;
     }
-    function hasAtomicReturnRevisionBump(sourceInvoiceId, ownerId, partyId, sourceType, countDelta) {
+    function isPairedReturnMutation(sourceInvoiceId, returnInvoiceId, sourceBefore, sourceAfter, countDelta) {
+      let returnPath = /databases/$(database)/documents/invoices/$(returnInvoiceId);
+      let returnBefore = get(returnPath);
+      let returnAfter = getAfter(returnPath).data;
+      return isValidId(returnInvoiceId)
+        && sourceBefore.activeReturnCount is int
+        && sourceBefore.returnRevision is int
+        && sourceAfter.activeReturnCount == sourceBefore.activeReturnCount + countDelta
+        && sourceAfter.returnRevision == sourceBefore.returnRevision + 1
+        && sourceAfter.lastReturnMutationId == returnInvoiceId
+        && returnAfter.sourceInvoiceId == sourceInvoiceId
+        && returnAfter.ownerId == sourceBefore.ownerId
+        && returnAfter.partyId == sourceBefore.partyId
+        && (
+          (sourceBefore.invoiceType == 'sale' && returnAfter.invoiceType == 'sale_return')
+          || (sourceBefore.invoiceType == 'purchase' && returnAfter.invoiceType == 'purchase_return')
+        )
+        && (
+          (countDelta == 1 && !exists(returnPath) && returnAfter.status != 'cancelled')
+          || (countDelta == -1 && exists(returnPath) && returnBefore.data.status != 'cancelled' && returnAfter.status == 'cancelled')
+        );
+    }
+
+    function hasAtomicReturnRevisionBump(sourceInvoiceId, returnInvoiceId, ownerId, partyId, sourceType, countDelta) {
       let sourcePath = /databases/$(database)/documents/invoices/$(sourceInvoiceId);
       let sourceBefore = get(sourcePath).data;
       let sourceAfter = getAfter(sourcePath).data;
@@ -218,12 +241,13 @@ service cloud.firestore {
         && sourceBefore.partyId == partyId
         && sourceBefore.invoiceType == sourceType
         && sourceBefore.status != 'cancelled'
+        && sourceBefore.activeReturnCount is int
+        && sourceBefore.returnRevision is int
         && sourceAfter.ownerId == sourceBefore.ownerId
         && sourceAfter.partyId == sourceBefore.partyId
         && sourceAfter.invoiceType == sourceBefore.invoiceType
         && sourceAfter.status == sourceBefore.status
-        && sourceAfter.returnRevision == (('returnRevision' in sourceBefore) ? sourceBefore.returnRevision : 0) + 1
-        && sourceAfter.activeReturnCount == (('activeReturnCount' in sourceBefore) ? sourceBefore.activeReturnCount : 0) + countDelta;
+        && isPairedReturnMutation(sourceInvoiceId, returnInvoiceId, sourceBefore, sourceAfter, countDelta);
     }
 
     function isValidReturnSource(data) {
@@ -233,6 +257,8 @@ service cloud.firestore {
         && exists(/databases/$(database)/documents/invoices/$(data.sourceInvoiceId))
         && get(/databases/$(database)/documents/invoices/$(data.sourceInvoiceId)).data.ownerId == data.ownerId
         && get(/databases/$(database)/documents/invoices/$(data.sourceInvoiceId)).data.status != 'cancelled'
+        && get(/databases/$(database)/documents/invoices/$(data.sourceInvoiceId)).data.activeReturnCount is int
+        && get(/databases/$(database)/documents/invoices/$(data.sourceInvoiceId)).data.returnRevision is int
         && get(/databases/$(database)/documents/invoices/$(data.sourceInvoiceId)).data.partyId == data.partyId
         && (
           (data.invoiceType == 'sale_return' && get(/databases/$(database)/documents/invoices/$(data.sourceInvoiceId)).data.invoiceType == 'sale')
@@ -243,7 +269,7 @@ service cloud.firestore {
 
     function isValidInvoice(data) {
       return data.keys().hasAll(['ownerId', 'invoiceNumber', 'invoiceType', 'date', 'partyId', 'partyName', 'warehouse', 'subtotal', 'discount', 'vatAmount', 'grandTotal', 'paidCash', 'paidBank', 'paidCheque', 'creditAmount', 'status', 'items', 'createdAt', 'updatedAt'])
-        && data.keys().hasOnly(['ownerId', 'invoiceNumber', 'taxSerial', 'invoiceType', 'sourceInvoiceId', 'returnRevision', 'date', 'partyId', 'partyName', 'intermediaryId', 'intermediaryName', 'warehouse', 'costCenterId', 'currencyCode', 'exchangeRate', 'foreignSubtotal', 'foreignDiscount', 'foreignVatAmount', 'foreignGrandTotal', 'subtotal', 'discount', 'vatAmount', 'grandTotal', 'paidCash', 'paidBank', 'paidCheque', 'creditAmount', 'status', 'voucherId', 'items', '_version', 'updatedByDevice', 'createdAt', 'updatedAt'])
+        && data.keys().hasOnly(['ownerId', 'invoiceNumber', 'taxSerial', 'invoiceType', 'sourceInvoiceId', 'returnRevision', 'activeReturnCount', 'lastReturnMutationId', 'date', 'partyId', 'partyName', 'intermediaryId', 'intermediaryName', 'warehouse', 'costCenterId', 'currencyCode', 'exchangeRate', 'foreignSubtotal', 'foreignDiscount', 'foreignVatAmount', 'foreignGrandTotal', 'subtotal', 'discount', 'vatAmount', 'grandTotal', 'paidCash', 'paidBank', 'paidCheque', 'creditAmount', 'status', 'voucherId', 'items', '_version', 'updatedByDevice', 'createdAt', 'updatedAt'])
         && data.ownerId == request.auth.uid
         && isValidId(data.ownerId)
         && isNonEmptyString(data.invoiceNumber, 48)
@@ -251,6 +277,7 @@ service cloud.firestore {
         && isOptionalString(data, 'sourceInvoiceId', 128)
         && (!('returnRevision' in data) || (data.returnRevision is int && data.returnRevision >= 0))
         && (!('activeReturnCount' in data) || (data.activeReturnCount is int && data.activeReturnCount >= 0))
+        && isOptionalString(data, 'lastReturnMutationId', 128)
         && data.invoiceType in ['sale', 'purchase', 'proforma', 'sale_return', 'purchase_return', 'waste']
         && isNonEmptyString(data.date, 20)
         && isNonEmptyString(data.partyId, 128)
@@ -646,6 +673,27 @@ service cloud.firestore {
         isAdmin() || (
           isOwner(userId)
           && incoming().ownerId == existing().ownerId
+          && (
+            !incoming().diff(existing()).affectedKeys().hasAny(['returnRevision', 'activeReturnCount', 'lastReturnMutationId'])
+            || (
+              ('activeReturnCount' in existing())
+              && ('returnRevision' in existing())
+              && ('activeReturnCount' in incoming())
+              && ('returnRevision' in incoming())
+              && incoming().lastReturnMutationId is string
+              && (
+                incoming().activeReturnCount == existing().activeReturnCount + 1
+                || incoming().activeReturnCount == existing().activeReturnCount - 1
+              )
+              && isPairedReturnMutation(
+                invoiceId,
+                incoming().lastReturnMutationId,
+                existing(),
+                incoming(),
+                incoming().activeReturnCount - existing().activeReturnCount
+              )
+            )
+          )
           && incoming().createdAt == existing().createdAt
           && incoming().updatedAt == request.time
           && incoming().lastVoucherNumber >= existing().lastVoucherNumber
@@ -760,6 +808,7 @@ service cloud.firestore {
           !(incoming().invoiceType in ['sale_return', 'purchase_return'])
           || hasAtomicReturnRevisionBump(
             incoming().sourceInvoiceId,
+            invoiceId,
             incoming().ownerId,
             incoming().partyId,
             incoming().invoiceType == 'sale_return' ? 'sale' : 'purchase',
@@ -772,7 +821,7 @@ service cloud.firestore {
         isAdmin() || (
           existing().ownerId == request.auth.uid
           && existing().status != 'cancelled'
-          && (!(existing().invoiceType in ['sale', 'purchase']) || (('activeReturnCount' in existing()) ? existing().activeReturnCount : 0) == 0 || incoming().status != 'cancelled')
+          && (!(existing().invoiceType in ['sale', 'purchase']) || ('activeReturnCount' in existing()) && existing().activeReturnCount is int && existing().activeReturnCount == 0 || incoming().status != 'cancelled')
           && incoming().ownerId == existing().ownerId
           && incoming().createdAt == existing().createdAt
           && incoming().updatedAt == request.time
@@ -790,6 +839,7 @@ service cloud.firestore {
               && existing().status != 'cancelled'
               && hasAtomicReturnRevisionBump(
                 existing().sourceInvoiceId,
+                invoiceId,
                 existing().ownerId,
                 existing().partyId,
                 existing().invoiceType == 'sale_return' ? 'sale' : 'purchase',
@@ -801,8 +851,8 @@ service cloud.firestore {
             || existing().status == 'cancelled'
           )
           && (
-            incoming().diff(existing()).affectedKeys().hasOnly(['status', 'returnRevision', 'activeReturnCount', '_version', 'updatedByDevice', 'updatedAt']) ||
-            incoming().diff(existing()).affectedKeys().hasOnly(['paidCash', 'paidBank', 'paidCheque', 'creditAmount', 'status', 'returnRevision', 'activeReturnCount', '_version', 'updatedByDevice', 'updatedAt']) ||
+            incoming().diff(existing()).affectedKeys().hasOnly(['status', 'returnRevision', 'activeReturnCount', 'lastReturnMutationId', '_version', 'updatedByDevice', 'updatedAt']) ||
+            incoming().diff(existing()).affectedKeys().hasOnly(['paidCash', 'paidBank', 'paidCheque', 'creditAmount', 'status', 'returnRevision', 'activeReturnCount', 'lastReturnMutationId', '_version', 'updatedByDevice', 'updatedAt']) ||
             (
               existing().invoiceType == 'proforma'
               && incoming().diff(existing()).affectedKeys().hasOnly(['invoiceNumber', 'invoiceType', 'status', 'voucherId', 'items', '_version', 'updatedByDevice', 'updatedAt'])
