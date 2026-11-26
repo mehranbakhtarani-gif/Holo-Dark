@@ -1703,6 +1703,8 @@ export const AccountingProvider: React.FC<{ children: React.ReactNode }> = ({ ch
   // ---------------- PRODUCTS & WAREHOUSE CRUD ----------------
   const addProduct = useCallback(
     async (product: Omit<Product, 'id' | 'ownerId'>) => {
+      if (!requirePermission('canEditInventory', 'تعریف کالا')) return;
+
       const id = generateSafeId('prd');
       const full: Product = { ...product, id, ownerId };
       if (user) {
@@ -1746,11 +1748,13 @@ export const AccountingProvider: React.FC<{ children: React.ReactNode }> = ({ ch
       }
       showToast(`نخ/کالای «${product.name}» با موفقیت در انبار ثبت شد.`);
     },
-    [ownerId, user, showToast]
+    [ownerId, user, showToast, requirePermission]
   );
 
   const updateProduct = useCallback(
     async (productId: string, patch: Partial<Omit<Product, 'id' | 'ownerId' | 'sku'>>) => {
+      if (!requirePermission('canEditInventory', 'ویرایش کالا')) return;
+
       const existing = products.find((p) => p.id === productId);
       if (!existing) return;
       if (user) {
@@ -1790,11 +1794,13 @@ export const AccountingProvider: React.FC<{ children: React.ReactNode }> = ({ ch
       }
       showToast(`مشخصات نخ/کالا «${patch.name ?? existing.name}» ویرایش شد.`);
     },
-    [products, user, showToast]
+    [products, user, showToast, requirePermission]
   );
 
   const deleteProduct = useCallback(
     async (productId: string): Promise<boolean> => {
+      if (!requirePermission('canDeleteRecords', 'حذف کالا')) return false;
+
       const prod = products.find((p) => p.id === productId);
       if (!prod) return false;
       const used = invoices.some((i) => i.items.some((it) => it.productId === productId));
@@ -1814,7 +1820,7 @@ export const AccountingProvider: React.FC<{ children: React.ReactNode }> = ({ ch
       showToast(`کالا «${prod.name}» از انبار حذف شد.`);
       return true;
     },
-    [products, invoices, user, showToast]
+    [products, invoices, user, showToast, requirePermission]
   );
 
   const adjustProductStock = useCallback(
@@ -3819,6 +3825,8 @@ export const AccountingProvider: React.FC<{ children: React.ReactNode }> = ({ ch
   // ---------------- MULTI-CURRENCY & DAILY EXCHANGE RATES ----------------
   const addCurrency = useCallback(
     async (cur: Omit<CurrencyDefinition, 'id' | 'ownerId' | 'isBase'>): Promise<boolean> => {
+      if (!requirePermission('canManageCurrencies', 'تعریف ارز')) return false;
+
       const code = normalizeCurrencyCode(cur.code).replace(/[^A-Z0-9_-]/g, '').slice(0, 10);
       if (!code || code.length < 2) {
         showToast('کد ارز باید حداقل ۲ حرف لاتین (مثلاً USD، TRY یا GBP) باشد.');
@@ -3897,7 +3905,7 @@ export const AccountingProvider: React.FC<{ children: React.ReactNode }> = ({ ch
       showToast(`ارز «${full.name} (${full.code})» با موفقیت تعریف شد.`);
       return true;
     },
-    [currencies, ownerId, user, showToast]
+    [currencies, ownerId, user, showToast, requirePermission]
   );
 
   const updateCurrency = useCallback(
@@ -3907,6 +3915,8 @@ export const AccountingProvider: React.FC<{ children: React.ReactNode }> = ({ ch
         Pick<CurrencyDefinition, 'name' | 'symbol' | 'decimalPlaces' | 'defaultRateToIrr' | 'active'>
       >
     ) => {
+      if (!requirePermission('canManageCurrencies', 'ویرایش ارز')) return;
+
       const existing = currencies.find((c) => c.id === currencyId);
       if (!existing) return;
       const safePatch: Partial<CurrencyDefinition> = {};
@@ -3940,11 +3950,13 @@ export const AccountingProvider: React.FC<{ children: React.ReactNode }> = ({ ch
       }
       showToast(`مشخصات ارز «${existing.code}» به‌روزرسانی شد.`);
     },
-    [currencies, user, showToast]
+    [currencies, user, showToast, requirePermission]
   );
 
   const deleteCurrency = useCallback(
     async (currencyId: string): Promise<boolean> => {
+      if (!requirePermission('canManageCurrencies', 'حذف ارز')) return false;
+
       const target = currencies.find((c) => c.id === currencyId);
       if (!target) return false;
       if (target.isBase || normalizeCurrencyCode(target.code) === BASE_CURRENCY_CODE) {
@@ -3971,7 +3983,7 @@ export const AccountingProvider: React.FC<{ children: React.ReactNode }> = ({ ch
       showToast(`ارز «${target.name} (${target.code})» حذف شد.`);
       return true;
     },
-    [currencies, vouchers, invoices, user, showToast]
+    [currencies, vouchers, invoices, user, showToast, requirePermission]
   );
 
   const upsertExchangeRate = useCallback(
