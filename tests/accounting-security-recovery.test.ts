@@ -1153,6 +1153,8 @@ test('Stage 10 [Scenario 12]: End-to-End Full Reconciliation (TB, BS, P&L, Cash 
   vouchers.push(sal1.voucher!);
   invoices.push(sal1.invoice);
   cheques.push(sal1.cheque!);
+  assert.equal(sal1.invoice.returnRevision, 0, 'New source invoices start with a return revision');
+  assert.equal(sal1.invoice.activeReturnCount, 0, 'New source invoices start with an explicit zero active-return count');
 
   // 4) Sale Return 10 units linked to sal1 (net 20M + 2M VAT = 22M credited to customer AR)
   const sret1 = planAtomicInvoiceCommit({
