@@ -114,6 +114,7 @@ import {
   setAutoBackupOnClosePref,
 } from '../lib/localBackup';
 import { planPeriodReopening } from '../lib/accountingIntegrityEngine';
+import { getStatutoryParamsForYear, validateStatutoryParams } from '../lib/iranStatutoryParams';
 import {
   Holo203SourcePayload,
   HoloMigrationResult,
@@ -3240,6 +3241,17 @@ export const AccountingProvider: React.FC<{ children: React.ReactNode }> = ({ ch
     async (monthName: string) => {
       const activeEmps = employees.filter((e) => e.active);
       if (activeEmps.length === 0) return;
+      const statutory = getStatutoryParamsForYear(profile.fiscalYear, profile.statutoryParamsByYear);
+      const statutoryErrors = validateStatutoryParams(statutory);
+      if (statutory.requiresUserVerification && !statutory.verifiedByUser) {
+        statutoryErrors.unshift(
+          statutory.verificationNote || `پارامترهای قانونی سال ${profile.fiscalYear} هنوز تأیید نشده‌اند.`
+        );
+      }
+      if (statutoryErrors.length > 0) {
+        showToast(statutoryErrors[0], 'error');
+        return;
+      }
       const calcs = activeEmps.map((emp) =>
         calculateEmployeePayroll(emp, profile.fiscalYear, profile.statutoryParamsByYear)
       );
@@ -3293,7 +3305,7 @@ export const AccountingProvider: React.FC<{ children: React.ReactNode }> = ({ ch
         lines,
       });
     },
-    [employees, profile.fiscalYear, profile.statutoryParamsByYear, createVoucher]
+    [employees, profile.fiscalYear, profile.statutoryParamsByYear, createVoucher, showToast]
   );
 
   const paySalariesVoucher = useCallback(
