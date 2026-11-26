@@ -687,8 +687,7 @@ export const mutateWorkspaceVoucher = onCall({ region: REGION, timeoutSeconds: 6
     data: ['create', 'update'].includes(String(operation)) ? input : null,
     sourceDocumentId: operation === 'reverse' ? request.data?.sourceDocumentId : null,
     sourceExpectedVersion: operation === 'reverse' ? request.data?.expectedSourceVersion : null,
-    reversalDate: operation === 'reverse' ? request.data?.data?.date : null,
-    reversalFiscalYear: operation === 'reverse' ? request.data?.data?.fiscalYear : null,
+    reversalData: operation === 'reverse' ? input : null,
     integrityHash: operation === 'finalize' ? request.data?.integrityHash : null,
   }))).digest('hex');
   return db.runTransaction(async (tx) => {
