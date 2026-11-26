@@ -107,3 +107,8 @@ AccountingContext resolves the authenticated caller's Workspace before cloud hyd
 - Both operations require the verified/frozen/native workspace state, active server-side membership, role authorization, and workspace-scoped idempotency keys. A repeated operation with changed content is rejected.
 - AccountingContext routes Workspace-native draft creation and finalization through this callable. Direct permanent creation remains blocked in Workspace mode; users must create a draft and finalize it. Draft editing/deletion and voucher reversal are still blocked pending their atomic migration.
 - Emulator test coverage has been authored for sequential numbering, replay, server-side integrity verification, version conflicts, and absence of legacy-root writes. Tests/build have not yet been executed.
+
+
+### Workspace-native voucher draft lifecycle
+
+The `mutateWorkspaceVoucher` callable supports atomic `create`, `update`, `delete`, and `finalize` operations for staged vouchers. Draft updates and deletions require the current envelope version and a unique workspace-scoped operation ID. Updates preserve the server-assigned voucher number and original creation timestamp; deletions create a versioned tombstone rather than physically removing the staged record. Permanent vouchers cannot be edited or deleted. All operations require a verified caller, active workspace membership, an allowed finance role, a verified/frozen migration manifest, and a frozen read barrier. No operation writes to legacy root voucher collections.
