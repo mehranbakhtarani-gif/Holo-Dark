@@ -323,6 +323,20 @@ export async function receiveTrackedWarehouseTransferAtomic(
   const result = await callable(input);
   return result.data;
 }
+export interface RestoreTrackedWarehouseTransfersResult {
+  status: 'restored' | 'capacity-reached' | 'up-to-date';
+  restoredCount: number;
+  remainingCapacity: number;
+}
+export async function restoreTrackedWarehouseTransfersAtomic(): Promise<RestoreTrackedWarehouseTransfersResult> {
+  const callable = httpsCallable<void, RestoreTrackedWarehouseTransfersResult>(
+    functions,
+    'restoreTrackedWarehouseTransfers',
+  );
+  const result = await callable();
+  return result.data;
+}
+
 export interface WorkspaceVoucherMutationInput {
   operation: 'create' | 'update' | 'delete' | 'finalize' | 'reverse';
   documentId: string;
