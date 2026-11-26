@@ -208,6 +208,21 @@ export async function resolveWorkspaceContext(): Promise<WorkspaceContextResult>
   return result.data;
 }
 
+export interface InvoiceReturnCounterMigrationResult {
+  status: 'completed' | 'already-completed';
+  migratedCount: number;
+  scannedInvoiceCount?: number;
+}
+
+export async function migrateInvoiceReturnCounters(): Promise<InvoiceReturnCounterMigrationResult> {
+  const callable = httpsCallable<void, InvoiceReturnCounterMigrationResult>(
+    functions,
+    'migrateInvoiceReturnCounters',
+  );
+  const result = await callable();
+  return result.data;
+}
+
 
 export interface WorkspaceCoreRecord<T = Record<string, unknown>> {
   id: string;
