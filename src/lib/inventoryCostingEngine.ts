@@ -719,12 +719,29 @@ export function recalculateInventoryLedger(input: {
     let totalWasteQty = 0;
     const saleQtyByRef = new Map<string, number>();
     const returnedQtyBySaleRef = new Map<string, number>();
+    const purchaseQtyByRef = new Map<string, number>();
+    const returnedQtyByPurchaseRef = new Map<string, number>();
 
     // Pass 1: Pool all opening + purchases + surplus - purchase_returns across the entire period
     // Validate linked returns here too; periodic costing must enforce the same source limits as FIFO.
     for (const m of sorted) {
       const q = roundQty(m.qty);
-      if (m.kind === 'sale') {
+      if (m.kind === 'purchase') {
+        purchaseQtyByRef.set(m.id, q);
+      } else if (m.kind === 'purchase_return' && m.sourceRefId) {
+        const originalPurchaseQty = purchaseQtyByRef.get(m.sourceRefId);
+        if (originalPurchaseQty === undefined) {
+          throw new Error(`فاکتور خرید مرجع برای برگشت از خرید یافت نشد: ${m.sourceRefId}`);
+        }
+        const alreadyReturned = returnedQtyByPurchaseRef.get(m.sourceRefId) ?? 0;
+        const remainingReturnableQty = roundQty(originalPurchaseQty - alreadyReturned);
+        if (q > remainingReturnableQty + 0.0001) {
+          throw new Error(
+            `مقدار برگشت از خرید از مقدار خریداری‌شدهٔ باقی‌مانده بیشتر است (باقی‌مانده: ${roundQty2(remainingReturnableQty)}، برگشتی: ${roundQty2(q)}).`
+          );
+        }
+        returnedQtyByPurchaseRef.set(m.sourceRefId, roundQty(alreadyReturned + q));
+      } else if (m.kind === 'sale') {
         saleQtyByRef.set(m.id, q);
       } else if (m.kind === 'sale_return' && m.sourceRefId) {
         const originalSaleQty = saleQtyByRef.get(m.sourceRefId);
