@@ -515,6 +515,11 @@ test('workspace voucher create, numbering, finalize and replay are atomic', asyn
   });
   assert.equal(reversalReplay.status, 'replayed');
   await expectCallableError(call('mutateWorkspaceVoucher', owner.token, {
+    operation: 'reverse', documentId: reversalId, operationId: reversalOperationId,
+    sourceDocumentId: voucherId, expectedSourceVersion: 2,
+    data: { date: '1405/08/06', fiscalYear: '1405', description: 'Changed description with reused operation ID' },
+  }), 'ALREADY_EXISTS');
+  await expectCallableError(call('mutateWorkspaceVoucher', owner.token, {
     operation: 'reverse', documentId: `duplicate-reversal-${owner.uid}`,
     operationId: randomUUID().replace(/-/g, ''),
     sourceDocumentId: voucherId, expectedSourceVersion: 3,
