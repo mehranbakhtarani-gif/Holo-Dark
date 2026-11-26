@@ -1872,12 +1872,13 @@ export const AccountingProvider: React.FC<{ children: React.ReactNode }> = ({ ch
         ...(l.foreignDebit !== undefined ? { foreignCredit: l.foreignDebit } : { foreignCredit: undefined }),
       }));
       const reversalDate = getTodayShamsi();
+      const reversalId = generateSafeId('vch');
       const reversalDescription = `سند معکوس و اصلاحی بابت ابطال اثر سند شماره ${orig.voucherNumber} (${orig.date})`;
       if (user && workspaceContext?.coreWritesFrozen && workspaceContext.coreWriteMode === 'workspace_native') {
         try {
           const result = await mutateWorkspaceVoucher({
             operation: 'reverse',
-            documentId: generateSafeId('vch'),
+            documentId: reversalId,
             operationId: generateSafeId('op'),
             sourceDocumentId: orig.id,
             expectedSourceVersion: orig._version ?? 1,
@@ -1889,7 +1890,7 @@ export const AccountingProvider: React.FC<{ children: React.ReactNode }> = ({ ch
             },
           });
           const reversal: Voucher = {
-            id: result.status === 'committed' ? result.operationId.replace(/^op/, 'vch') : '',
+            id: reversalId,
             ownerId: workspaceContext.workspaceId,
             voucherNumber: result.voucherNumber,
             date: reversalDate,
@@ -1911,7 +1912,7 @@ export const AccountingProvider: React.FC<{ children: React.ReactNode }> = ({ ch
             _version: result.version,
             updatedByDevice: deviceId,
           };
-          setVouchers((prev) => [...prev, reversal]);
+          setVouchers((prev) => [...prev.map((v) => v.id === orig.id ? { ...v, _version: (orig._version ?? 1) + 1 } : v), reversal]);
           showToast(`پیش‌نویس سند معکوس شماره ${result.voucherNumber} ثبت شد.`);
           return reversal;
         } catch (err) {
