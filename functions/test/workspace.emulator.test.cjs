@@ -554,3 +554,63 @@ test('workspace voucher create, numbering, finalize and replay are atomic', asyn
   assert.equal(secondReversal.status, 'committed');
   assert.equal(secondReversal.voucherNumber, 4);
 });
+
+test('warehouse transfer receipt commits FIFO layers and transfer status atomically', async () => {
+  const owner = await createVerifiedUser('warehouse-receipt-owner');
+  await call('bootstrapWorkspace', owner.token);
+  await refreshUserToken(owner);
+  const productId = `receipt-product-${owner.uid}`;
+  const transferId = `receipt-transfer-${owner.uid}`;
+  const now = Timestamp.now();
+  const transitLayer = {
+    layerId: 'receipt-layer-1', sourceRef: 'purchase-source-1',
+    remainingQty: 2, totalCostIrr: 2000, warehouse: 'در راه → انبار مقصد',
+  };
+  const unrelatedLayer = {
+    layerId: 'receipt-layer-2', sourceRef: 'purchase-source-2',
+    remainingQty: 3, totalCostIrr: 4500, warehouse: 'انبار مرکزی',
+  };
+  await firestore.collection('products').doc(productId).set({
+    ownerId: owner.uid, sku: 'RECEIPT-01', name: 'Receipt fixture',
+    category: 'raw', warehouse: 'انبار مرکزی', unit: 'kg',
+    buyPrice: 1000, sellPrice: 1500, stock: 5, reorderPoint: 0,
+    vatExempt: false, inventoryValueIrr: 6500,
+    costLayers: [transitLayer, unrelatedLayer], createdAt: now, updatedAt: now,
+  });
+  const transfer = {
+    id: transferId, transferNumber: 'TR-RECEIPT-01', date: '1405/08/01',
+    productId, sku: 'RECEIPT-01', productName: 'Receipt fixture',
+    fromWarehouse: 'انبار مرکزی', toWarehouse: 'انبار مقصد',
+    qty: 2, transferredCostIrr: 2000, transferredLayers: [{
+      layerId: transitLayer.layerId, sourceRef: transitLayer.sourceRef,
+      remainingQty: transitLayer.remainingQty, totalCostIrr: transitLayer.totalCostIrr,
+    }],
+    status: 'in_transit',
+  };
+  const extensionRef = firestore.collection('workspaceExtensions').doc(owner.uid);
+  await extensionRef.set({
+    ownerId: owner.uid, trackedWarehouseTransfers: [transfer], _version: 1,
+    createdAt: now, updatedAt: now,
+  });
+  const received = await call('receiveTrackedWarehouseTransfer', owner.token, {
+    productId, transferId, receivedDate: '1405/08/05',
+  });
+  assert.equal(received.status, 'committed');
+  const productAfter = await firestore.collection('products').doc(productId).get();
+  const extensionAfter = await extensionRef.get();
+  assert.equal(productAfter.get('stock'), 5);
+  assert.equal(productAfter.get('inventoryValueIrr'), 6500);
+  assert.equal(productAfter.get('costLayers.0.warehouse'), 'انبار مقصد');
+  assert.equal(productAfter.get('costLayers.1.warehouse'), 'انبار مرکزی');
+  assert.equal(extensionAfter.get('trackedWarehouseTransfers.0.status'), 'received');
+  assert.equal(extensionAfter.get('trackedWarehouseTransfers.0.receivedDate'), '1405/08/05');
+  assert.equal(extensionAfter.get('_version'), 2);
+
+  const replay = await call('receiveTrackedWarehouseTransfer', owner.token, {
+    productId, transferId, receivedDate: '1405/08/05',
+  });
+  assert.equal(replay.status, 'replayed');
+  await expectCallableError(call('receiveTrackedWarehouseTransfer', owner.token, {
+    productId, transferId, receivedDate: '1405/08/06',
+  }), 'FAILED_PRECONDITION');
+});
