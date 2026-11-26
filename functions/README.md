@@ -82,3 +82,9 @@ AccountingContext resolves the authenticated caller's Workspace before cloud hyd
 - The client helper pages through the full collection and returns no partial result if pagination fails or the safety cap is exceeded.
 - AccountingContext fetches accounts and products together for invited members and publishes neither collection until both reads complete. Other collections and all writes remain unavailable through this adapter.
 - No code in this change creates the freeze barrier or stops legacy writes. Until a separately reviewed freeze/reconciliation procedure is implemented, member reads are expected to remain blocked.
+
+
+### Core collection freeze and reconciliation
+- freezeWorkspaceCoreWrites sets a server-owned coreWritesFrozen flag and a reconciling generation on the verified migration manifest. Firestore Rules then reject legacy client writes to accounts/products; the dual-write callable also rejects writes to those collections.
+- reconcileWorkspaceCoreSnapshot compares source/staging counts and SHA-256 payload hashes for every account/product before changing readBarrier.status to frozen. A mismatch or safety-limit failure leaves the barrier closed.
+- This is a one-way safety freeze in this stage. It does not unfreeze legacy writes, redirect application writes, or freeze vouchers/invoices/inventory workflows. Deploy Functions and Firestore Rules together only after emulator validation and an explicit maintenance plan.
