@@ -847,6 +847,11 @@ service cloud.firestore {
           && (
             !incoming().diff(existing()).affectedKeys().hasAny(['returnRevision'])
             || (
+              existing().invoiceType == 'proforma'
+              && incoming().invoiceType == 'sale'
+              && incoming().returnRevision == 0
+            )
+            || (
               incoming().returnRevision == (('returnRevision' in existing()) ? existing().returnRevision : 0) + 1
               && incoming().status == existing().status
             )
