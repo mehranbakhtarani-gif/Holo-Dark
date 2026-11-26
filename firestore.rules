@@ -289,10 +289,11 @@ service cloud.firestore {
         && after.invoiceNumber.size() > 0
         && after.date is string
         && after.status in ['issued', 'settled']
-        && (!('voucherId' in after) || after.voucherId == null || after.voucherId is string)
+        && isOptionalString(after, 'voucherId', 128)
         && after.items is list
         && after.items.size() > 0
         && after.items.size() <= 100
+        && after.items[0] is map
         && after.returnRevision == 0
         && after.activeReturnCount == 0
         && !('lastReturnMutationId' in after);
