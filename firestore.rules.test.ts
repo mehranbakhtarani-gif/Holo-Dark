@@ -110,4 +110,16 @@ export const DIRTY_DOZEN_TESTS: AdversarialTestCase[] = [
     expectedOutcome: 'PERMISSION_DENIED',
     payloadSummary: { targetAdminId: 'userA', role: 'admin' },
   },
+  {
+    id: 13,
+    name: 'Hard-Coded Email Must Not Grant Admin',
+    collection: 'vouchers',
+    operation: 'delete',
+    expectedOutcome: 'PERMISSION_DENIED',
+    payloadSummary: {
+      authEmail: 'mehranbakhtarani@gmail.com',
+      adminClaim: false,
+      provisionedAdminDocument: false,
+    },
+  },
 ];
