@@ -31,3 +31,11 @@ export function resolveVerifiedFirebaseIdentity(payload: unknown): VerifiedFireb
 
   return { uid: user.localId, email: user.email };
 }
+
+/**
+ * A server revision ahead of the client's base is a conflict even when both
+ * tabs share the same persisted browser device ID.
+ */
+export function hasSupabaseRevisionConflict(serverRevision: number, clientRevision: number): boolean {
+  return Number.isFinite(serverRevision) && Number.isFinite(clientRevision) && serverRevision > clientRevision;
+}
