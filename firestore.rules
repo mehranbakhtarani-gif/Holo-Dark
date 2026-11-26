@@ -230,8 +230,7 @@ service cloud.firestore {
       let sourcePath = /databases/$(database)/documents/invoices/$(sourceInvoiceId);
       let sourceBefore = get(sourcePath).data;
       let sourceAfter = getAfter(sourcePath).data;
-      return exists(sourcePath)
-        && sourceBefore.ownerId == ownerId
+      return sourceBefore.ownerId == ownerId
         && sourceBefore.partyId == partyId
         && sourceBefore.invoiceType == sourceType
         && sourceBefore.status != 'cancelled'
@@ -825,11 +824,11 @@ service cloud.firestore {
             !incoming().diff(existing()).affectedKeys().hasAny(['returnRevision', 'activeReturnCount', 'lastReturnMutationId'])
             || (
               existing().invoiceType == 'proforma'
-              && isValidInvoice(incoming())
               && incoming().invoiceType == 'sale'
               && incoming().returnRevision == 0
               && incoming().activeReturnCount == 0
               && !('lastReturnMutationId' in incoming())
+              && isValidInvoice(incoming())
             )
             || (
               ('activeReturnCount' in existing())
@@ -896,7 +895,6 @@ service cloud.firestore {
             incoming().diff(existing()).affectedKeys().hasOnly(['paidCash', 'paidBank', 'paidCheque', 'creditAmount', 'status', 'returnRevision', 'activeReturnCount', 'lastReturnMutationId', '_version', 'updatedByDevice', 'updatedAt']) ||
             (
               existing().invoiceType == 'proforma'
-              && isValidInvoice(incoming())
               && incoming().invoiceType == 'sale'
               && incoming().diff(existing()).affectedKeys().hasOnly(['invoiceNumber', 'invoiceType', 'status', 'voucherId', 'items', 'returnRevision', 'activeReturnCount', '_version', 'updatedByDevice', 'updatedAt'])
             )
