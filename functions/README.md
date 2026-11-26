@@ -88,3 +88,5 @@ AccountingContext resolves the authenticated caller's Workspace before cloud hyd
 - freezeWorkspaceCoreWrites sets a server-owned coreWritesFrozen flag and a reconciling generation on the verified migration manifest. Firestore Rules then reject legacy client writes to accounts/products; the dual-write callable also rejects writes to those collections.
 - reconcileWorkspaceCoreSnapshot compares source/staging counts and SHA-256 payload hashes for every account/product before changing readBarrier.status to frozen. A mismatch or safety-limit failure leaves the barrier closed.
 - This is a one-way safety freeze in this stage. It does not unfreeze legacy writes, redirect application writes, or freeze vouchers/invoices/inventory workflows. Deploy Functions and Firestore Rules together only after emulator validation and an explicit maintenance plan.
+
+- The generic staged-record read endpoint is also gated for accounts/products until the same frozen reconciliation barrier is sealed; role authorization alone cannot bypass the barrier.
