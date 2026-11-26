@@ -23,6 +23,7 @@ import {
 import {
   calculateIranMonthlyPayrollTax,
   getStatutoryParamsForYear,
+  validateStatutoryParams,
 } from './iranStatutoryParams';
 
 export interface LedgerFilterOptions {
@@ -1298,6 +1299,7 @@ export interface PayrollCalculation {
   incomeTax: number;
   netPay: number;
   totalEmployerCost: number;
+  statutoryValidationErrors: string[];
 }
 
 export function calculateEmployeePayroll(
@@ -1306,6 +1308,12 @@ export function calculateEmployeePayroll(
   customStatutoryByYear?: Record<string, IranFiscalYearStatutoryParams>
 ): PayrollCalculation {
   const statutoryParams = getStatutoryParamsForYear(fiscalYear, customStatutoryByYear);
+  const statutoryValidationErrors = validateStatutoryParams(statutoryParams);
+  if (statutoryParams.requiresUserVerification && !statutoryParams.verifiedByUser) {
+    statutoryValidationErrors.unshift(
+      statutoryParams.verificationNote || `پارامترهای قانونی سال ${fiscalYear} هنوز تأیید نشده‌اند.`
+    );
+  }
   const hoursBase = Math.max(1, statutoryParams.monthlyWorkingHoursBase || 220);
   const hourlyRate = emp.baseSalary / hoursBase;
   const overtimePay = Math.round(emp.overtimeHours * hourlyRate * (statutoryParams.overtimeMultiplier || 1.4));
@@ -1345,6 +1353,7 @@ export function calculateEmployeePayroll(
     incomeTax,
     netPay,
     totalEmployerCost,
+    statutoryValidationErrors,
   };
 }
 
