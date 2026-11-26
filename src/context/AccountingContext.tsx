@@ -1858,6 +1858,11 @@ export const AccountingProvider: React.FC<{ children: React.ReactNode }> = ({ ch
     async (voucherId: string): Promise<Voucher | null> => {
       const orig = vouchers.find((v) => v.id === voucherId);
       if (!orig) return null;
+      if (!requirePermission('canCreateVoucher', 'معکوس‌سازی سند حسابداری')) return null;
+      if (orig.status !== 'permanent') {
+        showToast('فقط سند قطعی قابل معکوس‌سازی است.', 'error');
+        return null;
+      }
       const reversedLines: VoucherLine[] = orig.lines.map((l) => ({
         ...l,
         description: `برگشت/اصلاح سند #${orig.voucherNumber}: ${l.description}`,
@@ -1866,9 +1871,57 @@ export const AccountingProvider: React.FC<{ children: React.ReactNode }> = ({ ch
         ...(l.foreignCredit !== undefined ? { foreignDebit: l.foreignCredit } : { foreignDebit: undefined }),
         ...(l.foreignDebit !== undefined ? { foreignCredit: l.foreignDebit } : { foreignCredit: undefined }),
       }));
+      const reversalDate = getTodayShamsi();
+      const reversalDescription = `سند معکوس و اصلاحی بابت ابطال اثر سند شماره ${orig.voucherNumber} (${orig.date})`;
+      if (user && workspaceContext?.coreWritesFrozen && workspaceContext.coreWriteMode === 'workspace_native') {
+        try {
+          const result = await mutateWorkspaceVoucher({
+            operation: 'reverse',
+            documentId: generateSafeId('vch'),
+            operationId: generateSafeId('op'),
+            sourceDocumentId: orig.id,
+            expectedSourceVersion: orig._version ?? 1,
+            data: {
+              date: reversalDate,
+              fiscalYear: extractFiscalYearFromDate(reversalDate) || profile.fiscalYear,
+              description: reversalDescription,
+              updatedByDevice: deviceId.slice(0, 64),
+            },
+          });
+          const reversal: Voucher = {
+            id: result.status === 'committed' ? result.operationId.replace(/^op/, 'vch') : '',
+            ownerId: workspaceContext.workspaceId,
+            voucherNumber: result.voucherNumber,
+            date: reversalDate,
+            fiscalYear: extractFiscalYearFromDate(reversalDate) || profile.fiscalYear,
+            description: reversalDescription,
+            voucherType: 'general',
+            status: 'draft',
+            totalDebit: orig.totalCredit,
+            totalCredit: orig.totalDebit,
+            ...(isForeignCurrency(orig.currencyCode) && orig.exchangeRate ? {
+              currencyCode: orig.currencyCode,
+              exchangeRate: orig.exchangeRate,
+              foreignTotalDebit: orig.foreignTotalCredit,
+              foreignTotalCredit: orig.foreignTotalDebit,
+            } : {}),
+            referenceId: orig.id,
+            reversalOfVoucherId: orig.id,
+            lines: reversedLines,
+            _version: result.version,
+            updatedByDevice: deviceId,
+          };
+          setVouchers((prev) => [...prev, reversal]);
+          showToast(`پیش‌نویس سند معکوس شماره ${result.voucherNumber} ثبت شد.`);
+          return reversal;
+        } catch (err) {
+          showToast(err instanceof Error ? err.message : 'معکوس‌سازی اتمیک سند ناموفق بود.', 'error');
+          return null;
+        }
+      }
       return createVoucher({
-        date: getTodayShamsi(),
-        description: `سند معکوس و اصلاحی بابت ابطال اثر سند شماره ${orig.voucherNumber} (${orig.date})`,
+        date: reversalDate,
+        description: reversalDescription,
         voucherType: 'general',
         status: 'draft',
         lines: reversedLines,
@@ -1880,7 +1933,7 @@ export const AccountingProvider: React.FC<{ children: React.ReactNode }> = ({ ch
           : {}),
       });
     },
-    [vouchers, createVoucher]
+    [vouchers, createVoucher, user, workspaceContext, profile.fiscalYear, deviceId, requirePermission, showToast]
   );
 
   const renumberVouchersChronologically = useCallback(async () => {
