@@ -830,6 +830,7 @@ export const AccountingProvider: React.FC<{ children: React.ReactNode }> = ({ ch
       setWorkspaceContext(resolvedWorkspace);
       if (resolvedWorkspace && resolvedWorkspace.workspaceId !== user.uid) {
         if (!resolvedWorkspace.stagedReadsEnabled) {
+          workspaceCoreVersionsRef.current.clear();
           setAccounts([]);
           setProducts([]);
           showToast('عضویت فضای کاری تأیید شد؛ تا تأیید مهاجرت و ثبت مانع همگام‌سازی، داده‌های حساب‌ها و کالاها قابل‌خواندن نیستند.');
@@ -852,6 +853,7 @@ export const AccountingProvider: React.FC<{ children: React.ReactNode }> = ({ ch
           showToast('حساب‌ها و کالاهای فضای کاری با موفقیت بارگذاری شدند.');
         } catch (error) {
           if (cancelled) return;
+          workspaceCoreVersionsRef.current.clear();
           setAccounts([]);
           setProducts([]);
           console.error('Workspace core read adapter rejected the snapshot:', error);
@@ -1864,6 +1866,7 @@ export const AccountingProvider: React.FC<{ children: React.ReactNode }> = ({ ch
         stock: Number((Number(next.stock) || 0).toFixed(2)),
         reorderPoint: Math.max(0, Number(next.reorderPoint) || 0),
         vatExempt: Boolean(next.vatExempt),
+        createdAt: next.createdAt ?? new Date(),
         updatedAt: new Date(),
         ...(next.secondaryUnit ? { secondaryUnit: next.secondaryUnit.trim().slice(0, 32) } : {}),
         ...(next.kgPerCarton !== undefined ? { kgPerCarton: Number(next.kgPerCarton) } : {}),
