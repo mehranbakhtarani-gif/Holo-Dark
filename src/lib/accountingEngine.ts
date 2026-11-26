@@ -2078,8 +2078,8 @@ export function planAtomicInvoiceCommit(input: AtomicInvoicePlanInput): AtomicIn
     (totals, item) => {
       const qty = Number(item.quantity);
       const unitPrice = Number(item.unitPrice);
-      const discount = Number(item.discount) || 0;
-      const vat = Number(item.vatAmount) || 0;
+      const discount = Number(item.discount);
+      const vat = Number(item.vatAmount);
       const lineTotal = Number(item.lineTotal);
       if (
         !Number.isFinite(qty) || qty <= 0 ||
@@ -2091,8 +2091,9 @@ export function planAtomicInvoiceCommit(input: AtomicInvoicePlanInput): AtomicIn
         throw new Error(`مقادیر مالی یا تعداد ردیف «${item.productName}» نامعتبر است.`);
       }
       const gross = Math.round(lineTotal - vat + discount);
-      if (gross < 0 || discount > gross + 1) {
-        throw new Error(`محاسبات مبلغ و تخفیف ردیف «${item.productName}» نامعتبر است.`);
+      const expectedGross = Math.round(qty * unitPrice);
+      if (gross < 0 || discount > gross + 1 || Math.abs(gross - expectedGross) > 1) {
+        throw new Error(`مبلغ ناخالص ردیف «${item.productName}» باید با تعداد ضربدر قیمت واحد برابر باشد و تخفیف از آن بیشتر نباشد.`);
       }
       totals.subtotal += gross;
       totals.discount += discount;
@@ -2115,6 +2116,17 @@ export function planAtomicInvoiceCommit(input: AtomicInvoicePlanInput): AtomicIn
     throw new Error('جمع ردیف‌های فاکتور با جمع، تخفیف، مالیات یا مبلغ نهایی سربرگ برابر نیست؛ ثبت متوقف شد.');
   }
 
+  // Settlement components are required finite, non-negative IRR amounts even for proforma/waste records.
+  const settlementAmounts = [
+    Number(payload.paidCash),
+    Number(payload.paidBank),
+    Number(payload.paidCheque),
+    Number(payload.creditAmount),
+  ];
+  if (settlementAmounts.some((amount) => !Number.isFinite(amount) || amount < 0)) {
+    throw new Error('مبالغ تسویه باید عددی معتبر و غیرمنفی باشند.');
+  }
+
   // 1. Validate arithmetic & settlement totals strictly before any mutation
   if (payload.invoiceType !== 'proforma' && payload.invoiceType !== 'waste') {
     const expectedGrand = Math.max(
@@ -2126,11 +2138,7 @@ export function planAtomicInvoiceCommit(input: AtomicInvoicePlanInput): AtomicIn
         `جمع کل فاکتور (${Math.round(payload.grandTotal).toLocaleString('en-US')}) با (جمع ناخالص − تخفیف + مالیات = ${expectedGrand.toLocaleString('en-US')}) برابر نیست.`
       );
     }
-    const paymentSum =
-      (Number(payload.paidCash) || 0) +
-      (Number(payload.paidBank) || 0) +
-      (Number(payload.paidCheque) || 0) +
-      (Number(payload.creditAmount) || 0);
+    const paymentSum = settlementAmounts.reduce((sum, amount) => sum + amount, 0);
     if (Math.abs(paymentSum - payload.grandTotal) > 1) {
       throw new Error('جمع مبالغ تسویه (نقد + بانک + چک + نسیه) باید دقیقاً برابر جمع کل فاکتور باشد.');
     }
