@@ -16,6 +16,7 @@ const ROLE_LABELS: Record<WorkspaceRole, string> = {
 export const WorkspaceAccessPanel: React.FC<{ user: User | null }> = ({ user }) => {
   const [status, setStatus] = useState('در حال بررسی هویت و فضای کاری…');
   const [isOwner, setIsOwner] = useState(false);
+  const [canBootstrap, setCanBootstrap] = useState(false);
   const [members, setMembers] = useState<Member[]>([]);
   const [email, setEmail] = useState('');
   const [role, setRole] = useState<WorkspaceRole>('accountant');
@@ -45,23 +46,32 @@ export const WorkspaceAccessPanel: React.FC<{ user: User | null }> = ({ user }) 
         const token = await getIdTokenResult(user, true);
         const workspaceId = token.claims.workspaceId;
         const workspaceRole = token.claims.workspaceRole;
-        if (typeof workspaceId === 'string' && workspaceRole !== 'owner') {
+        if (typeof workspaceId === 'string' && workspaceRole === 'owner') {
+          if (alive) setIsOwner(true);
+          await refreshMembers();
+          if (alive) setStatus('فضای کاری فعال است؛ مدیریت عضویت از طریق Firebase Functions انجام می‌شود.');
+        } else if (typeof workspaceId === 'string') {
           if (alive) setStatus('این حساب عضو یک فضای کاری است. برای دسترسی به اطلاعات مالک، مهاجرت داده و قوانین دسترسی هنوز فعال نشده‌اند.');
-          return;
+        } else if (alive) {
+          setCanBootstrap(true);
+          setStatus('این حساب هنوز فضای کاری ندارد. اگر مالک کسب‌وکار هستید، فضای کاری را راه‌اندازی کنید؛ اگر دعوت شده‌اید، توکن دعوت‌نامه را وارد کنید.');
         }
-        await call('bootstrapWorkspace');
-        await user.getIdToken(true);
-        if (!alive) return;
-        setIsOwner(true);
-        await refreshMembers();
-        if (alive) setStatus('فضای کاری فعال است؛ مدیریت عضویت از طریق Firebase Functions انجام می‌شود.');
       } catch (e) {
-        if (alive) setStatus(e instanceof Error ? e.message : 'راه‌اندازی فضای کاری ناموفق بود.');
+        if (alive) setStatus(e instanceof Error ? e.message : 'بررسی فضای کاری ناموفق بود.');
       }
     };
     void initialize();
     return () => { alive = false; };
-  }, [user, call, refreshMembers]);
+  }, [user, refreshMembers]);
+
+  const bootstrap = () => run(async () => {
+    await call('bootstrapWorkspace');
+    await user?.getIdToken(true);
+    setCanBootstrap(false);
+    setIsOwner(true);
+    await refreshMembers();
+    setStatus('فضای کاری مالک با موفقیت راه‌اندازی شد.');
+  });
 
   const run = async (operation: () => Promise<void>) => {
     setBusy(true); setError('');
@@ -108,6 +118,7 @@ export const WorkspaceAccessPanel: React.FC<{ user: User | null }> = ({ user }) 
       {!user && <p className="text-xs text-amber-700">ورود Firebase لازم است.</p>}
       {user && !user.emailVerified && <p className="text-xs text-amber-700">ایمیل تأییدنشده اجازه ایجاد یا پذیرش عضویت ندارد.</p>}
       {error && <p role="alert" className="text-xs text-rose-600">{error}</p>}
+      {canBootstrap && !isOwner && <button type="button" disabled={busy || !user?.emailVerified} onClick={() => void bootstrap()} className="rounded-lg border border-indigo-300 px-3 py-2 text-xs font-semibold disabled:opacity-50">راه‌اندازی فضای کاری برای این حساب (مالک)</button>}
       {isOwner && <>
         <form onSubmit={(e) => { e.preventDefault(); void createInvitation(); }} className="grid grid-cols-1 sm:grid-cols-3 gap-2">
           <input type="email" required value={email} onChange={(e) => setEmail(e.target.value)} placeholder="ایمیل دعوت‌شونده" dir="ltr" className="min-w-0 rounded-lg border px-3 py-2 text-xs dark:bg-slate-900 dark:border-slate-700" />
