@@ -8,7 +8,7 @@ import { onDocumentCreated, onDocumentWritten } from 'firebase-functions/v2/fire
 
 const app = initializeApp();
 const db = new Firestore({
-  projectId: 'elaborate-hash-368613',
+  projectId: process.env.GCLOUD_PROJECT || process.env.GCP_PROJECT || 'elaborate-hash-368613',
   databaseId: 'ai-studio-remixapex-83053e73-77ed-4f64-8f70-f22da529446b',
 });
 const REGION = 'us-central1';
