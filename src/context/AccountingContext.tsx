@@ -1530,8 +1530,11 @@ export const AccountingProvider: React.FC<{ children: React.ReactNode }> = ({ ch
       }
     ) => {
       if (!requirePermission('canCreateVoucher', 'ویرایش سند حسابداری')) return;
-      if (user && workspaceContext && (workspaceContext.workspaceId !== user.uid || workspaceContext.coreWritesFrozen || workspaceContext.coreWriteMode === 'workspace_native')) {
-        showToast('ویرایش سند حسابداری تا انتقال اتمیک اسناد به Workspace موقتاً متوقف است؛ هیچ تغییری اعمال نشد.', 'error');
+      const workspaceNativeVoucher = Boolean(user && workspaceContext
+        && workspaceContext.coreWritesFrozen && workspaceContext.coreWriteMode === 'workspace_native');
+      if (user && workspaceContext && !workspaceNativeVoucher
+          && (workspaceContext.workspaceId !== user.uid || workspaceContext.coreWritesFrozen || workspaceContext.coreWriteMode === 'workspace_native')) {
+        showToast('ویرایش سند حسابداری تا فعال‌شدن مسیر اتمیک Workspace موقتاً متوقف است؛ هیچ تغییری اعمال نشد.', 'error');
         return;
       }
 
@@ -1592,6 +1595,53 @@ export const AccountingProvider: React.FC<{ children: React.ReactNode }> = ({ ch
               lines: cleanLines,
             })
           : undefined;
+
+      if (workspaceNativeVoucher) {
+        if (payload.status !== 'draft') {
+          showToast('در Workspace فقط ویرایش پیش‌نویس مجاز است؛ قطعی‌سازی از مسیر مستقل انجام می‌شود.', 'error');
+          return;
+        }
+        try {
+          const result = await mutateWorkspaceVoucher({
+            operation: 'update',
+            documentId: voucherId,
+            operationId: generateSafeId('op'),
+            expectedVersion,
+            data: {
+              ownerId: workspaceContext!.workspaceId,
+              date: payload.date.slice(0, 20),
+              fiscalYear: voucherFy,
+              description: cleanDesc,
+              voucherType: payload.voucherType,
+              status: 'draft',
+              totalDebit,
+              totalCredit,
+              ...(isFx ? {
+                currencyCode: normCode.slice(0, 10), exchangeRate: safeRate,
+                foreignTotalDebit, foreignTotalCredit,
+              } : {}),
+              ...(existing.referenceId ? { referenceId: existing.referenceId.slice(0, 128) } : {}),
+              ...(existing.reversalOfVoucherId ? { reversalOfVoucherId: existing.reversalOfVoucherId } : {}),
+              lines: cleanLines,
+              updatedByDevice: deviceId.slice(0, 64),
+            },
+          });
+          setVouchers((prev) => prev.map((v) => v.id === voucherId ? {
+            ...v, date: payload.date, fiscalYear: voucherFy, description: cleanDesc,
+            voucherType: payload.voucherType, status: 'draft', lines: cleanLines,
+            totalDebit, totalCredit, currencyCode: isFx ? normCode : undefined,
+            exchangeRate: isFx ? safeRate : undefined,
+            foreignTotalDebit: isFx ? foreignTotalDebit : undefined,
+            foreignTotalCredit: isFx ? foreignTotalCredit : undefined,
+            _version: result.version, updatedByDevice: deviceId,
+          } : v));
+          showToast(`سند موقت شماره ${existing.voucherNumber} با موفقیت اصلاح شد.`);
+        } catch (err) {
+          showToast(err instanceof Error ? err.message : 'ویرایش اتمیک سند در Workspace ناموفق بود.', 'error');
+          throw err;
+        }
+        return;
+      }
 
       if (user) {
         try {
@@ -1694,8 +1744,11 @@ export const AccountingProvider: React.FC<{ children: React.ReactNode }> = ({ ch
   const deleteVoucher = useCallback(
     async (voucherId: string): Promise<boolean> => {
       if (!requirePermission('canDeleteRecords', 'حذف سند موقت')) return false;
-      if (user && workspaceContext && (workspaceContext.workspaceId !== user.uid || workspaceContext.coreWritesFrozen || workspaceContext.coreWriteMode === 'workspace_native')) {
-        showToast('حذف سند موقت تا انتقال اتمیک اسناد به Workspace موقتاً متوقف است؛ هیچ تغییری اعمال نشد.', 'error');
+      const workspaceNativeVoucher = Boolean(user && workspaceContext
+        && workspaceContext.coreWritesFrozen && workspaceContext.coreWriteMode === 'workspace_native');
+      if (user && workspaceContext && !workspaceNativeVoucher
+          && (workspaceContext.workspaceId !== user.uid || workspaceContext.coreWritesFrozen || workspaceContext.coreWriteMode === 'workspace_native')) {
+        showToast('حذف سند موقت تا فعال‌شدن مسیر اتمیک Workspace موقتاً متوقف است؛ هیچ تغییری اعمال نشد.', 'error');
         return false;
       }
 
@@ -1710,7 +1763,20 @@ export const AccountingProvider: React.FC<{ children: React.ReactNode }> = ({ ch
         showToast(`سال مالی ${existingFy} بسته شده است و امکان حذف سند در آن وجود ندارد.`, 'error');
         return false;
       }
-      if (user) {
+      if (workspaceNativeVoucher) {
+        try {
+          await mutateWorkspaceVoucher({
+            operation: 'delete',
+            documentId: voucherId,
+            operationId: generateSafeId('op'),
+            expectedVersion: existing._version ?? 1,
+          });
+          setVouchers((prev) => prev.filter((v) => v.id !== voucherId));
+        } catch (err) {
+          showToast(err instanceof Error ? err.message : 'حذف اتمیک پیش‌نویس در Workspace ناموفق بود.', 'error');
+          return false;
+        }
+      } else       if (user) {
         try {
           await deleteDoc(doc(db, 'vouchers', voucherId));
         } catch (err) {
