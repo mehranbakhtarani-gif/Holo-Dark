@@ -1121,8 +1121,19 @@ export const receiveTrackedWarehouseTransfer = onCall({ region: REGION, timeoutS
     const authoritativeTransfer = dispatchAuthoritySnap.get('transferSnapshot') as Record<string, unknown> | undefined;
     if (authoritativeTransfer) {
       const immutableFields = ['id', 'productId', 'transferNumber', 'date', 'fromWarehouse', 'toWarehouse', 'qty', 'transferredCostIrr'];
+      const currentLayers = Array.isArray(transfer.transferredLayers)
+        ? transfer.transferredLayers as Record<string, unknown>[]
+        : [];
+      const authoritativeLayers = Array.isArray(authoritativeTransfer.transferredLayers)
+        ? authoritativeTransfer.transferredLayers as Record<string, unknown>[]
+        : [];
+      const layerFields = ['layerId', 'sourceRef', 'remainingQty', 'totalCostIrr'];
+      const layersMismatch = currentLayers.length !== authoritativeLayers.length
+        || currentLayers.some((layer, index) =>
+          layerFields.some((key) => layer[key] !== authoritativeLayers[index]?.[key])
+        );
       const hasMismatch = immutableFields.some((key) => transfer[key] !== authoritativeTransfer[key])
-        || JSON.stringify(transfer.transferredLayers) !== JSON.stringify(authoritativeTransfer.transferredLayers);
+        || layersMismatch;
       if (hasMismatch) {
         throw new HttpsError('failed-precondition', 'اطلاعات حواله با نسخه مرجع سرور مغایرت دارد.');
       }
