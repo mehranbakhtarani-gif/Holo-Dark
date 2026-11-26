@@ -384,7 +384,7 @@ export function useLocalFirstMeshSync() {
             Array.isArray(batchedOperationIds) ? batchedOperationIds : []
           );
           const otherPeers = getOtherMeshPeerIds(selectedPeerId);
-          const relayOutboxItems: MeshSyncOutboxItem[] = [];
+          const relayOutboxItems: Array<Omit<MeshSyncOutboxItem, 'id' | 'createdAt' | 'updatedAt'>> = [];
           for (const env of relayEnvelopes) {
             if (!env?.operationId) continue;
             ackedOpIdSet.add(env.operationId);
