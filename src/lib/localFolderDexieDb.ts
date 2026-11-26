@@ -621,7 +621,7 @@ export async function enqueueDexieOutboxItemDurably(
 
   await enqueueDexieOutboxItem(item);
   const persisted = await db.syncOutbox.where('operationId').equals(item.operationId).first();
-  if (!isDurableOutboxItemVerified(persisted, item)) {
+  if (!persisted || !isDurableOutboxItemVerified(persisted, item)) {
     throw new Error('Mesh outbox persistence verification failed');
   }
   return persisted;
