@@ -707,7 +707,9 @@ export const mutateWorkspaceVoucher = onCall({ region: REGION, timeoutSeconds: 6
       if (operationSnap.get('requestHash') !== requestHash) {
         throw new HttpsError('already-exists', 'شناسه عملیات سند برای درخواست دیگری استفاده شده است.');
       }
-      return { status: 'replayed', operationId, version: operationSnap.get('resultVersion'), voucherNumber: operationSnap.get('voucherNumber') };
+      return { status: 'replayed', operationId, version: operationSnap.get('resultVersion'),
+        ...(Number(operationSnap.get('resultSourceVersion')) > 0 ? { sourceVersion: operationSnap.get('resultSourceVersion') } : {}),
+        voucherNumber: operationSnap.get('voucherNumber') };
     }
     const now = FieldValue.serverTimestamp();
     if (operation === 'update' || operation === 'delete') {
@@ -723,7 +725,23 @@ export const mutateWorkspaceVoucher = onCall({ region: REGION, timeoutSeconds: 6
         throw new HttpsError('failed-precondition', 'فقط سند پیش‌نویس قابل ویرایش یا حذف است.');
       }
       const nextVersion = currentVersion + 1;
+      let sourceVersion: number | undefined;
       if (operation === 'delete') {
+        const reversalSourceId = typeof currentPayload.reversalOfVoucherId === 'string'
+          ? currentPayload.reversalOfVoucherId : null;
+        const reversalSourceRef = reversalSourceId
+          ? migrationDestination(workspaceId, 'vouchers').doc(reversalSourceId) : null;
+        const reversalSourceSnap = reversalSourceRef ? await tx.get(reversalSourceRef) : null;
+        if (reversalSourceSnap?.exists && reversalSourceSnap.get('reversedByVoucherId') === documentId) {
+          sourceVersion = Number(reversalSourceSnap.get('version') || 1) + 1;
+          const sourcePayload = reversalSourceSnap.get('payload') as Record<string, unknown>;
+          const nextSourcePayload = { ...sourcePayload, _version: sourceVersion };
+          tx.update(reversalSourceRef!, {
+            version: sourceVersion, payload: nextSourcePayload,
+            sourceHash: workspaceMigrationHash(nextSourcePayload),
+            reversedByVoucherId: FieldValue.delete(), reversedAt: FieldValue.delete(), updatedAt: now,
+          });
+        }
         tx.set(voucherRef, {
           ...voucherSnap.data(), version: nextVersion, deleted: true, updatedAt: now,
           deletedAt: now, deletedBy: auth.uid,
@@ -741,9 +759,11 @@ export const mutateWorkspaceVoucher = onCall({ region: REGION, timeoutSeconds: 6
       }
       tx.create(operationRef, {
         workspaceId, uid: auth.uid, collection: 'vouchers', documentId, operation,
-        requestHash, resultVersion: nextVersion, voucherNumber: currentPayload.voucherNumber, createdAt: now,
+        requestHash, resultVersion: nextVersion, resultSourceVersion: sourceVersion ?? null,
+        voucherNumber: currentPayload.voucherNumber, createdAt: now,
       });
-      return { status: 'committed', operationId, version: nextVersion, voucherNumber: currentPayload.voucherNumber };
+      return { status: 'committed', operationId, version: nextVersion,
+        ...(sourceVersion ? { sourceVersion } : {}), voucherNumber: currentPayload.voucherNumber };
     }
     if (operation === 'reverse') {
       if (voucherSnap.exists) throw new HttpsError('already-exists', 'شناسه سند معکوس از قبل وجود دارد.');
