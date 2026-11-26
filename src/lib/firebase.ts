@@ -281,6 +281,26 @@ export async function mutateWorkspaceCoreRecord<T = Record<string, unknown>>(
   return result.data;
 }
 
+export interface CreateTrackedWarehouseTransferInput {
+  productId: string;
+  transferId: string;
+  transferNumber: string;
+  fromWarehouse: string;
+  toWarehouse: string;
+  qty: number;
+  date: string;
+  operatorName?: string;
+  notes?: string;
+}
+export async function createTrackedWarehouseTransferAtomic(
+  input: CreateTrackedWarehouseTransferInput
+): Promise<{ status: 'committed'; transfer: Record<string, unknown>; productVersion: number }> {
+  const callable = httpsCallable<CreateTrackedWarehouseTransferInput, {
+    status: 'committed'; transfer: Record<string, unknown>; productVersion: number;
+  }>(functions, 'createTrackedWarehouseTransfer');
+  const result = await callable(input);
+  return result.data;
+}
 export interface ReceiveTrackedWarehouseTransferInput {
   productId: string;
   transferId: string;
