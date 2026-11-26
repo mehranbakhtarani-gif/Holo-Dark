@@ -1451,6 +1451,12 @@ export const adjustWorkspaceProductStockWithVoucher = onCall({ region: REGION, t
         version: operationSnap.get('resultVersion'),
         voucherNumber: operationSnap.get('voucherNumber') ?? null,
         adjustmentCostIrr: operationSnap.get('adjustmentCostIrr') ?? 0,
+        product: {
+          stock: productSnap.get('payload.stock'), buyPrice: productSnap.get('payload.buyPrice'),
+          costingMethod: productSnap.get('payload.costingMethod'), costLayers: productSnap.get('payload.costLayers'),
+          inventoryValueIrr: productSnap.get('payload.inventoryValueIrr'), _version: productSnap.get('payload._version'),
+        },
+        ...(voucherSnap.exists ? { voucher: voucherSnap.get('payload') } : {}),
       };
     }
     if (!productSnap.exists || productSnap.get('workspaceId') !== workspaceId
@@ -1513,7 +1519,13 @@ export const adjustWorkspaceProductStockWithVoucher = onCall({ region: REGION, t
         operation: 'inventory_adjustment_noop', requestHash, resultVersion: currentVersion,
         adjustmentCostIrr: 0, createdAt: operationNow,
       });
-      return { status: 'no_change', operationId, version: currentVersion, adjustmentCostIrr: 0 };
+      return {
+        status: 'no_change', operationId, version: currentVersion, adjustmentCostIrr: 0,
+        product: {
+          stock: product.stock, buyPrice: product.buyPrice, costingMethod: product.costingMethod,
+          costLayers: product.costLayers, inventoryValueIrr: product.inventoryValueIrr, _version: product._version,
+        },
+      };
     }
 
     const totalValue = Math.round(inventoryValue);
@@ -1667,7 +1679,15 @@ export const adjustWorkspaceProductStockWithVoucher = onCall({ region: REGION, t
       voucherNumber, adjustmentCostIrr, voucherId: voucherPayload ? voucherId : null,
       createdAt: operationNow,
     });
-    return { status: 'committed', operationId, version: currentVersion + 1, voucherNumber, adjustmentCostIrr };
+    return {
+      status: 'committed', operationId, version: currentVersion + 1, voucherNumber, adjustmentCostIrr,
+      product: {
+        stock: nextPayload.stock, buyPrice: nextPayload.buyPrice, costingMethod: nextPayload.costingMethod,
+        costLayers: nextPayload.costLayers, inventoryValueIrr: nextPayload.inventoryValueIrr,
+        _version: nextPayload._version,
+      },
+      ...(voucherPayload ? { voucher: voucherPayload } : {}),
+    };
   });
 });
 
