@@ -422,7 +422,19 @@ test('workspace voucher create, numbering, finalize and replay are atomic', asyn
   });
   assert.equal(second.voucherNumber, 2);
 
-  const integrityHash = 'vseal_0123456789abcdef';
+  const fnv = (input, seed) => {
+    let hash = seed >>> 0;
+    for (let i = 0; i < input.length; i += 1) {
+      hash ^= input.charCodeAt(i);
+      hash = Math.imul(hash, 0x01000193) >>> 0;
+    }
+    return hash.toString(16).padStart(8, '0');
+  };
+  const canonicalLines = draft.lines.map(line =>
+    `${line.accountCode}|||${Math.round(line.debit)}|${Math.round(line.credit)}`
+  ).join(';');
+  const sealPayload = `1|${draft.date}|general|1250|1250|${canonicalLines}`;
+  const integrityHash = `vseal_${fnv(sealPayload, 0x811c9dc5)}${fnv(sealPayload.split('').reverse().join(''), 0x9e3779b9)}`;
   const finalized = await call('mutateWorkspaceVoucher', owner.token, {
     operation: 'finalize', documentId: voucherId, operationId: randomUUID().replace(/-/g, ''),
     expectedVersion: 1, integrityHash,
