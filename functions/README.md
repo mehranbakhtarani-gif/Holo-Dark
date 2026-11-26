@@ -90,3 +90,11 @@ AccountingContext resolves the authenticated caller's Workspace before cloud hyd
 - This is a one-way safety freeze in this stage. It does not unfreeze legacy writes, redirect application writes, or freeze vouchers/invoices/inventory workflows. Deploy Functions and Firestore Rules together only after emulator validation and an explicit maintenance plan.
 
 - The generic staged-record read endpoint is also gated for accounts/products until the same frozen reconciliation barrier is sealed; role authorization alone cannot bypass the barrier.
+
+
+### Workspace-native core writes (phase 15 foundation)
+- `activateWorkspaceCoreWrites` is owner-only and requires a verified migration, the permanent legacy-write freeze, and a reconciled frozen barrier with both collection counts. It records `coreWriteMode=workspace_native`; it does not reopen legacy writes.
+- `mutateWorkspaceCoreRecord` writes only to the workspace migration namespace for accounts/products. It never writes to legacy root collections. It rechecks active membership and role, validates the complete record, requires an expected version, and records an idempotent operation ledger entry.
+- Updates use optimistic concurrency. Reusing an operation ID with the same request is a replay; reusing it with different content is rejected. Deletes create tombstones rather than removing the document, preserving identity and auditability.
+- `listWorkspaceCoreRecords` returns active records with their version and hides tombstones. The frozen generation remains the cutover generation; workspace-native writes do not cause a legacy-source reconciliation to be rerun.
+- This is a server-side gateway foundation only. AccountingContext CRUD is not yet routed to it, and no live workspace is activated by this code change. Do not deploy or invoke activation until client routing, transaction-sensitive inventory flows, schema parity, and Emulator tests are complete.
