@@ -169,7 +169,7 @@ export const getWorkspaceContext = onCall({ region: REGION }, async (request) =>
   const { workspaceId, role } = await requireActiveWorkspaceMember(auth);
   const manifest = await db.collection('workspaceMigrations').doc(workspaceId).get();
   const status = manifest.exists ? String(manifest.get('status') || 'not_started') : 'not_started';
-  return { workspaceId, role, migrationStatus: status, stagedReadsEnabled: status === 'verified' };
+  return { workspaceId, role, migrationStatus: status, stagedReadsEnabled: status === 'verified' && manifest.get('readBarrier.status') === 'frozen' };
 });
 
 async function requireActiveWorkspaceMember(auth: CallableAuth) {
@@ -376,6 +376,10 @@ export const listWorkspaceStagedRecords = onCall({ region: REGION, timeoutSecond
   const manifest = await db.collection('workspaceMigrations').doc(workspaceId).get();
   if (!manifest.exists || manifest.get('status') !== 'verified') {
     throw new HttpsError('failed-precondition', 'نسخه staging هنوز به‌طور کامل بررسی و تأیید نشده است.');
+  }
+  if ((collectionName === 'accounts' || collectionName === 'products')
+      && (manifest.get('coreWritesFrozen') !== true || manifest.get('readBarrier.status') !== 'frozen')) {
+    throw new HttpsError('failed-precondition', 'خواندن حساب‌ها و کالاها تا توقف نوشتن‌های قدیمی و تطبیق نهایی مجاز نیست.');
   }
   const requestedLimit = Number(request.data?.limit ?? 50);
   if (!Number.isInteger(requestedLimit) || requestedLimit < 1 || requestedLimit > 100) {
