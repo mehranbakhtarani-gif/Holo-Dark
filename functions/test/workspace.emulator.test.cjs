@@ -762,7 +762,7 @@ test('warehouse transfer creation splits source FIFO layers and persists the in-
   assert.equal(layers.filter((layer) => layer.warehouse === 'در راه → انبار مقصد').length, 2);
   assert.equal(extensionAfter.get('trackedWarehouseTransfers')[0].id, transferId);
   assert.equal(extensionAfter.get('trackedWarehouseTransfers')[0].status, 'in_transit');
-  assert.equal(extensionAfter.get('_version'), 2);
+  assert.equal(extensionAfter.get('_version'), extensionBeforeReceive.get('_version') + 1);
 
   // Exercise the exact layers created above through the real receipt callable.
   const received = await call('receiveTrackedWarehouseTransfer', owner.token, {
@@ -845,6 +845,7 @@ test('warehouse transfer receipt commits FIFO layers and transfer status atomica
   });
   await waitForDocument(firestore.collection('warehouseTransferEventAuthority')
     .doc(`${owner.uid}_${transferId}_dispatch`));
+  const extensionBeforeReceive = await extensionRef.get();
   const received = await call('receiveTrackedWarehouseTransfer', owner.token, {
     productId, transferId, receivedDate: '1405/08/05',
   });
