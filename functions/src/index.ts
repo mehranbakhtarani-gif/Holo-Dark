@@ -1280,14 +1280,12 @@ export const restoreTrackedWarehouseTransfers = onCall({ region: REGION, timeout
         && receipt.get('kind') === 'receipt'
         ? receipt.get('transferSnapshot') as Record<string, unknown> | undefined
         : undefined;
-      if (snapshot.status === 'received') {
-        // Never reconstruct a completed receipt from a dispatch snapshot alone.
-        if (receiptSnapshot?.status !== 'received'
-            || receiptSnapshot.id !== transferId
-            || typeof receiptSnapshot.receivedDate !== 'string'
-            || !receiptSnapshot.receivedDate) return [];
-        return [receiptSnapshot];
-      }
+      // Dispatch snapshots are immutable and remain "in_transit". A completed
+      // transfer is represented by its separately-authorized receipt event.
+      if (receiptSnapshot?.status === 'received'
+          && receiptSnapshot.id === transferId
+          && typeof receiptSnapshot.receivedDate === 'string'
+          && receiptSnapshot.receivedDate) return [receiptSnapshot];
       if (snapshot.status !== 'in_transit') return [];
       return [snapshot];
     }).filter((transfer) => !existingIds.has(String(transfer.id)));
@@ -1366,12 +1364,17 @@ export const listTrackedWarehouseTransferHistory = onCall({ region: REGION, time
         || typeof snapshot.productId !== 'string'
         || !Number.isFinite(Number(snapshot.qty)) || Number(snapshot.qty) <= 0
         || !Array.isArray(snapshot.transferredLayers)) return [];
-    if (snapshot.status === 'in_transit') return [snapshot];
-    if (snapshot.status !== 'received') return [];
     const receipt = receiptSnapshots[index];
-    if (!receipt || receipt.id !== transferId || receipt.status !== 'received'
-        || typeof receipt.receivedDate !== 'string' || !receipt.receivedDate) return [];
-    return [receipt];
+    // The dispatch event is immutable; use the receipt event as the current
+    // state when one exists, otherwise keep the dispatch in the in-transit state.
+    if (receipt?.id === transferId && receipt.status === 'received'
+        && typeof receipt.receivedDate === 'string' && receipt.receivedDate) {
+      const immutableFields = ['productId', 'transferNumber', 'date', 'fromWarehouse', 'toWarehouse', 'qty', 'transferredCostIrr'];
+      if (immutableFields.some((key) => receipt[key] !== snapshot[key])) return [];
+      return [receipt];
+    }
+    if (snapshot.status !== 'in_transit') return [];
+    return [snapshot];
   });
 
   transfers.sort((a, b) =>
