@@ -396,6 +396,7 @@ export const listWorkspaceStagedRecords = onCall({ region: REGION, timeoutSecond
   const items: Array<{ id: string; payload: unknown }> = [];
   let responseBytes = 0;
   for (const record of snapshot.docs) {
+    if (record.get('deleted') === true || record.get('payload') === undefined) continue;
     const item = { id: record.id, payload: record.get('payload') };
     const itemBytes = Buffer.byteLength(JSON.stringify(item), 'utf8');
     if (items.length > 0 && responseBytes + itemBytes > 7 * 1024 * 1024) break;
