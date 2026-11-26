@@ -1723,10 +1723,11 @@ async function validateWorkspaceVoucherReferences(
   voucher: Record<string, unknown>,
   fiscalProfileSnap: FirebaseFirestore.DocumentSnapshot,
 ): Promise<void> {
-  if (!isValidWorkspaceShamsiDate(voucher.date)) {
+  const voucherDate = voucher.date;
+  if (!isValidWorkspaceShamsiDate(voucherDate)) {
     throw new HttpsError('invalid-argument', 'تاریخ سند شمسی معتبر نیست.');
   }
-  const dateFiscalYear = voucher.date.slice(0, 4);
+  const dateFiscalYear = voucherDate.slice(0, 4);
   if (typeof voucher.fiscalYear !== 'string' || voucher.fiscalYear !== dateFiscalYear) {
     throw new HttpsError('invalid-argument', 'سال مالی سند با سال درج‌شده در تاریخ آن مطابقت ندارد.');
   }
