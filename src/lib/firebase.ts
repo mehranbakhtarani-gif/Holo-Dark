@@ -1,5 +1,6 @@
 import { initializeApp } from 'firebase/app';
 import { getAuth, GoogleAuthProvider, signInWithPopup, signOut } from 'firebase/auth';
+import { getFunctions, httpsCallable } from 'firebase/functions';
 import {
   doc,
   Firestore,
@@ -188,4 +189,19 @@ export async function signInWithGoogle() {
 
 export async function signOutAccount() {
   return signOut(auth);
+}
+
+
+// Workspace callable gateway. Membership and role are revalidated server-side on every call.
+export const functions = getFunctions(app, 'us-central1');
+export interface WorkspaceContextResult {
+  workspaceId: string;
+  role: string;
+  migrationStatus: string;
+  stagedReadsEnabled: boolean;
+}
+export async function resolveWorkspaceContext(): Promise<WorkspaceContextResult> {
+  const callable = httpsCallable<void, WorkspaceContextResult>(functions, 'getWorkspaceContext');
+  const result = await callable();
+  return result.data;
 }
