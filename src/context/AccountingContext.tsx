@@ -2880,7 +2880,8 @@ export const AccountingProvider: React.FC<{ children: React.ReactNode }> = ({ ch
           const chequeRefs = candidateChequeIds.map((id) => doc(db, 'cheques', id));
           const productRefs = [...plan.productDeltas.keys()].map((id) => doc(db, 'products', id));
           const linkedOriginalVoucher = vouchers.find((v) => v.id === inv.voucherId || (v.referenceId === inv.id && !v.reversalOfVoucherId));
-          const originalVoucherRef = linkedOriginalVoucher ? doc(db, 'vouchers', linkedOriginalVoucher.id) : null;
+          const originalVoucherId = inv.voucherId || linkedOriginalVoucher?.id;
+          const originalVoucherRef = originalVoucherId ? doc(db, 'vouchers', originalVoucherId) : null;
 
           const committed = await runTransaction(db, async (tx) => {
             const invoiceSnap = await tx.get(invoiceRef);
@@ -2909,7 +2910,7 @@ export const AccountingProvider: React.FC<{ children: React.ReactNode }> = ({ ch
               if (cheque.status !== 'in_box') throw new Error('وضعیت یکی از چک‌های مرتبط تغییر کرده است؛ ابتدا وضعیت چک را بررسی کنید.');
             }
             const liveOriginalVoucher = originalVoucherSnap?.exists()
-              ? ({ ...linkedOriginalVoucher, ...originalVoucherSnap.data(), id: originalVoucherSnap.id } as Voucher)
+              ? ({ ...(linkedOriginalVoucher || {} as Voucher), ...originalVoucherSnap.data(), id: originalVoucherSnap.id } as Voucher)
               : undefined;
             const liveVouchers = [
               ...vouchers.filter((v) => v.id !== liveOriginalVoucher?.id),
