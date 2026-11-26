@@ -33,9 +33,11 @@ service cloud.firestore {
     }
 
     function isAdmin() {
+      // Admin status must come from a server-managed custom claim or a server-provisioned
+      // admins/{uid} document. A hard-coded email address is not an authorization source.
       return isVerified() && (
-        exists(/databases/$(database)/documents/admins/$(request.auth.uid)) ||
-        request.auth.token.email == 'mehranbakhtarani@gmail.com'
+        request.auth.token.admin == true ||
+        exists(/databases/$(database)/documents/admins/$(request.auth.uid))
       );
     }
 
