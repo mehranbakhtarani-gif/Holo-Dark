@@ -63,7 +63,6 @@ export const migrateInvoiceReturnCounters = onCall(
       .where('ownerId', '==', uid)
       .orderBy(FieldPath.documentId())
       .limit(400);
-    const activeReturnCounts = new Map<string, number>();
     const legacySourceIds: string[] = [];
     let cursor: QueryDocumentSnapshot | undefined;
     let scannedInvoiceCount = 0;
@@ -74,17 +73,6 @@ export const migrateInvoiceReturnCounters = onCall(
       scannedInvoiceCount += page.size;
       for (const invoiceDoc of page.docs) {
         const data = invoiceDoc.data();
-        if (
-          (data.invoiceType === 'sale_return' || data.invoiceType === 'purchase_return')
-          && data.status !== 'cancelled'
-          && typeof data.sourceInvoiceId === 'string'
-          && data.sourceInvoiceId.length > 0
-        ) {
-          activeReturnCounts.set(
-            data.sourceInvoiceId,
-            (activeReturnCounts.get(data.sourceInvoiceId) || 0) + 1,
-          );
-        }
         if (
           (data.invoiceType === 'sale' || data.invoiceType === 'purchase')
           && (!Number.isInteger(data.returnRevision) || !Number.isInteger(data.activeReturnCount))
@@ -110,11 +98,18 @@ export const migrateInvoiceReturnCounters = onCall(
             && Number.isInteger(sourceSnap.get('activeReturnCount'))
           ) return 0;
 
+          const linkedReturnsQuery = db.collection('invoices')
+            .where('sourceInvoiceId', '==', sourceId);
+          const linkedReturnsSnap = await tx.get(linkedReturnsQuery);
+          const activeReturnCount = linkedReturnsSnap.docs.filter((returnDoc) => (
+            (returnDoc.get('invoiceType') === 'sale_return' || returnDoc.get('invoiceType') === 'purchase_return')
+            && returnDoc.get('status') !== 'cancelled'
+          )).length;
           const currentRevision = sourceSnap.get('returnRevision');
           const currentVersion = Number(sourceSnap.get('_version'));
           tx.update(sourceRef, {
             returnRevision: Number.isInteger(currentRevision) ? currentRevision : 0,
-            activeReturnCount: activeReturnCounts.get(sourceId) || 0,
+            activeReturnCount,
             _version: (Number.isFinite(currentVersion) && currentVersion >= 1 ? currentVersion : 1) + 1,
             updatedByDevice: 'server-return-counter-migration',
             updatedAt: FieldValue.serverTimestamp(),
