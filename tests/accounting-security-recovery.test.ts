@@ -690,6 +690,31 @@ test('Invoice cancellation: cancelling a FIFO sales return removes only its rest
     ],
   };
 
+  const originalSale: Invoice = {
+    ...returnInvoice,
+    id: 'inv_original_sale',
+    invoiceNumber: 'S-ORIGINAL',
+    invoiceType: 'sale',
+    sourceInvoiceId: undefined,
+  };
+  assert.throws(
+    () =>
+      planInvoiceCancellation({
+        invoice: originalSale,
+        cancellationDate: '1405/01/23',
+        products: [product],
+        vouchers: [],
+        cheques: [],
+        existingInvoices: [returnInvoice],
+        costingMethod: 'fifo',
+        ownerId: 'test_owner',
+        reversalVoucherId: 'vch_cancel_original_sale',
+        nextVoucherNumber: 89,
+        deviceId: 'dev_test',
+      }),
+    /ابتدا .* فاکتور برگشت فعال مرتبط را ابطال کنید/
+  );
+
   const plan = planInvoiceCancellation({
     invoice: returnInvoice,
     cancellationDate: '1405/01/23',
