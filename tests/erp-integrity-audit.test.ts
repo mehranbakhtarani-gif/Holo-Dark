@@ -1851,7 +1851,7 @@ test('Warehouse matrix preserves four-decimal reserved and in-transit quantities
     id: 'matrix_transfer', transferNumber: 'MAT-TRF', date: '1405/01/02',
     productId: product.id, sku: product.sku, productName: product.name,
     fromWarehouse: 'انبار مبدأ', toWarehouse: 'انبار مقصد', qty: 0.1234,
-    transferredCostIrr: 123, transferredLayers: [], status: 'in_transit',
+    transferredCostIrr: 123, transferredLayers: [], status: 'in_transit' as const,
   };
   const matrix = computeMultiWarehouseMatrix({
     products: [product], transfers: [transfer],
