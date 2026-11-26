@@ -2891,7 +2891,9 @@ export const AccountingProvider: React.FC<{ children: React.ReactNode }> = ({ ch
         creditAmount: inv.creditAmount,
         status: inv.status,
         ...(inv.voucherId ? { voucherId: inv.voucherId } : {}),
-        ...(Number.isSafeInteger(inv.eventSequence) ? { eventSequence: inv.eventSequence } : {}),
+        ...(Number.isSafeInteger(inv.eventSequence)
+          ? { eventSequence: inv.eventSequence, eventSequenceSource: 'online' }
+          : {}),
         items: inv.items.slice(0, 100),
         _version: 1,
         updatedByDevice: deviceId.slice(0, 64),
