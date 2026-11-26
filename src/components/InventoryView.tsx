@@ -100,6 +100,7 @@ export const InventoryView: React.FC<{ initialIntent?: string; clearIntent?: () 
     products,
     invoices,
     user,
+    isCloudMode,
     importDossiers,
     subcontractJobs,
     vouchers,
@@ -113,6 +114,8 @@ export const InventoryView: React.FC<{ initialIntent?: string; clearIntent?: () 
     showToast,
   } = useAccounting();
   const unit = profile.currencyUnit;
+
+  const transferRecoveryAttemptedRef = useRef(false);
 
   // On cloud entry, reconcile the client-writable transfer list against the
   // server-only event ledger. The callable is idempotent and restores deleted rows.
@@ -141,7 +144,6 @@ export const InventoryView: React.FC<{ initialIntent?: string; clearIntent?: () 
   const [targetWarehouse, setTargetWarehouse] = useState('');
   const [transferQty, setTransferQty] = useState('');
   const transferRequestRef = useRef<{ key: string; id: string; number: string } | null>(null);
-  const transferRecoveryAttemptedRef = useRef(false);
   const [panelTab, setPanelTab] = useState<'kardex' | 'stocktake' | 'transfer'>('stocktake');
   const stockInputRef = useRef<HTMLInputElement | null>(null);
 
