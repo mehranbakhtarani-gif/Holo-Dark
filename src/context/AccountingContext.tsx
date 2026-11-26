@@ -26,6 +26,7 @@ import {
   testFirestoreConnection,
   resolveWorkspaceContext,
   listWorkspaceCoreRecords,
+  mutateWorkspaceCoreRecord,
 } from '../lib/firebase';
 import type { WorkspaceContextResult } from '../lib/firebase';
 import {
@@ -378,6 +379,8 @@ export const AccountingProvider: React.FC<{ children: React.ReactNode }> = ({ ch
 
   const [user, setUser] = useState<User | null>(null);
   const [workspaceContext, setWorkspaceContext] = useState<WorkspaceContextResult | null>(null);
+  const workspaceCoreVersionsRef = useRef(new Map<string, number>());
+
   const [authReady, setAuthReady] = useState(false);
   const [isSyncing, setIsSyncing] = useState(false);
   const [isSigningIn, setIsSigningIn] = useState(false);
@@ -840,6 +843,10 @@ export const AccountingProvider: React.FC<{ children: React.ReactNode }> = ({ ch
             listWorkspaceCoreRecords<Product>('products'),
           ]);
           if (cancelled) return;
+          workspaceCoreVersionsRef.current = new Map([
+            ...accountRows.map(({ id, version }) => [`accounts:${id}`, version] as [string, number]),
+            ...productRows.map(({ id, version }) => [`products:${id}`, version] as [string, number]),
+          ]);
           setAccounts(accountRows.map(({ id, payload }) => ({ ...payload, id })));
           setProducts(productRows.map(({ id, payload }) => ({ ...payload, id })));
           showToast('حساب‌ها و کالاهای فضای کاری با موفقیت بارگذاری شدند.');
@@ -1065,11 +1072,27 @@ export const AccountingProvider: React.FC<{ children: React.ReactNode }> = ({ ch
     async (acc: Omit<Account, 'id' | 'ownerId'>) => {
       const id = generateSafeId('acc');
       const full: Account = { ...acc, id, ownerId };
-      if (user) {
+      if (user && workspaceContext) {
+        const payload = {
+          ownerId: workspaceContext.workspaceId,
+          code: acc.code.replace(/\\D/g, '').slice(0, 24),
+          title: acc.title.trim().slice(0, 160),
+          level: acc.level,
+          ...(acc.parentCode ? { parentCode: acc.parentCode.slice(0, 24) } : {}),
+          category: acc.category,
+          nature: acc.nature,
+          isSystem: false,
+          createdAt: new Date(),
+          updatedAt: new Date(),
+        };
+        await mutateWorkspaceCoreRecord({ collection: 'accounts', documentId: id, operation: 'create', operationId: generateSafeId('op'), expectedVersion: 0, data: payload });
+        workspaceCoreVersionsRef.current.set(`accounts:${id}`, 1);
+        setAccounts((prev) => [...prev, { ...payload, id } as Account]);
+      } else if (user) {
         try {
           await setDoc(doc(db, 'accounts', id), {
             ownerId,
-            code: acc.code.replace(/\D/g, '').slice(0, 24),
+            code: acc.code.replace(/\\D/g, '').slice(0, 24),
             title: acc.title.trim().slice(0, 160),
             level: acc.level,
             ...(acc.parentCode ? { parentCode: acc.parentCode.slice(0, 24) } : {}),
@@ -1081,13 +1104,14 @@ export const AccountingProvider: React.FC<{ children: React.ReactNode }> = ({ ch
           });
         } catch (err) {
           handleFirestoreError(err, OperationType.CREATE, `accounts/${id}`);
+          throw err;
         }
       } else {
         setAccounts((prev) => [...prev, full]);
       }
       showToast(`حساب «${acc.title}» با کد ${acc.code} در کدینگ ثبت شد.`);
     },
-    [ownerId, user, showToast]
+    [ownerId, user, workspaceContext, showToast]
   );
 
   const updateAccount = useCallback(
@@ -1097,26 +1121,33 @@ export const AccountingProvider: React.FC<{ children: React.ReactNode }> = ({ ch
     ) => {
       const existing = accounts.find((a) => a.id === accountId);
       if (!existing) return;
-      const updatePayload: Record<string, unknown> = { updatedAt: serverTimestamp() };
+      const updatePayload: Record<string, unknown> = { updatedAt: new Date() };
       if (patch.title !== undefined) updatePayload.title = patch.title.trim().slice(0, 160);
       if (patch.parentCode !== undefined) updatePayload.parentCode = patch.parentCode.slice(0, 24);
       if (patch.category !== undefined) updatePayload.category = patch.category;
       if (patch.nature !== undefined) updatePayload.nature = patch.nature;
 
-      if (user) {
+      if (user && workspaceContext) {
+        const version = workspaceCoreVersionsRef.current.get(`accounts:${accountId}`);
+        if (!version) throw new Error('نسخه معتبر حساب در فضای کاری موجود نیست؛ ابتدا داده‌ها را تازه‌سازی کنید.');
+        const payload = { ...existing, ...updatePayload, ownerId: workspaceContext.workspaceId, updatedAt: new Date() };
+        delete (payload as Record<string, unknown>).id;
+        await mutateWorkspaceCoreRecord({ collection: 'accounts', documentId: accountId, operation: 'update', operationId: generateSafeId('op'), expectedVersion: version, data: payload });
+        workspaceCoreVersionsRef.current.set(`accounts:${accountId}`, version + 1);
+        setAccounts((prev) => prev.map((a) => (a.id === accountId ? { ...a, ...patch } : a)));
+      } else if (user) {
         try {
           await updateDoc(doc(db, 'accounts', accountId), updatePayload);
         } catch (err) {
           handleFirestoreError(err, OperationType.UPDATE, `accounts/${accountId}`);
+          throw err;
         }
       } else {
-        setAccounts((prev) =>
-          prev.map((a) => (a.id === accountId ? { ...a, ...patch } : a))
-        );
+        setAccounts((prev) => prev.map((a) => (a.id === accountId ? { ...a, ...patch } : a)));
       }
       showToast(`حساب «${patch.title ?? existing.title}» ویرایش شد.`);
     },
-    [accounts, user, showToast]
+    [accounts, user, workspaceContext, showToast]
   );
 
   const deleteAccount = useCallback(
@@ -1132,11 +1163,18 @@ export const AccountingProvider: React.FC<{ children: React.ReactNode }> = ({ ch
         showToast('این حساب دارای گردش در اسناد حسابداری است و طبق اصول حسابرسی قابل حذف نیست.');
         return false;
       }
-      if (user) {
+      if (user && workspaceContext) {
+        const version = workspaceCoreVersionsRef.current.get(`accounts:${accountId}`);
+        if (!version) throw new Error('نسخه معتبر حساب در فضای کاری موجود نیست؛ ابتدا داده‌ها را تازه‌سازی کنید.');
+        await mutateWorkspaceCoreRecord({ collection: 'accounts', documentId: accountId, operation: 'delete', operationId: generateSafeId('op'), expectedVersion: version });
+        workspaceCoreVersionsRef.current.set(`accounts:${accountId}`, version + 1);
+        setAccounts((prev) => prev.filter((a) => a.id !== accountId));
+      } else if (user) {
         try {
           await deleteDoc(doc(db, 'accounts', accountId));
         } catch (err) {
           handleFirestoreError(err, OperationType.DELETE, `accounts/${accountId}`);
+          throw err;
         }
       } else {
         setAccounts((prev) => prev.filter((a) => a.id !== accountId));
@@ -1144,7 +1182,7 @@ export const AccountingProvider: React.FC<{ children: React.ReactNode }> = ({ ch
       showToast(`حساب «${acc.title}» از کدینگ حذف شد.`);
       return true;
     },
-    [accounts, vouchers, user, showToast]
+    [accounts, vouchers, user, workspaceContext, showToast]
   );
 
   // ---------------- PARTIES CRUD ----------------
@@ -1762,103 +1800,108 @@ export const AccountingProvider: React.FC<{ children: React.ReactNode }> = ({ ch
   const addProduct = useCallback(
     async (product: Omit<Product, 'id' | 'ownerId'>) => {
       if (!requirePermission('canEditInventory', 'تعریف کالا')) return;
-
       const id = generateSafeId('prd');
       const full: Product = { ...product, id, ownerId };
-      if (user) {
+      const payload = {
+        ownerId: workspaceContext?.workspaceId ?? ownerId,
+        sku: product.sku.slice(0, 48),
+        name: product.name.trim().slice(0, 180),
+        category: product.category.slice(0, 80),
+        warehouse: product.warehouse.slice(0, 80),
+        unit: product.unit.slice(0, 32),
+        ...(product.secondaryUnit ? { secondaryUnit: product.secondaryUnit.trim().slice(0, 32) } : {}),
+        ...(product.kgPerCarton && Number(product.kgPerCarton) > 0 ? { kgPerCarton: Math.min(10000, Number(product.kgPerCarton)) } : {}),
+        ...(product.bobbinUnit ? { bobbinUnit: product.bobbinUnit.trim().slice(0, 32) } : {}),
+        ...(product.bobbinsPerCarton !== undefined && Number(product.bobbinsPerCarton) >= 0 ? { bobbinsPerCarton: Math.min(10000, Number(product.bobbinsPerCarton)) } : {}),
+        ...(product.yarnCount ? { yarnCount: product.yarnCount.trim().slice(0, 48) } : {}),
+        ...(product.lotNumber ? { lotNumber: product.lotNumber.trim().slice(0, 48) } : {}),
+        ...(product.originCountry ? { originCountry: product.originCountry.trim().slice(0, 64) } : {}),
+        buyPrice: Math.max(0, Number(product.buyPrice) || 0),
+        sellPrice: Math.max(0, Number(product.sellPrice) || 0),
+        stock: Number((Number(product.stock) || 0).toFixed(2)),
+        reorderPoint: Math.max(0, Number(product.reorderPoint) || 0),
+        vatExempt: Boolean(product.vatExempt),
+        ...(product.costingMethod ? { costingMethod: product.costingMethod } : {}),
+        ...(Array.isArray(product.costLayers) ? { costLayers: product.costLayers } : {}),
+        ...(typeof product.inventoryValueIrr === 'number' && Number.isFinite(product.inventoryValueIrr) ? { inventoryValueIrr: Math.max(0, Math.round(product.inventoryValueIrr)) } : {}),
+        createdAt: new Date(),
+        updatedAt: new Date(),
+      };
+      if (user && workspaceContext) {
+        await mutateWorkspaceCoreRecord({ collection: 'products', documentId: id, operation: 'create', operationId: generateSafeId('op'), expectedVersion: 0, data: payload });
+        workspaceCoreVersionsRef.current.set(`products:${id}`, 1);
+        setProducts((prev) => [ { ...payload, id } as Product, ...prev ]);
+      } else if (user) {
         try {
-          await setDoc(doc(db, 'products', id), {
-            ownerId,
-            sku: product.sku.slice(0, 48),
-            name: product.name.trim().slice(0, 180),
-            category: product.category.slice(0, 80),
-            warehouse: product.warehouse.slice(0, 80),
-            unit: product.unit.slice(0, 32),
-            ...(product.secondaryUnit ? { secondaryUnit: product.secondaryUnit.trim().slice(0, 32) } : {}),
-            ...(product.kgPerCarton && Number(product.kgPerCarton) > 0
-              ? { kgPerCarton: Math.min(10000, Number(product.kgPerCarton)) }
-              : {}),
-            ...(product.bobbinUnit ? { bobbinUnit: product.bobbinUnit.trim().slice(0, 32) } : {}),
-            ...(product.bobbinsPerCarton !== undefined && Number(product.bobbinsPerCarton) >= 0
-              ? { bobbinsPerCarton: Math.min(10000, Number(product.bobbinsPerCarton)) }
-              : {}),
-            ...(product.yarnCount ? { yarnCount: product.yarnCount.trim().slice(0, 48) } : {}),
-            ...(product.lotNumber ? { lotNumber: product.lotNumber.trim().slice(0, 48) } : {}),
-            ...(product.originCountry ? { originCountry: product.originCountry.trim().slice(0, 64) } : {}),
-            buyPrice: Math.max(0, Number(product.buyPrice) || 0),
-            sellPrice: Math.max(0, Number(product.sellPrice) || 0),
-            stock: Number((Number(product.stock) || 0).toFixed(2)),
-            reorderPoint: Math.max(0, Number(product.reorderPoint) || 0),
-            vatExempt: Boolean(product.vatExempt),
-            ...(product.costingMethod ? { costingMethod: product.costingMethod } : {}),
-            ...(Array.isArray(product.costLayers) ? { costLayers: product.costLayers } : {}),
-            ...(typeof product.inventoryValueIrr === 'number' && Number.isFinite(product.inventoryValueIrr)
-              ? { inventoryValueIrr: Math.max(0, Math.round(product.inventoryValueIrr)) }
-              : {}),
-            createdAt: serverTimestamp(),
-            updatedAt: serverTimestamp(),
-          });
+          await setDoc(doc(db, 'products', id), { ...payload, ownerId, createdAt: serverTimestamp(), updatedAt: serverTimestamp() });
         } catch (err) {
           handleFirestoreError(err, OperationType.CREATE, `products/${id}`);
+          throw err;
         }
       } else {
         setProducts((prev) => [full, ...prev]);
       }
       showToast(`نخ/کالای «${product.name}» با موفقیت در انبار ثبت شد.`);
     },
-    [ownerId, user, showToast, requirePermission]
+    [ownerId, user, workspaceContext, showToast, requirePermission]
   );
 
   const updateProduct = useCallback(
     async (productId: string, patch: Partial<Omit<Product, 'id' | 'ownerId' | 'sku'>>) => {
       if (!requirePermission('canEditInventory', 'ویرایش کالا')) return;
-
       const existing = products.find((p) => p.id === productId);
       if (!existing) return;
-      if (user) {
+      const next = { ...existing, ...patch };
+      const payload: Record<string, unknown> = {
+        ownerId: workspaceContext?.workspaceId ?? ownerId,
+        sku: existing.sku,
+        name: next.name.trim().slice(0, 180),
+        category: next.category.slice(0, 80),
+        warehouse: next.warehouse.slice(0, 80),
+        unit: next.unit.slice(0, 32),
+        buyPrice: Math.max(0, Number(next.buyPrice) || 0),
+        sellPrice: Math.max(0, Number(next.sellPrice) || 0),
+        stock: Number((Number(next.stock) || 0).toFixed(2)),
+        reorderPoint: Math.max(0, Number(next.reorderPoint) || 0),
+        vatExempt: Boolean(next.vatExempt),
+        updatedAt: new Date(),
+        ...(next.secondaryUnit ? { secondaryUnit: next.secondaryUnit.trim().slice(0, 32) } : {}),
+        ...(next.kgPerCarton !== undefined ? { kgPerCarton: Number(next.kgPerCarton) } : {}),
+        ...(next.bobbinUnit ? { bobbinUnit: next.bobbinUnit.trim().slice(0, 32) } : {}),
+        ...(next.bobbinsPerCarton !== undefined ? { bobbinsPerCarton: Number(next.bobbinsPerCarton) } : {}),
+        ...(next.yarnCount ? { yarnCount: next.yarnCount.trim().slice(0, 48) } : {}),
+        ...(next.lotNumber ? { lotNumber: next.lotNumber.trim().slice(0, 48) } : {}),
+        ...(next.originCountry ? { originCountry: next.originCountry.trim().slice(0, 64) } : {}),
+        ...(next.costingMethod ? { costingMethod: next.costingMethod } : {}),
+        ...(Array.isArray(next.costLayers) ? { costLayers: next.costLayers } : {}),
+        ...(typeof next.inventoryValueIrr === 'number' && Number.isFinite(next.inventoryValueIrr) ? { inventoryValueIrr: Math.max(0, Math.round(next.inventoryValueIrr)) } : {}),
+      };
+      if (user && workspaceContext) {
+        const version = workspaceCoreVersionsRef.current.get(`products:${productId}`);
+        if (!version) throw new Error('نسخه معتبر کالا در فضای کاری موجود نیست؛ ابتدا داده‌ها را تازه‌سازی کنید.');
+        await mutateWorkspaceCoreRecord({ collection: 'products', documentId: productId, operation: 'update', operationId: generateSafeId('op'), expectedVersion: version, data: payload });
+        workspaceCoreVersionsRef.current.set(`products:${productId}`, version + 1);
+        setProducts((prev) => prev.map((p) => (p.id === productId ? { ...p, ...patch } : p)));
+      } else if (user) {
         try {
-          const payload: Record<string, unknown> = { updatedAt: serverTimestamp() };
-          if (patch.name !== undefined) payload.name = patch.name.trim().slice(0, 180);
-          if (patch.category !== undefined) payload.category = patch.category.slice(0, 80);
-          if (patch.warehouse !== undefined) payload.warehouse = patch.warehouse.slice(0, 80);
-          if (patch.unit !== undefined) payload.unit = patch.unit.slice(0, 32);
-          if (patch.secondaryUnit !== undefined) payload.secondaryUnit = patch.secondaryUnit.trim().slice(0, 32);
-          if (patch.kgPerCarton !== undefined && Number(patch.kgPerCarton) > 0) {
-            payload.kgPerCarton = Math.min(10000, Number(patch.kgPerCarton));
-          }
-          if (patch.bobbinUnit !== undefined) payload.bobbinUnit = patch.bobbinUnit.trim().slice(0, 32);
-          if (patch.bobbinsPerCarton !== undefined && Number(patch.bobbinsPerCarton) >= 0) {
-            payload.bobbinsPerCarton = Math.min(10000, Number(patch.bobbinsPerCarton));
-          }
-          if (patch.yarnCount !== undefined) payload.yarnCount = patch.yarnCount.trim().slice(0, 48);
-          if (patch.lotNumber !== undefined) payload.lotNumber = patch.lotNumber.trim().slice(0, 48);
-          if (patch.originCountry !== undefined) payload.originCountry = patch.originCountry.trim().slice(0, 64);
-          if (patch.buyPrice !== undefined) payload.buyPrice = Math.max(0, Number(patch.buyPrice) || 0);
-          if (patch.sellPrice !== undefined) payload.sellPrice = Math.max(0, Number(patch.sellPrice) || 0);
-          if (patch.stock !== undefined) payload.stock = Number((Number(patch.stock) || 0).toFixed(2));
-          if (patch.reorderPoint !== undefined) payload.reorderPoint = Math.max(0, Number(patch.reorderPoint) || 0);
-          if (patch.vatExempt !== undefined) payload.vatExempt = Boolean(patch.vatExempt);
-          if (patch.costingMethod !== undefined) payload.costingMethod = patch.costingMethod;
-          if (patch.costLayers !== undefined) payload.costLayers = patch.costLayers;
-          if (patch.inventoryValueIrr !== undefined && Number.isFinite(patch.inventoryValueIrr)) {
-            payload.inventoryValueIrr = Math.max(0, Math.round(patch.inventoryValueIrr));
-          }
-          await updateDoc(doc(db, 'products', productId), payload);
+          const legacyPayload = { ...payload, updatedAt: serverTimestamp() };
+          delete legacyPayload.ownerId;
+          await updateDoc(doc(db, 'products', productId), legacyPayload);
         } catch (err) {
           handleFirestoreError(err, OperationType.UPDATE, `products/${productId}`);
+          throw err;
         }
       } else {
         setProducts((prev) => prev.map((p) => (p.id === productId ? { ...p, ...patch } : p)));
       }
       showToast(`مشخصات نخ/کالا «${patch.name ?? existing.name}» ویرایش شد.`);
     },
-    [products, user, showToast, requirePermission]
+    [products, ownerId, user, workspaceContext, showToast, requirePermission]
   );
 
   const deleteProduct = useCallback(
     async (productId: string): Promise<boolean> => {
       if (!requirePermission('canDeleteRecords', 'حذف کالا')) return false;
-
       const prod = products.find((p) => p.id === productId);
       if (!prod) return false;
       const used = invoices.some((i) => i.items.some((it) => it.productId === productId));
@@ -1866,11 +1909,18 @@ export const AccountingProvider: React.FC<{ children: React.ReactNode }> = ({ ch
         showToast('این کالا دارای گردش در فاکتورها است و قابل حذف نیست.');
         return false;
       }
-      if (user) {
+      if (user && workspaceContext) {
+        const version = workspaceCoreVersionsRef.current.get(`products:${productId}`);
+        if (!version) throw new Error('نسخه معتبر کالا در فضای کاری موجود نیست؛ ابتدا داده‌ها را تازه‌سازی کنید.');
+        await mutateWorkspaceCoreRecord({ collection: 'products', documentId: productId, operation: 'delete', operationId: generateSafeId('op'), expectedVersion: version });
+        workspaceCoreVersionsRef.current.set(`products:${productId}`, version + 1);
+        setProducts((prev) => prev.filter((p) => p.id !== productId));
+      } else if (user) {
         try {
           await deleteDoc(doc(db, 'products', productId));
         } catch (err) {
           handleFirestoreError(err, OperationType.DELETE, `products/${productId}`);
+          throw err;
         }
       } else {
         setProducts((prev) => prev.filter((p) => p.id !== productId));
@@ -1878,7 +1928,7 @@ export const AccountingProvider: React.FC<{ children: React.ReactNode }> = ({ ch
       showToast(`کالا «${prod.name}» از انبار حذف شد.`);
       return true;
     },
-    [products, invoices, user, showToast, requirePermission]
+    [products, invoices, user, workspaceContext, showToast, requirePermission]
   );
 
   const adjustProductStock = useCallback(
