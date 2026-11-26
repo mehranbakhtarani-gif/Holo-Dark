@@ -161,3 +161,7 @@ The Functions access the existing named database through `@google-cloud/firestor
 - Core validators are intentionally conservative and incomplete relative to every Firestore Rules constraint. No production use is authorized until schema parity, full transaction flows, and Emulator tests are verified.
 - No Firestore Rules change, Functions deployment, production migration, or PR merge was performed.
 - Emulator tests and builds remain unexecuted.
+
+
+## Workspace context resolution (phase 14 foundation)
+The `getWorkspaceContext` callable resolves the workspace locator from the authenticated token, then revalidates the active membership document and active workspace on every request. Its role value is server-authoritative. The response includes migration status; staged reads are advertised only when the manifest is verified. The client exports a typed callable helper, but AccountingContext is not yet switched to this result. Root ownerId queries and writes remain unchanged until the subsequent read-adapter and transaction-routing steps are implemented and verified.
