@@ -31,6 +31,11 @@ import {
 } from '../lib/format';
 import { fuzzyFilterAndRank } from '../lib/fuzzySearch';
 import { mulQtyByIrr } from '../lib/moneyMath';
+import { getTodayShamsi } from '../lib/format';
+import {
+  executeTrackedWarehouseTransfer,
+  receiveTrackedWarehouseTransfer,
+} from '../lib/multiWarehouseEngine';
 import { useDebouncedValue } from '../hooks/useDebouncedValue';
 import {
   BulkParsedProductRow,
@@ -98,7 +103,6 @@ export const InventoryView: React.FC<{ initialIntent?: string; clearIntent?: () 
     adjustProductStockWithVoucher,
     bulkStocktakingWithVoucher,
     bulkUpdateProductPrices,
-    transferProductWarehouse,
     showToast,
   } = useAccounting();
   const unit = profile.currencyUnit;
@@ -112,6 +116,7 @@ export const InventoryView: React.FC<{ initialIntent?: string; clearIntent?: () 
   const [stockInputMode, setStockInputMode] = useState<'kg' | 'carton'>('kg');
   const [stockReason, setStockReason] = useState('');
   const [targetWarehouse, setTargetWarehouse] = useState('');
+  const [transferQty, setTransferQty] = useState('');
   const [panelTab, setPanelTab] = useState<'kardex' | 'stocktake' | 'transfer'>('stocktake');
   const stockInputRef = useRef<HTMLInputElement | null>(null);
 
@@ -125,7 +130,12 @@ export const InventoryView: React.FC<{ initialIntent?: string; clearIntent?: () 
   const [pricePercent, setPricePercent] = useState(0);
 
   // Holoo Apex 9.6 Cloud-Synced Extension Meta (barcode, multi-tier prices, maxStock, binLocation)
-  const { productMetaMap: apexMetaMap, upsertProductMetaSynced } = useWorkspaceExtensions();
+  const {
+    productMetaMap: apexMetaMap,
+    upsertProductMetaSynced,
+    trackedWarehouseTransfers,
+    updateExtensions,
+  } = useWorkspaceExtensions();
   const [formTab, setFormTab] = useState<'main' | 'units' | 'pricing' | 'stock'>('main');
   const [barcode, setBarcode] = useState('');
   const [binLocation, setBinLocation] = useState('');
@@ -345,6 +355,91 @@ export const InventoryView: React.FC<{ initialIntent?: string; clearIntent?: () 
   }, [products]);
 
   const selectedProduct = products.find((p) => p.id === selectedProductId) ?? products[0];
+  const pendingTransfersForProduct = trackedWarehouseTransfers.filter(
+    (transfer) => transfer.productId === selectedProduct?.id && transfer.status === 'in_transit'
+  );
+
+  const dispatchTrackedTransfer = async () => {
+    if (!selectedProduct) return;
+    const destination = targetWarehouse.trim();
+    const quantity = Number(transferQty);
+    if (!destination || destination.length > 80) {
+      showToast('نام انبار مقصد را به‌درستی وارد کنید.', 'error');
+      return;
+    }
+    if (destination === selectedProduct.warehouse) {
+      showToast('انبار مقصد باید با انبار مبدأ متفاوت باشد.', 'error');
+      return;
+    }
+    if (!Number.isFinite(quantity) || quantity <= 0) {
+      showToast('مقدار انتقال باید عددی بزرگ‌تر از صفر باشد.', 'error');
+      return;
+    }
+    try {
+      const result = executeTrackedWarehouseTransfer({
+        product: selectedProduct,
+        fromWarehouse: selectedProduct.warehouse,
+        toWarehouse: destination,
+        qty: quantity,
+        date: getTodayShamsi(),
+        transferNumber: `TR-${Date.now()}`,
+        mode: 'in_transit',
+        defaultCostingMethod: profile.defaultCostingMethod || 'moving_average',
+      });
+      const saved = await updateProduct(selectedProduct.id, {
+        stock: result.updatedProduct.stock,
+        warehouse: result.updatedProduct.warehouse,
+        costLayers: result.updatedProduct.costLayers,
+        inventoryValueIrr: result.updatedProduct.inventoryValueIrr,
+      });
+      if (!saved) return;
+      updateExtensions((prev) => ({
+        ...prev,
+        trackedWarehouseTransfers: [
+          result.transferRecord,
+          ...prev.trackedWarehouseTransfers.filter((item) => item.id !== result.transferRecord.id),
+        ].slice(0, 100),
+      }));
+      setTransferQty('');
+      showToast(`حواله ${result.transferRecord.transferNumber} ثبت شد؛ ${quantity} ${selectedProduct.unit} در وضعیت «در راه» قرار گرفت.`);
+    } catch (error) {
+      showToast(error instanceof Error ? error.message : 'ثبت انتقال انجام نشد.', 'error');
+    }
+  };
+
+  const receiveTrackedTransfer = async (transferId: string) => {
+    if (!selectedProduct) return;
+    const transfer = trackedWarehouseTransfers.find(
+      (item) => item.id === transferId && item.productId === selectedProduct.id
+    );
+    if (!transfer) {
+      showToast('سند انتقال برای این کالا پیدا نشد.', 'error');
+      return;
+    }
+    try {
+      const result = receiveTrackedWarehouseTransfer({
+        product: selectedProduct,
+        transfer,
+        receivedDate: getTodayShamsi(),
+      });
+      const saved = await updateProduct(selectedProduct.id, {
+        stock: result.updatedProduct.stock,
+        warehouse: result.updatedProduct.warehouse,
+        costLayers: result.updatedProduct.costLayers,
+        inventoryValueIrr: result.updatedProduct.inventoryValueIrr,
+      });
+      if (!saved) return;
+      updateExtensions((prev) => ({
+        ...prev,
+        trackedWarehouseTransfers: prev.trackedWarehouseTransfers.map((item) =>
+          item.id === transferId ? result.updatedTransfer : item
+        ),
+      }));
+      showToast(`دریافت حواله ${transfer.transferNumber} در ${transfer.toWarehouse} ثبت شد.`);
+    } catch (error) {
+      showToast(error instanceof Error ? error.message : 'ثبت دریافت انتقال انجام نشد.', 'error');
+    }
+  };
 
   const kardexRows = useMemo(() => {
     if (!selectedProduct) return [];
@@ -1715,12 +1810,48 @@ export const InventoryView: React.FC<{ initialIntent?: string; clearIntent?: () 
                       className="w-full px-3 py-1.5 rounded-lg border border-slate-200 dark:border-slate-700 bg-white dark:bg-slate-900"
                     />
                   </div>
+                  <div>
+                    <label className="block text-[11px] text-slate-500 mb-1">مقدار انتقال ({selectedProduct.unit})</label>
+                    <input
+                      type="number"
+                      min="0.0001"
+                      step="0.01"
+                      value={transferQty}
+                      onChange={(e) => setTransferQty(e.target.value)}
+                      placeholder="مقدار قابل انتقال"
+                      className="w-full px-3 py-1.5 rounded-lg border border-slate-200 dark:border-slate-700 bg-white dark:bg-slate-900"
+                    />
+                  </div>
                   <button
-                    onClick={() => transferProductWarehouse(selectedProduct.id, targetWarehouse)}
+                    onClick={dispatchTrackedTransfer}
                     className="w-full py-2 text-xs font-semibold text-white bg-teal-700 hover:bg-teal-800 rounded-lg"
                   >
-                    ثبت حواله انتقال به انبار مقصد
+                    ثبت حواله خروج و انتقال کالا به وضعیت «در راه»
                   </button>
+                  {pendingTransfersForProduct.length > 0 && (
+                    <div className="pt-2 border-t border-slate-200 dark:border-slate-800 space-y-2">
+                      <div className="font-semibold text-slate-700 dark:text-slate-200">
+                        حواله‌های در راه و آماده دریافت
+                      </div>
+                      {pendingTransfersForProduct.map((transfer) => (
+                        <div key={transfer.id} className="rounded-md border border-amber-200 dark:border-amber-900 p-2 space-y-1.5">
+                          <div className="flex items-center justify-between gap-2">
+                            <strong>{transfer.transferNumber}</strong>
+                            <span>{formatWeight(transfer.qty)} {selectedProduct.unit}</span>
+                          </div>
+                          <div className="text-[11px] text-slate-500">
+                            {transfer.fromWarehouse} ← {transfer.toWarehouse} · {formatMoney(transfer.transferredCostIrr, unit)}
+                          </div>
+                          <button
+                            onClick={() => receiveTrackedTransfer(transfer.id)}
+                            className="w-full py-1.5 rounded-md bg-amber-600 hover:bg-amber-700 text-white font-semibold"
+                          >
+                            ثبت دریافت در انبار مقصد
+                          </button>
+                        </div>
+                      ))}
+                    </div>
+                  )}
                 </div>
               )}
 
