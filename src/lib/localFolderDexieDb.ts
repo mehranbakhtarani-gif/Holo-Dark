@@ -735,6 +735,7 @@ export const SYNCABLE_WORKSPACE_COLLECTIONS = [
   'subcontractJobs',
   'rbacOperators',
   'auditLogs',
+  'trackedWarehouseTransfers',
 ] as const;
 
 export interface SyncTaggedEntity extends Record<string, unknown> {
@@ -783,10 +784,22 @@ export function tagSnapshotWithSyncMetadata(
         uuid: typeof item.uuid === 'string' && item.uuid.length > 0 ? item.uuid : id,
         deviceId:
           typeof item.deviceId === 'string' && item.deviceId.length > 0 ? item.deviceId : deviceId,
-        updatedAt:
-          typeof item.updatedAt === 'string' && !Number.isNaN(Date.parse(item.updatedAt))
-            ? item.updatedAt
-            : nowIso,
+        updatedAt: (() => {
+          if (typeof item.updatedAt === 'string' && !Number.isNaN(Date.parse(item.updatedAt))) {
+            return item.updatedAt;
+          }
+          const timestamp = item.updatedAt as { toDate?: () => Date } | Date | null | undefined;
+          try {
+            const date = timestamp instanceof Date
+              ? timestamp
+              : timestamp && typeof timestamp.toDate === 'function'
+                ? timestamp.toDate()
+                : null;
+            return date && !Number.isNaN(date.getTime()) ? date.toISOString() : nowIso;
+          } catch {
+            return nowIso;
+          }
+        })(),
         isDeleted: Boolean(item.isDeleted),
       };
     });
