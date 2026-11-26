@@ -51,3 +51,9 @@ The owner can start and advance a staging migration from Settings. The Functions
 The verification phase rereads each current source page and compares its digest with the staged record; it also compares copied and verified record counts per collection. If a source changes during the copy, verification stops rather than claiming a successful migration. Restart/reset is deliberately not automatic.
 
 **Important:** this is a staging copy only. It does not change the app's root-collection reads/writes, enable workspace-member Firestore Rules, or authorize any member to access the staged records. Do not deploy broadened Rules or delete legacy collections based only on a staging status.
+
+## Role-scoped staged data reads
+
+`listWorkspaceStagedRecords` provides read-only, paginated access to a verified staging snapshot. It checks verified email, the active workspace record, and the caller's active membership document on every request. Current membership role—not a potentially stale custom claim—determines the collection allowlist. Reads are unavailable until the migration manifest is `verified`. Each request returns at most 100 records and caps the serialized response below 7 MiB.
+
+This callable does not implement dual-write or replace the application's legacy root-collection queries. Firestore Rules remain default-deny for the staging namespace; do not grant direct client access or perform a production cutover based only on this gateway.
