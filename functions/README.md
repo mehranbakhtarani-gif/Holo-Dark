@@ -70,3 +70,7 @@ The callable is **not yet wired into AccountingContext**. Do not use it as a pro
 - The workspace claim is treated only as a locator; active membership and workspace lifecycle are re-read on every call.
 - `src/lib/firebase.ts` exports the regional Functions client and a typed `resolveWorkspaceContext()` client helper.
 - This is a context-resolution foundation only. It does not change AccountingContext ownership, root-collection listeners, CRUD routing, or multi-document accounting transactions.
+
+
+### AccountingContext integration guard
+AccountingContext resolves the authenticated caller's Workspace before cloud hydration. Active invited members are prevented from creating a duplicate personal cloud seed or attaching UID-scoped root listeners. Their ownerId is resolved to the Workspace ID, while current root Rules still require the caller UID, deliberately blocking unsupported member writes. No staged reads are enabled yet because legacy writes can stale the verified snapshot; the next step must implement and test server-backed read/write adapters before member accounting access is opened.
