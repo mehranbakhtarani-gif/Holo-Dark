@@ -1846,6 +1846,8 @@ export const AccountingProvider: React.FC<{ children: React.ReactNode }> = ({ ch
 
   const adjustProductStockWithVoucher = useCallback(
     async (productId: string, countedStock: number, reason: string) => {
+      if (!requirePermission('canCreateVoucher', 'ثبت سند تعدیل موجودی')) return;
+
       if (!requirePermission('canEditInventory', 'انبارگردانی و تعدیل موجودی')) return;
 
       const prod = products.find((p) => p.id === productId);
@@ -1977,6 +1979,9 @@ export const AccountingProvider: React.FC<{ children: React.ReactNode }> = ({ ch
 
   const bulkStocktakingWithVoucher = useCallback(
     async (items: { productId: string; countedStock: number }[], reason: string) => {
+      if (!requirePermission('canEditInventory', 'انبارگردانی گروهی')) return;
+      if (!requirePermission('canCreateVoucher', 'ثبت اسناد انبارگردانی')) return;
+
       const today = getTodayShamsi();
       const batchRefId = generateSafeId('stk_bulk');
       const workingProducts = new Map<string, Product>();
@@ -3256,6 +3261,8 @@ export const AccountingProvider: React.FC<{ children: React.ReactNode }> = ({ ch
 
   const convertProformaToSale = useCallback(
     async (invoiceId: string) => {
+      if (!requirePermission('canCreateVoucher', 'صدور سند تبدیل پیش‌فاکتور')) return;
+
       if (!activeOperator.permissions.canIssueInvoice) {
         showToast('نقش فعال مجوز تبدیل پیش‌فاکتور و صدور فاکتور فروش قطعی را ندارد.');
         return;
@@ -3464,6 +3471,8 @@ export const AccountingProvider: React.FC<{ children: React.ReactNode }> = ({ ch
 
   const postMonthlyPayrollVoucher = useCallback(
     async (monthName: string) => {
+      if (!requirePermission('canCreateVoucher', 'صدور سند حقوق و دستمزد')) return;
+
       const activeEmps = employees.filter((e) => e.active);
       if (activeEmps.length === 0) return;
       const statutory = getStatutoryParamsForYear(profile.fiscalYear, profile.statutoryParamsByYear);
@@ -3530,11 +3539,13 @@ export const AccountingProvider: React.FC<{ children: React.ReactNode }> = ({ ch
         lines,
       });
     },
-    [employees, profile.fiscalYear, profile.statutoryParamsByYear, createVoucher, showToast]
+    [employees, profile.fiscalYear, profile.statutoryParamsByYear, createVoucher, showToast, requirePermission]
   );
 
   const paySalariesVoucher = useCallback(
     async (monthName: string, bankAccountCode: string, amount: number) => {
+      if (!requirePermission('canCreateVoucher', 'ثبت پرداخت حقوق')) return;
+
       if (amount <= 0) return;
       const bankAcc = accounts.find((a) => a.code === bankAccountCode);
       const bankTitle = bankAcc?.title || 'بانک ملت — حساب جاری شرکتی';
@@ -3561,7 +3572,7 @@ export const AccountingProvider: React.FC<{ children: React.ReactNode }> = ({ ch
         ],
       });
     },
-    [accounts, createVoucher]
+    [accounts, createVoucher, requirePermission]
   );
 
   const addFixedAsset = useCallback(
@@ -3636,6 +3647,8 @@ export const AccountingProvider: React.FC<{ children: React.ReactNode }> = ({ ch
 
   const postDepreciationVoucher = useCallback(
     async (periodLabel: string) => {
+      if (!requirePermission('canCreateVoucher', 'ثبت سند استهلاک')) return;
+
       let totalDep = 0;
       for (const a of assets) {
         const dep = calculateMonthlyDepreciation(a);
@@ -3688,7 +3701,7 @@ export const AccountingProvider: React.FC<{ children: React.ReactNode }> = ({ ch
         ],
       });
     },
-    [assets, user, createVoucher, showToast]
+    [assets, user, createVoucher, showToast, requirePermission]
   );
 
   const addCostCenter = useCallback(
@@ -4799,6 +4812,9 @@ export const AccountingProvider: React.FC<{ children: React.ReactNode }> = ({ ch
         includeServiceVat?: boolean;
       }
     ) => {
+      if (!requirePermission('canCreateVoucher', 'ثبت سند پیمانکاری')) return;
+      if (!requirePermission('canEditInventory', 'ثبت ورود محصول پیمانکاری')) return;
+
       const job = subcontractJobs.find((j) => j.id === jobId);
       if (!job || job.status === 'completed') {
         showToast('این حواله پیمانکاری قبلاً تکمیل شده است.');
@@ -5069,13 +5085,14 @@ export const AccountingProvider: React.FC<{ children: React.ReactNode }> = ({ ch
       addProduct,
       createVoucher,
       logActivity,
-      showToast,
-    ]
+      showToast, requirePermission]
   );
 
   // ---------------- FX REVALUATION & BROKER COMMISSION VOUCHERS ----------------
   const postFxRevaluationVoucher = useCallback(
     async (rows: FxRevaluationRow[], date: string) => {
+      if (!requirePermission('canCreateVoucher', 'ثبت سند تسعیر ارز')) return;
+
       const nonZero = rows.filter((r) => Math.abs(r.revaluationDiffIrr) >= 1);
       if (nonZero.length === 0) {
         showToast('هیچ اختلاف تسعیر ارزی برای صدور سند وجود ندارد.');
@@ -5151,7 +5168,7 @@ export const AccountingProvider: React.FC<{ children: React.ReactNode }> = ({ ch
       );
       showToast(`سند تسعیر ارز #${v.voucherNumber} با موفقیت صادر شد.`);
     },
-    [createVoucher, logActivity, showToast]
+    [createVoucher, logActivity, showToast, requirePermission]
   );
 
   const postBrokerCommissionVoucher = useCallback(
@@ -5162,6 +5179,8 @@ export const AccountingProvider: React.FC<{ children: React.ReactNode }> = ({ ch
       date: string;
       periodLabel: string;
     }) => {
+      if (!requirePermission('canCreateVoucher', 'ثبت سند کارمزد کارگزاری')) return;
+
       const amount = Math.round(payload.amountIrr);
       if (amount <= 0) return;
       const v = await createVoucher({
@@ -5195,7 +5214,7 @@ export const AccountingProvider: React.FC<{ children: React.ReactNode }> = ({ ch
       );
       showToast(`سند پورسانت ${payload.partyName} (#${v.voucherNumber}) صادر شد.`);
     },
-    [createVoucher, logActivity, showToast]
+    [createVoucher, logActivity, showToast, requirePermission]
   );
 
   // ---------------- RBAC OPERATORS CRUD ----------------
