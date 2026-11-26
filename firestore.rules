@@ -836,6 +836,8 @@ service cloud.firestore {
               ('activeReturnCount' in existing())
               && existing().activeReturnCount is int
               && existing().activeReturnCount == 0
+              && ('returnRevision' in existing())
+              && existing().returnRevision is int
             )
             || incoming().status != 'cancelled'
           )
