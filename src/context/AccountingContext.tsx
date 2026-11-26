@@ -3342,6 +3342,18 @@ export const AccountingProvider: React.FC<{ children: React.ReactNode }> = ({ ch
             const liveInvoice = { ...inv, ...invoiceSnap.data(), id: invoiceId } as Invoice;
             if (liveInvoice.status === 'cancelled') return { alreadyCancelled: true as const };
 
+            let sourceInvoiceReturnRevision: number | null = null;
+            if (
+              liveInvoice.sourceInvoiceId &&
+              (liveInvoice.invoiceType === 'sale_return' || liveInvoice.invoiceType === 'purchase_return')
+            ) {
+              const sourceInvoiceSnap = await tx.get(doc(db, 'invoices', liveInvoice.sourceInvoiceId));
+              if (!sourceInvoiceSnap.exists()) {
+                throw new Error('فاکتور مرجع برگشت یافت نشد؛ ابطال برگشت متوقف شد.');
+              }
+              sourceInvoiceReturnRevision = Number(sourceInvoiceSnap.data().returnRevision) || 0;
+            }
+
             const reversalSnap = await tx.get(reversalRef);
             if (reversalSnap.exists()) throw new Error('سند معکوس این فاکتور قبلاً ایجاد شده است؛ برای جلوگیری از ثبت تکراری، ابطال متوقف شد.');
             const counterSnap = await tx.get(counterRef);
@@ -3387,7 +3399,14 @@ export const AccountingProvider: React.FC<{ children: React.ReactNode }> = ({ ch
               deviceId,
             });
 
-            // All reads are complete. Stock, invoice, cheque, reversal voucher and sequence are one commit.
+            // All reads are complete. Touching the source invoice serializes return creation/cancellation.
+            if (liveInvoice.sourceInvoiceId && sourceInvoiceReturnRevision !== null) {
+              tx.update(doc(db, 'invoices', liveInvoice.sourceInvoiceId), {
+                returnRevision: sourceInvoiceReturnRevision + 1,
+                updatedAt: serverTimestamp(),
+              });
+            }
+            // Stock, invoice, cheque, reversal voucher and sequence are one commit.
             for (const [pid, delta] of livePlan.productDeltas.entries()) {
               const snap = productSnaps.find((item) => item.id === pid);
               if (!snap?.exists()) throw new Error('کالای مرتبط برای به‌روزرسانی موجود نیست.');
