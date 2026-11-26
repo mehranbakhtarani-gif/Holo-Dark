@@ -337,6 +337,23 @@ export async function restoreTrackedWarehouseTransfersAtomic(): Promise<RestoreT
   return result.data;
 }
 
+
+export interface TrackedWarehouseTransferHistoryPage {
+  transfers: import('./multiWarehouseEngine').TrackedWarehouseTransfer[];
+  nextCursor: string | null;
+  hasMore: boolean;
+}
+export async function listTrackedWarehouseTransferHistoryAtomic(
+  cursor: string | null = null,
+): Promise<TrackedWarehouseTransferHistoryPage> {
+  const callable = httpsCallable<{ cursor: string | null }, TrackedWarehouseTransferHistoryPage>(
+    functions,
+    'listTrackedWarehouseTransferHistory',
+  );
+  const result = await callable({ cursor });
+  return result.data;
+}
+
 export interface WorkspaceVoucherMutationInput {
   operation: 'create' | 'update' | 'delete' | 'finalize' | 'reverse';
   documentId: string;
