@@ -3214,7 +3214,10 @@ export const AccountingProvider: React.FC<{ children: React.ReactNode }> = ({ ch
                 err instanceof Error &&
                 (err.message.includes('موجودی') ||
                   err.message.includes('تسویه') ||
-                  err.message.includes('تراز'))
+                  err.message.includes('تراز') ||
+                  err.message.includes('مقدار برگشت') ||
+                  err.message.includes('فاکتور مرجع') ||
+                  err.message.includes('طرف حساب فاکتور برگشت'))
                   ? err.message
                   : null;
               if (msg) {
