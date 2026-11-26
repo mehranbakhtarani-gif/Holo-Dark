@@ -382,7 +382,7 @@ test('workspace voucher create, numbering, finalize and replay are atomic', asyn
   await manifestRef.set({
     workspaceId: owner.uid, status: 'verified', coreWritesFrozen: true,
     coreWriteMode: 'workspace_native',
-    readBarrier: { status: 'frozen', generation: 'voucher-generation-1' },
+    readBarrier: { status: 'frozen', generation: 'voucher-generation-1', frozenAt: Timestamp.now() },
   });
   const voucherId = `voucher-${owner.uid}`;
   const operationId = randomUUID().replace(/-/g, '');
@@ -421,6 +421,10 @@ test('workspace voucher create, numbering, finalize and replay are atomic', asyn
     operation: 'create', documentId: secondId, operationId: randomUUID().replace(/-/g, ''), data: draft,
   });
   assert.equal(second.voucherNumber, 2);
+  const stagedVoucherRead = await call('listWorkspaceCoreRecords', owner.token, { collection: 'vouchers' });
+  const stagedVoucher = stagedVoucherRead.items.find((item) => item.id === voucherId);
+  assert.equal(stagedVoucher.version, 1);
+  assert.equal(stagedVoucher.payload.voucherNumber, 1);
 
   const updateOperationId = randomUUID().replace(/-/g, '');
   const updatedDraft = { ...draft, description: 'Updated atomic workspace voucher' };
