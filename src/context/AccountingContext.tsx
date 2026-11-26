@@ -189,7 +189,7 @@ interface AccountingContextValue {
   deleteParty: (partyId: string) => Promise<boolean>;
   // Products & Warehouse CRUD
   addProduct: (product: Omit<Product, 'id' | 'ownerId'>) => Promise<void>;
-  updateProduct: (productId: string, patch: Partial<Omit<Product, 'id' | 'ownerId' | 'sku'>>) => Promise<void>;
+  updateProduct: (productId: string, patch: Partial<Omit<Product, 'id' | 'ownerId' | 'sku'>>) => Promise<boolean>;
   deleteProduct: (productId: string) => Promise<boolean>;
   adjustProductStock: (productId: string, newStock: number) => Promise<void>;
   adjustProductStockWithVoucher: (productId: string, countedStock: number, reason: string) => Promise<void>;
@@ -2075,9 +2075,9 @@ export const AccountingProvider: React.FC<{ children: React.ReactNode }> = ({ ch
 
   const updateProduct = useCallback(
     async (productId: string, patch: Partial<Omit<Product, 'id' | 'ownerId' | 'sku'>>) => {
-      if (!requirePermission('canEditInventory', 'ویرایش کالا')) return;
+      if (!requirePermission('canEditInventory', 'ویرایش کالا')) return false;
       const existing = products.find((p) => p.id === productId);
-      if (!existing) return;
+      if (!existing) return false;
       const next = { ...existing, ...patch };
       const payload: Record<string, unknown> = {
         ownerId: workspaceContext?.workspaceId ?? ownerId,
@@ -2122,6 +2122,7 @@ export const AccountingProvider: React.FC<{ children: React.ReactNode }> = ({ ch
         setProducts((prev) => prev.map((p) => (p.id === productId ? { ...p, ...patch } : p)));
       }
       showToast(`مشخصات نخ/کالا «${patch.name ?? existing.name}» ویرایش شد.`);
+      return true;
     },
     [products, ownerId, user, workspaceContext, showToast, requirePermission]
   );
