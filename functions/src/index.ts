@@ -1,11 +1,14 @@
 import { createHash, randomBytes } from 'node:crypto';
 import { initializeApp } from 'firebase-admin/app';
 import { getAuth } from 'firebase-admin/auth';
-import { FieldValue, getFirestore } from 'firebase-admin/firestore';
+import { FieldValue, Firestore } from '@google-cloud/firestore';
 import { HttpsError, onCall } from 'firebase-functions/v2/https';
 
 const app = initializeApp();
-const db = getFirestore(app, 'ai-studio-remixapex-83053e73-77ed-4f64-8f70-f22da529446b');
+const db = new Firestore({
+  projectId: 'elaborate-hash-368613',
+  databaseId: 'ai-studio-remixapex-83053e73-77ed-4f64-8f70-f22da529446b',
+});
 const REGION = 'us-central1';
 const INVITATION_TTL_MS = 7 * 24 * 60 * 60 * 1000;
 
