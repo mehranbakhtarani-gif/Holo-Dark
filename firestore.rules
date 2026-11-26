@@ -443,7 +443,7 @@ service cloud.firestore {
         && isValidId(data.ownerId)
         && isNonEmptyString(data.timestamp, 40)
         && isNonEmptyString(data.operatorName, 120)
-        && data.operatorRole in ['finance_manager', 'accountant', 'warehouse_keeper', 'sales_officer', 'auditor']
+        && data.operatorRole in ['finance_manager', 'accountant', 'warehouse_keeper', 'sales_officer', 'treasurer', 'auditor_readonly']
         && isNonEmptyString(data.module, 80)
         && isNonEmptyString(data.action, 160)
         && isNonEmptyString(data.details, 400)
@@ -1289,7 +1289,7 @@ service cloud.firestore {
         && isValidId(data.ownerId)
         && isNonEmptyString(data.timestamp, 40)
         && isNonEmptyString(data.operatorName, 120)
-        && data.operatorRole in ['finance_manager', 'accountant', 'warehouse_keeper', 'sales_officer', 'auditor']
+        && data.operatorRole in ['finance_manager', 'accountant', 'warehouse_keeper', 'sales_officer', 'treasurer', 'auditor_readonly']
         && isNonEmptyString(data.module, 80)
         && isNonEmptyString(data.action, 160)
         && isNonEmptyString(data.details, 400)
@@ -2141,7 +2141,7 @@ service cloud.firestore {
         && isValidId(data.ownerId)
         && isNonEmptyString(data.timestamp, 40)
         && isNonEmptyString(data.operatorName, 120)
-        && data.operatorRole in ['finance_manager', 'accountant', 'warehouse_keeper', 'sales_officer', 'auditor']
+        && data.operatorRole in ['finance_manager', 'accountant', 'warehouse_keeper', 'sales_officer', 'treasurer', 'auditor_readonly']
         && isNonEmptyString(data.module, 80)
         && isNonEmptyString(data.action, 160)
         && isNonEmptyString(data.details, 400)
