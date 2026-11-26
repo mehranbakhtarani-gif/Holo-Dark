@@ -17,6 +17,7 @@ export const WorkspaceAccessPanel: React.FC<{ user: User | null }> = ({ user }) 
   const [status, setStatus] = useState('در حال بررسی هویت و فضای کاری…');
   const [isOwner, setIsOwner] = useState(false);
   const [canBootstrap, setCanBootstrap] = useState(false);
+  const [canAcceptInvite, setCanAcceptInvite] = useState(false);
   const [members, setMembers] = useState<Member[]>([]);
   const [email, setEmail] = useState('');
   const [role, setRole] = useState<WorkspaceRole>('accountant');
@@ -40,6 +41,7 @@ export const WorkspaceAccessPanel: React.FC<{ user: User | null }> = ({ user }) 
   useEffect(() => {
     let alive = true;
     const initialize = async () => {
+      setIsOwner(false); setCanBootstrap(false); setCanAcceptInvite(false); setMembers([]);
       if (!user) { setStatus('برای مدیریت فضای کاری ابتدا با Firebase وارد شوید.'); return; }
       if (!user.emailVerified) { setStatus('برای فعال‌سازی مدیریت امن کاربران، ابتدا ایمیل حساب Google را تأیید کنید.'); return; }
       try {
@@ -54,6 +56,7 @@ export const WorkspaceAccessPanel: React.FC<{ user: User | null }> = ({ user }) 
           if (alive) setStatus('این حساب عضو یک فضای کاری است. برای دسترسی به اطلاعات مالک، مهاجرت داده و قوانین دسترسی هنوز فعال نشده‌اند.');
         } else if (alive) {
           setCanBootstrap(true);
+          setCanAcceptInvite(true);
           setStatus('این حساب هنوز فضای کاری ندارد. اگر مالک کسب‌وکار هستید، فضای کاری را راه‌اندازی کنید؛ اگر دعوت شده‌اید، توکن دعوت‌نامه را وارد کنید.');
         }
       } catch (e) {
@@ -64,6 +67,13 @@ export const WorkspaceAccessPanel: React.FC<{ user: User | null }> = ({ user }) 
     return () => { alive = false; };
   }, [user, refreshMembers]);
 
+  const run = async (operation: () => Promise<void>) => {
+    setBusy(true); setError('');
+    try { await operation(); }
+    catch (e) { setError(e instanceof Error ? e.message : 'عملیات ناموفق بود.'); }
+    finally { setBusy(false); }
+  };
+
   const bootstrap = () => run(async () => {
     await call('bootstrapWorkspace');
     await user?.getIdToken(true);
@@ -72,13 +82,6 @@ export const WorkspaceAccessPanel: React.FC<{ user: User | null }> = ({ user }) 
     await refreshMembers();
     setStatus('فضای کاری مالک با موفقیت راه‌اندازی شد.');
   });
-
-  const run = async (operation: () => Promise<void>) => {
-    setBusy(true); setError('');
-    try { await operation(); }
-    catch (e) { setError(e instanceof Error ? e.message : 'عملیات ناموفق بود.'); }
-    finally { setBusy(false); }
-  };
 
   const createInvitation = () => run(async () => {
     if (!email.trim()) throw new Error('ایمیل دعوت‌شونده را وارد کنید.');
@@ -94,6 +97,7 @@ export const WorkspaceAccessPanel: React.FC<{ user: User | null }> = ({ user }) 
     await call('acceptWorkspaceInvitation', { invitationToken: inviteToken.trim() });
     await user?.getIdToken(true);
     setInviteToken('');
+    setCanAcceptInvite(false);
     setStatus('دعوت‌نامه پذیرفته شد. دسترسی به داده‌های workspace تا تکمیل مهاجرت عمداً بسته است.');
   });
 
@@ -118,7 +122,7 @@ export const WorkspaceAccessPanel: React.FC<{ user: User | null }> = ({ user }) 
       {!user && <p className="text-xs text-amber-700">ورود Firebase لازم است.</p>}
       {user && !user.emailVerified && <p className="text-xs text-amber-700">ایمیل تأییدنشده اجازه ایجاد یا پذیرش عضویت ندارد.</p>}
       {error && <p role="alert" className="text-xs text-rose-600">{error}</p>}
-      {canBootstrap && !isOwner && <button type="button" disabled={busy || !user?.emailVerified} onClick={() => void bootstrap()} className="rounded-lg border border-indigo-300 px-3 py-2 text-xs font-semibold disabled:opacity-50">راه‌اندازی فضای کاری برای این حساب (مالک)</button>}
+      {canBootstrap && !isOwner && <button type="button" disabled={busy || !user?.emailVerified || Boolean(inviteToken.trim())} onClick={() => void bootstrap()} className="rounded-lg border border-indigo-300 px-3 py-2 text-xs font-semibold disabled:opacity-50">راه‌اندازی فضای کاری برای این حساب (مالک)</button>}
       {isOwner && <>
         <form onSubmit={(e) => { e.preventDefault(); void createInvitation(); }} className="grid grid-cols-1 sm:grid-cols-3 gap-2">
           <input type="email" required value={email} onChange={(e) => setEmail(e.target.value)} placeholder="ایمیل دعوت‌شونده" dir="ltr" className="min-w-0 rounded-lg border px-3 py-2 text-xs dark:bg-slate-900 dark:border-slate-700" />
@@ -148,7 +152,7 @@ export const WorkspaceAccessPanel: React.FC<{ user: User | null }> = ({ user }) 
           </div>)}
         </div>
       </>}
-      {!isOwner && user && <form onSubmit={(e) => { e.preventDefault(); void acceptInvitation(); }} className="flex flex-col sm:flex-row gap-2">
+      {canAcceptInvite && !isOwner && user && <form onSubmit={(e) => { e.preventDefault(); void acceptInvitation(); }} className="flex flex-col sm:flex-row gap-2">
         <input value={inviteToken} onChange={(e) => setInviteToken(e.target.value)} placeholder="توکن دعوت‌نامه" dir="ltr" className="min-w-0 flex-1 rounded-lg border px-3 py-2 text-xs dark:bg-slate-900 dark:border-slate-700" />
         <button disabled={busy || !user.emailVerified} className="rounded-lg bg-indigo-700 text-white px-3 py-2 text-xs disabled:opacity-50">پذیرش دعوت‌نامه</button>
       </form>}
