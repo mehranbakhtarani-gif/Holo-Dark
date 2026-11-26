@@ -938,7 +938,10 @@ export const InvoicesView: React.FC<{ initialIntent?: string; clearIntent?: () =
 
   const handleSaveInvoice = async (e: React.FormEvent) => {
     e.preventDefault();
-    if (applyVat && invoiceType !== 'waste' && !vatParamsReady) {
+    const hasTaxableInvoiceItem = computedItems.some((item) =>
+      !products.find((product) => product.id === item.productId)?.vatExempt
+    );
+    if (applyVat && invoiceType !== 'waste' && hasTaxableInvoiceItem && !vatParamsReady) {
       const reason = invoiceStatutoryErrors[0] ||
         invoiceStatutory.verificationNote ||
         'پارامترهای قانونی ارزش افزوده برای این سال مالی باید تأیید شوند.';
