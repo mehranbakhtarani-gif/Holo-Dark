@@ -268,17 +268,16 @@ service cloud.firestore {
         || (('sourceInvoiceId' in data) && isValidReturnSourceDocument(data));
     }
 
-    function isValidReturnSourceForMutation(sourceInvoiceId, ownerId, partyId, sourceType) {
+    function hasReturnCounterIncrement(sourceInvoiceId, returnInvoiceId, countDelta) {
       let sourcePath = /databases/$(database)/documents/invoices/$(sourceInvoiceId);
-      let sourceSnapshot = get(sourcePath);
-      let source = sourceSnapshot.data;
-      return sourceSnapshot.exists()
-        && source.ownerId == ownerId
-        && source.partyId == partyId
-        && source.invoiceType == sourceType
-        && source.status != 'cancelled'
-        && source.activeReturnCount is int
-        && source.returnRevision is int;
+      let sourceBefore = get(sourcePath);
+      let sourceAfter = getAfter(sourcePath).data;
+      return sourceBefore.exists()
+        && sourceBefore.data.activeReturnCount is int
+        && sourceBefore.data.returnRevision is int
+        && sourceAfter.activeReturnCount == sourceBefore.data.activeReturnCount + countDelta
+        && sourceAfter.returnRevision == sourceBefore.data.returnRevision + 1
+        && sourceAfter.lastReturnMutationId == returnInvoiceId;
     }
 
     function isValidProformaConversion(before, after, changed) {
@@ -365,11 +364,10 @@ service cloud.firestore {
             before.invoiceType in ['sale_return', 'purchase_return']
             && after.status == 'cancelled'
             && before.status != 'cancelled'
-            && isValidReturnSourceForMutation(
+            && hasReturnCounterIncrement(
               before.sourceInvoiceId,
-              before.ownerId,
-              before.partyId,
-              before.invoiceType == 'sale_return' ? 'sale' : 'purchase'
+              invoiceId,
+              -1
             )
           )
           || (
@@ -920,11 +918,10 @@ service cloud.firestore {
         )
         && (
           !(incoming().invoiceType in ['sale_return', 'purchase_return'])
-          || isValidReturnSourceForMutation(
+          || hasReturnCounterIncrement(
             incoming().sourceInvoiceId,
-            incoming().ownerId,
-            incoming().partyId,
-            incoming().invoiceType == 'sale_return' ? 'sale' : 'purchase'
+            invoiceId,
+            1
           )
         )
         && incoming().createdAt == request.time
