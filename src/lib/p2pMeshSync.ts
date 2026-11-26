@@ -14,8 +14,8 @@ export type PeerLinkStatus = 'connected' | 'connecting' | 'offline' | 'error';
 export function getAcknowledgableMeshOperationIds(
   operationIds: readonly string[],
   stateApplied: boolean
-): string[] {
-  if (!stateApplied) return [];
+): string[] | null {
+  if (!stateApplied) return null;
   return Array.from(new Set(operationIds.filter((id) => typeof id === 'string' && id.trim().length > 0)));
 }
 
@@ -399,7 +399,7 @@ export interface MeshSyncCallbacks {
     vectorClock: Record<string, number>;
     relayEnvelopes: MeshRelayEnvelope[];
     batchedOperationIds?: string[];
-  }) => Promise<string[]>;
+  }) => Promise<string[] | null>;
   onPeerAckReceived: (params: {
     fromPeerId: MeshDevicePeerId;
     receivedOperationIds: string[];
@@ -1000,6 +1000,18 @@ export class HolooPeerMeshManager {
             ? msg.batchedOperationIds
             : undefined,
         });
+        if (receivedOpIds === null) {
+          this.emitSyncEvent({
+            peerId: remotePeerId,
+            eventType: 'state_pull',
+            status: 'failed',
+            direction: 'inbound',
+            remoteVectorClock: msg.vectorClock || {},
+            summary: `وضعیت دریافتی از «${resolvePeerShortLabel(remotePeerId)}» پذیرفته نشد؛ ACK ارسال نشد و فرستنده باید عملیات را در صف نگه دارد.`,
+            errorDetail: 'remote state was not applied',
+          });
+          return;
+        }
         this.peerLastAckedHash.set(remotePeerId, msg.payloadHash);
         this.updatePeerState(remotePeerId, { lastSyncedAt: nowIso });
         if (conn.open) {
