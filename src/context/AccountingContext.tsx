@@ -1576,7 +1576,7 @@ export const AccountingProvider: React.FC<{ children: React.ReactNode }> = ({ ch
       if (user) {
         try {
           await updateDoc(doc(db, 'vouchers', voucherId), {
-            status: 'permanent', integrityHash, updatedAt: serverTimestamp(),
+            status: 'permanent', fiscalYear: fy, integrityHash, updatedAt: serverTimestamp(),
           });
         } catch (err) {
           handleFirestoreError(err, OperationType.UPDATE, `vouchers/${voucherId}`);
@@ -2527,7 +2527,9 @@ export const AccountingProvider: React.FC<{ children: React.ReactNode }> = ({ ch
             : {}),
           ...(vch.referenceId ? { referenceId: vch.referenceId.slice(0, 128) } : {}),
           lines: annotatedLines.slice(0, 100),
-          fiscalYear: vch.fiscalYear || extractFiscalYearFromDate(vch.date),
+          ...((vch.fiscalYear || extractFiscalYearFromDate(vch.date))
+            ? { fiscalYear: vch.fiscalYear || extractFiscalYearFromDate(vch.date) }
+            : {}),
           ...(vch.reversalOfVoucherId ? { reversalOfVoucherId: vch.reversalOfVoucherId.slice(0, 128) } : {}),
           ...(vch.status === 'permanent'
             ? { integrityHash: computeVoucherIntegrityHash({ ...vch, lines: annotatedLines.slice(0, 100) }) }
