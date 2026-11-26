@@ -79,6 +79,65 @@ async function expectCallableError(promise, status) {
   });
 }
 
+test('offline invoice creates receive a server inventory sequence exactly once', async () => {
+  const owner = await createVerifiedUser('offline-invoice-sequence');
+  const counterRef = firestore.collection('counters').doc(owner.uid);
+  await counterRef.set({
+    ownerId: owner.uid,
+    lastVoucherNumber: 4,
+    lastInvoiceSeq: 102,
+    lastInventorySequence: 40,
+    createdAt: Timestamp.now(),
+    updatedAt: Timestamp.now(),
+  });
+  const invoiceBase = (invoiceNumber) => ({
+    ownerId: owner.uid,
+    invoiceNumber,
+    invoiceType: 'sale',
+    date: '1405/08/10',
+    partyId: 'party-offline',
+    partyName: 'Offline test customer',
+    warehouse: 'انبار مرکزی',
+    subtotal: 100,
+    discount: 0,
+    vatAmount: 0,
+    grandTotal: 100,
+    paidCash: 100,
+    paidBank: 0,
+    paidCheque: 0,
+    creditAmount: 0,
+    status: 'issued',
+    items: [],
+    createdAt: Timestamp.now(),
+    updatedAt: Timestamp.now(),
+  });
+  const invoiceRefs = [
+    firestore.collection('invoices').doc(`offline-seq-a-${owner.uid}`),
+    firestore.collection('invoices').doc(`offline-seq-b-${owner.uid}`),
+  ];
+  await Promise.all(invoiceRefs.map((ref, index) => ref.set(invoiceBase(`OFFLINE-${index}`))));
+
+  const waitForSequence = async (ref) => {
+    for (let attempt = 0; attempt < 50; attempt += 1) {
+      const snap = await ref.get();
+      if (Number.isSafeInteger(snap.get('eventSequence'))) return snap.get('eventSequence');
+      await new Promise((resolve) => setTimeout(resolve, 200));
+    }
+    throw new Error('Offline invoice sequence was not assigned by the Firestore trigger');
+  };
+  const sequences = await Promise.all(invoiceRefs.map(waitForSequence));
+  assert.deepEqual([...sequences].sort((a, b) => a - b), [41, 42]);
+  const counterAfter = await counterRef.get();
+  assert.equal(counterAfter.get('lastInventorySequence'), 42);
+
+  // An online-committed invoice already has a sequence and must not consume another number.
+  const onlineRef = firestore.collection('invoices').doc(`online-seq-${owner.uid}`);
+  await onlineRef.set({ ...invoiceBase('ONLINE'), eventSequence: 50 });
+  await new Promise((resolve) => setTimeout(resolve, 500));
+  assert.equal((await onlineRef.get()).get('eventSequence'), 50);
+  assert.equal((await counterRef.get()).get('lastInventorySequence'), 42);
+});
+
 test('workspace provisioning, invitation, owner-only RBAC and revocation', async () => {
   const owner = await createVerifiedUser('owner');
   const ownerWorkspace = await call('bootstrapWorkspace', owner.token);
