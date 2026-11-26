@@ -782,6 +782,11 @@ export function recalculateInventoryLedger(input: {
           purchaseReturnVarianceIrr: 0,
         });
       } else if (m.kind === 'purchase_return') {
+        if (!m.allowNegativeStock && runningQty + 0.0001 < q) {
+          throw new Error(
+            `موجودی انبار در تاریخ ${m.date} برای برگشت از خرید کافی نیست (موجودی: ${roundQty2(runningQty)}، مقدار برگشتی: ${roundQty2(q)}).`
+          );
+        }
         const val =
           m.totalCostIrr !== undefined
             ? Math.round(m.totalCostIrr)
