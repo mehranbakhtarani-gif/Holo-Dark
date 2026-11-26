@@ -606,7 +606,6 @@ export function computeWarehouseProductKardex(params: {
           notes: `${inv.invoiceType === 'purchase' ? 'خرید از' : 'برگشت فروش از'} ${inv.partyName}`,
           eventSequence: inv.eventSequence,
           eventSequenceSource: inv.eventSequenceSource,
-          eventSequenceSource: inv.eventSequenceSource,
         });
       } else {
         events.push({
@@ -623,6 +622,7 @@ export function computeWarehouseProductKardex(params: {
           valueIrr: val,
           notes: `${inv.invoiceType === 'sale' ? 'فروش به' : inv.invoiceType === 'purchase_return' ? 'برگشت خرید به' : 'ضایعات'} ${inv.partyName}`,
           eventSequence: inv.eventSequence,
+          eventSequenceSource: inv.eventSequenceSource,
         });
       }
     }
