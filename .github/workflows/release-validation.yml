@@ -18,7 +18,7 @@ concurrency:
 
 jobs:
   validate:
-    name: Tests, TypeScript, security rules and production PWA build
+    name: Tests, TypeScript and production PWA build
     runs-on: ubuntu-latest
     timeout-minutes: 30
 
