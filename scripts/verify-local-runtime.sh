@@ -35,7 +35,7 @@ npm run build
 [[ -s dist/index.html ]] || { echo "FAIL: dist/index.html was not generated."; exit 1; }
 
 echo "[2/3] Starting Express on port $PORT..."
-PORT="$PORT" npx tsx server.ts >"$LOG_FILE" 2>&1 &
+./node_modules/.bin/tsx server.ts >"$LOG_FILE" 2>&1 &
 SERVER_PID=$!
 
 echo "[3/3] Waiting for /api/health..."
