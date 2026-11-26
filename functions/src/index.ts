@@ -206,6 +206,10 @@ export const acceptWorkspaceInvitation = onCall({ region: REGION }, async (reque
   }
 
   const workspaceId = String(invitation.workspaceId);
+  const existingWorkspaceClaim = auth.token.workspaceId;
+  if (existingWorkspaceClaim && existingWorkspaceClaim !== workspaceId) {
+    throw new HttpsError('failed-precondition', 'این حساب از قبل به فضای کاری دیگری متصل است.');
+  }
   const workspaceRef = db.collection('workspaces').doc(workspaceId);
   const membershipRef = db.collection('workspaceMemberships').doc(`${workspaceId}_${auth.uid}`);
   await db.runTransaction(async (tx) => {
