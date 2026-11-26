@@ -13,6 +13,7 @@ import {
   compactRelayEnvelopesForPeer,
   computeMeshAuthTag,
   evaluateVectorExchangeDecision,
+  getAcknowledgableMeshOperationIds,
   getOtherMeshPeerIds,
   HolooPeerMeshManager,
   isValidMeshPeerId,
@@ -231,6 +232,12 @@ runTest('3b. LWW merge converges when same-device writes share an identical time
   const recordB = JSON.parse(zetaThenAlpha.mergedSnapshotJson).vouchers[0];
   assert.equal(recordA.description, 'zeta');
   assert.deepEqual(recordA, recordB);
+});
+
+runTest('3d. remote mesh operations are ACKed only after local state application succeeds', () => {
+  const operationIds = ['op-1', 'op-2', 'op-1', ''];
+  assert.deepEqual(getAcknowledgableMeshOperationIds(operationIds, false), []);
+  assert.deepEqual(getAcknowledgableMeshOperationIds(operationIds, true), ['op-1', 'op-2']);
 });
 
 runTest('3c. outbox ACKs are accepted only from required P2P peers', () => {
