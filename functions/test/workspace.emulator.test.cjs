@@ -15,15 +15,17 @@ async function createVerifiedUser(label, verify = true) {
     method: 'POST', headers: { 'content-type': 'application/json' },
     body: JSON.stringify({ email, password, returnSecureToken: true }),
   });
-  assert.equal(signup.ok, true, await signup.text());
-  const created = await signup.json();
+  const signupText = await signup.text();
+  assert.equal(signup.ok, true, signupText);
+  const created = JSON.parse(signupText);
   if (!verify) return { email, uid: created.localId, token: created.idToken };
   const verified = await fetch(`http://${AUTH_EMULATOR}/identitytoolkit.googleapis.com/v1/accounts:update?key=${API_KEY}`, {
     method: 'POST', headers: { 'content-type': 'application/json' },
     body: JSON.stringify({ idToken: created.idToken, emailVerified: true, returnSecureToken: true }),
   });
-  assert.equal(verified.ok, true, await verified.text());
-  const account = await verified.json();
+  const verifiedText = await verified.text();
+  assert.equal(verified.ok, true, verifiedText);
+  const account = JSON.parse(verifiedText);
   return { email, uid: account.localId, token: account.idToken };
 }
 
