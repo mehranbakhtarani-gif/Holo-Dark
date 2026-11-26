@@ -111,6 +111,7 @@ test('workspace provisioning, invitation, owner-only RBAC and revocation', async
   assert.ok(members.members.some((member) => member.uid === invitee.uid && member.role === 'accountant' && member.active));
 
   await expectCallableError(call('listWorkspaceMembers', invitee.token), 'PERMISSION_DENIED');
+  await expectCallableError(call('listWorkspaceStagedRecords', invitee.token, { collection: 'products' }), 'PERMISSION_DENIED');
   await expectCallableError(call('setWorkspaceMemberRole', owner.token, { uid: owner.uid, role: 'finance_manager' }), 'INVALID_ARGUMENT');
   await expectCallableError(call('setWorkspaceMemberRole', owner.token, { uid: invitee.uid, role: 'owner' }), 'INVALID_ARGUMENT');
   await expectCallableError(call('setWorkspaceMemberRole', owner.token, { uid: invitee.uid, role: 'root_admin' }), 'INVALID_ARGUMENT');
@@ -164,6 +165,26 @@ test('workspace provisioning, invitation, owner-only RBAC and revocation', async
   assert.equal(stagedOwnerAccount.get('payload').ownerId, owner.uid);
   assert.equal(stagedForeignAccount.exists, false);
   assert.equal((await firestore.collection('accounts').doc(ownerAccountId).get()).exists, true);
+
+  // Role authorization is read from the active membership document, not stale custom claims.
+  await expectCallableError(
+    call('listWorkspaceStagedRecords', invitee.token, { collection: 'accounts' }),
+    'PERMISSION_DENIED',
+  );
+  await call('setWorkspaceMemberRole', owner.token, { uid: invitee.uid, role: 'accountant' });
+  const accountantPage = await call('listWorkspaceStagedRecords', invitee.token, {
+    collection: 'accounts', limit: 10,
+  });
+  assert.ok(accountantPage.items.some((item) => item.id === ownerAccountId));
+  await call('setWorkspaceMemberRole', owner.token, { uid: invitee.uid, role: 'warehouse_keeper' });
+  await expectCallableError(
+    call('listWorkspaceStagedRecords', invitee.token, { collection: 'accounts' }),
+    'PERMISSION_DENIED',
+  );
+  const warehousePage = await call('listWorkspaceStagedRecords', invitee.token, {
+    collection: 'products', limit: 10,
+  });
+  assert.equal(warehousePage.collection, 'products');
 
   await call('revokeWorkspaceMember', owner.token, { uid: invitee.uid });
   const revoked = await call('listWorkspaceMembers', owner.token);
