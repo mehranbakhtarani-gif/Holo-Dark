@@ -1881,16 +1881,9 @@ export const AccountingProvider: React.FC<{ children: React.ReactNode }> = ({ ch
       const reversalDate = getTodayShamsi();
       const reversalId = generateSafeId('vch');
       const reversalDescription = `سند معکوس و اصلاحی بابت ابطال اثر سند شماره ${orig.voucherNumber} (${orig.date})`;
-      const reversalValidation = validateVoucherPayload({
-        payload: {
-          date: reversalDate, description: reversalDescription, voucherType: 'general',
-          referenceId: orig.id, reversalOfVoucherId: orig.id, lines: reversedLines,
-        },
-        accounts, parties, existingVouchers: vouchers,
-        closedFiscalYears: profile.closedFiscalYears, allowDuplicate: true, isReversal: true,
-      });
-      if (!reversalValidation.valid) {
-        showToast(reversalValidation.errors[0] || 'سند معکوس از نظر حسابداری معتبر نیست.', 'error');
+      const reversalFiscalYear = extractFiscalYearFromDate(reversalDate) || profile.fiscalYear;
+      if (profile.closedFiscalYears?.includes(reversalFiscalYear)) {
+        showToast(`سال مالی ${reversalFiscalYear} بسته شده است و ثبت سند معکوس در آن مجاز نیست.`, 'error');
         return null;
       }
       if (user && workspaceContext?.coreWritesFrozen && workspaceContext.coreWriteMode === 'workspace_native') {
@@ -1903,7 +1896,7 @@ export const AccountingProvider: React.FC<{ children: React.ReactNode }> = ({ ch
             expectedSourceVersion: orig._version ?? 1,
             data: {
               date: reversalDate,
-              fiscalYear: extractFiscalYearFromDate(reversalDate) || profile.fiscalYear,
+              fiscalYear: reversalFiscalYear,
               description: reversalDescription,
               updatedByDevice: deviceId.slice(0, 64),
             },
@@ -1953,7 +1946,7 @@ export const AccountingProvider: React.FC<{ children: React.ReactNode }> = ({ ch
           : {}),
       });
     },
-    [vouchers, accounts, parties, createVoucher, user, workspaceContext, profile.fiscalYear, profile.closedFiscalYears, deviceId, requirePermission, showToast]
+    [vouchers, createVoucher, user, workspaceContext, profile.fiscalYear, profile.closedFiscalYears, deviceId, requirePermission, showToast]
   );
 
   const renumberVouchersChronologically = useCallback(async () => {
