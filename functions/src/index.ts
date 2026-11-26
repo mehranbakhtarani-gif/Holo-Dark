@@ -759,6 +759,10 @@ export const mutateWorkspaceVoucher = onCall({ region: REGION, timeoutSeconds: 6
       if (sourcePayload.status !== 'permanent') {
         throw new HttpsError('failed-precondition', 'فقط سند قطعی قابل معکوس‌سازی است.');
       }
+      if (typeof sourcePayload.integrityHash !== 'string'
+          || workspaceVoucherIntegrityHash(sourcePayload) !== sourcePayload.integrityHash) {
+        throw new HttpsError('failed-precondition', 'مهر اصالت سند اصلی معتبر نیست؛ معکوس‌سازی متوقف شد.');
+      }
       if (sourceVoucherSnap.get('reversedByVoucherId')) {
         throw new HttpsError('already-exists', 'برای این سند قبلاً سند معکوس ثبت شده است.');
       }
@@ -824,7 +828,12 @@ export const mutateWorkspaceVoucher = onCall({ region: REGION, timeoutSeconds: 6
         deleted: false, payload: { ownerId: workspaceId, lastVoucherNumber: nextNumber, updatedAt: now },
         createdAt: counterSnap.exists ? counterSnap.get('createdAt') || now : now, updatedAt: now,
       });
-      tx.update(sourceVoucherRef!, { reversedByVoucherId: documentId, reversedAt: now });
+      const nextSourcePayload = { ...sourcePayload, _version: sourceVersion + 1 };
+      tx.update(sourceVoucherRef!, {
+        version: sourceVersion + 1, payload: nextSourcePayload,
+        sourceHash: workspaceMigrationHash(nextSourcePayload),
+        reversedByVoucherId: documentId, reversedAt: now, updatedAt: now,
+      });
       tx.create(operationRef, {
         workspaceId, uid: auth.uid, collection: 'vouchers', documentId, operation,
         requestHash, resultVersion: 1, voucherNumber: nextNumber,
