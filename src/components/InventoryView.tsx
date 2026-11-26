@@ -414,18 +414,15 @@ export const InventoryView: React.FC<{ initialIntent?: string; clearIntent?: () 
           inventoryValueIrr: planned.updatedProduct.inventoryValueIrr,
         });
         if (!saved) return;
-        transferRecord = {
-          ...planned.transferRecord,
-          eventSequenceSource: user ? 'sync' : undefined,
-        };
+        transferRecord = planned.transferRecord;
+        updateExtensions((prev) => ({
+          ...prev,
+          trackedWarehouseTransfers: [
+            transferRecord,
+            ...prev.trackedWarehouseTransfers.filter((item) => item.id !== transferRecord.id),
+          ].slice(0, 100),
+        }));
       }
-      updateExtensions((prev) => ({
-        ...prev,
-        trackedWarehouseTransfers: [
-          transferRecord,
-          ...prev.trackedWarehouseTransfers.filter((item) => item.id !== transferRecord.id),
-        ].slice(0, 100),
-      }));
       setTransferQty('');
       showToast(`حواله ${transferRecord.transferNumber} ثبت شد؛ ${quantity} ${selectedProduct.unit} در وضعیت «در راه» قرار گرفت.`);
     } catch (error) {
@@ -473,17 +470,14 @@ export const InventoryView: React.FC<{ initialIntent?: string; clearIntent?: () 
           inventoryValueIrr: result.updatedProduct.inventoryValueIrr,
         });
         if (!saved) return;
-        updatedTransfer = {
-          ...result.updatedTransfer,
-          receivedEventSequenceSource: user ? 'sync' : undefined,
-        };
+        updatedTransfer = result.updatedTransfer;
+        updateExtensions((prev) => ({
+          ...prev,
+          trackedWarehouseTransfers: prev.trackedWarehouseTransfers.map((item) =>
+            item.id === transferId ? updatedTransfer : item
+          ),
+        }));
       }
-      updateExtensions((prev) => ({
-        ...prev,
-        trackedWarehouseTransfers: prev.trackedWarehouseTransfers.map((item) =>
-          item.id === transferId ? updatedTransfer : item
-        ),
-      }));
       showToast(`دریافت حواله ${transfer.transferNumber} در ${transfer.toWarehouse} ثبت شد.`);
     } catch (error) {
       showToast(error instanceof Error ? error.message : 'ثبت دریافت انتقال انجام نشد.', 'error');
