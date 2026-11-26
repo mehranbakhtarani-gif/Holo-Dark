@@ -421,7 +421,7 @@ export const AccountingProvider: React.FC<{ children: React.ReactNode }> = ({ ch
   const requirePermission = useCallback(
     (permission: keyof RbacPermissions, operation: string): boolean => {
       if (activeOperator?.active && activeOperator.permissions?.[permission] === true) return true;
-      showToast(\`اپراتور فعال مجوز «\${operation}» را ندارد؛ عملیات انجام نشد.\`, 'error');
+      showToast(`اپراتور فعال مجوز «${operation}» را ندارد؛ عملیات انجام نشد.`, 'error');
       return false;
     },
     [activeOperator, showToast]
