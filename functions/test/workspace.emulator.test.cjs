@@ -412,6 +412,7 @@ test('workspace voucher create, numbering, finalize and replay are atomic', asyn
   const savedDraft = await voucherRef.get();
   assert.equal(savedDraft.get('payload.status'), 'draft');
   assert.equal(savedDraft.get('payload.voucherNumber'), 1);
+  assert.equal((await firestore.collection('vouchers').doc(voucherId).get()).exists, false);
   const counterRef = firestore.collection('workspaces').doc(owner.uid)
     .collection('migrationData').doc('counters').collection('records').doc('voucher');
   assert.equal((await counterRef.get()).get('payload.lastVoucherNumber'), 1);
