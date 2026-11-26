@@ -1045,7 +1045,7 @@ export const createTrackedWarehouseTransfer = onCall({ region: REGION, timeoutSe
     });
     tx.set(db.collection('warehouseTransferEventAuthority').doc(`${workspaceId}_${transferId}_dispatch`), {
       ownerId: workspaceId, transferId, kind: 'dispatch', eventSequence,
-      source: 'online', createdAt: now,
+      source: 'online', transferSnapshot: transfer, createdAt: now,
     });
     tx.set(counterRef, {
       ownerId: workspaceId,
@@ -1092,8 +1092,9 @@ export const receiveTrackedWarehouseTransfer = onCall({ region: REGION, timeoutS
     const counterRef = nativeMode
       ? migrationDestination(workspaceId, 'counters').doc(workspaceId)
       : db.collection('counters').doc(workspaceId);
-    const [productSnap, extensionSnap, counterSnap] = await Promise.all([
-      tx.get(productRef), tx.get(extensionRef), tx.get(counterRef),
+    const dispatchAuthorityRef = db.collection('warehouseTransferEventAuthority').doc(`${workspaceId}_${transferId}_dispatch`);
+    const [productSnap, extensionSnap, counterSnap, dispatchAuthoritySnap] = await Promise.all([
+      tx.get(productRef), tx.get(extensionRef), tx.get(counterRef), tx.get(dispatchAuthorityRef),
     ]);
     if (!productSnap.exists || !extensionSnap.exists) throw new HttpsError('failed-precondition', 'کالا یا سند همگام‌سازی انتقال‌ها در فضای کاری موجود نیست.');
     let productData: Record<string, unknown>;
@@ -1110,6 +1111,18 @@ export const receiveTrackedWarehouseTransfer = onCall({ region: REGION, timeoutS
     const transferIndex = transfers.findIndex((item) => item && item.id === transferId);
     if (transferIndex < 0) throw new HttpsError('not-found', 'سند انتقال در فضای کاری یافت نشد.');
     const transfer = transfers[transferIndex];
+    if (!dispatchAuthoritySnap.exists) {
+      throw new HttpsError('failed-precondition', 'مرجع معتبر ثبت خروج انتقال هنوز آماده نیست؛ همگام‌سازی را تکرار کنید.');
+    }
+    const authoritativeTransfer = dispatchAuthoritySnap.get('transferSnapshot') as Record<string, unknown> | undefined;
+    if (authoritativeTransfer) {
+      const immutableFields = ['id', 'productId', 'transferNumber', 'date', 'fromWarehouse', 'toWarehouse', 'qty', 'transferredCostIrr'];
+      const hasMismatch = immutableFields.some((key) => transfer[key] !== authoritativeTransfer[key])
+        || JSON.stringify(transfer.transferredLayers) !== JSON.stringify(authoritativeTransfer.transferredLayers);
+      if (hasMismatch) {
+        throw new HttpsError('failed-precondition', 'اطلاعات حواله با نسخه مرجع سرور مغایرت دارد.');
+      }
+    }
     if (transfer.productId !== productId) throw new HttpsError('failed-precondition', 'انتقال به کالای دیگری تعلق دارد.');
     if (transfer.status === 'received') {
       if (transfer.receivedDate === receivedDate) return { status: 'replayed', productVersion };
@@ -1157,7 +1170,7 @@ export const receiveTrackedWarehouseTransfer = onCall({ region: REGION, timeoutS
     tx.update(extensionRef, { trackedWarehouseTransfers: nextTransfers.slice(0, 100), _version: Math.max(0, Number(extensionData._version) || 0) + 1, updatedAt: now });
     tx.set(db.collection('warehouseTransferEventAuthority').doc(`${workspaceId}_${transferId}_receipt`), {
       ownerId: workspaceId, transferId, kind: 'receipt', eventSequence,
-      source: 'online', createdAt: now,
+      source: 'online', transferSnapshot: nextTransfers[transferIndex], createdAt: now,
     });
     tx.set(counterRef, {
       ownerId: workspaceId,
