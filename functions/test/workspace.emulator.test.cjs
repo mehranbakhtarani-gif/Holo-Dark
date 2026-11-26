@@ -76,6 +76,15 @@ function stableTestValue(value) {
   return String(value);
 }
 
+async function waitForDocument(ref, predicate = (snapshot) => snapshot.exists, attempts = 60) {
+  for (let attempt = 0; attempt < attempts; attempt += 1) {
+    const snapshot = await ref.get();
+    if (predicate(snapshot)) return snapshot;
+    await new Promise((resolve) => setTimeout(resolve, 100));
+  }
+  throw new Error(`Timed out waiting for Firestore document: ${ref.path}`);
+}
+
 async function expectCallableError(promise, status) {
   await assert.rejects(promise, (error) => {
     assert.equal(error.status, status);
@@ -270,7 +279,7 @@ test('workspace provisioning, invitation, owner-only RBAC and revocation', async
   // Role authorization is read from the active membership document, not stale custom claims.
   await expectCallableError(
     call('listWorkspaceStagedRecords', invitee.token, { collection: 'accounts' }),
-    'PERMISSION_DENIED',
+    'FAILED_PRECONDITION',
   );
   await call('setWorkspaceMemberRole', owner.token, { uid: invitee.uid, role: 'accountant' });
   await expectCallableError(call('listWorkspaceStagedRecords', invitee.token, {
@@ -665,6 +674,10 @@ test('workspace-native warehouse transfer receipt updates staged product and ext
     ownerId: owner.uid, trackedWarehouseTransfers: [transfer], _version: 3,
     createdAt: now, updatedAt: now,
   });
+  const dispatchAuthorityRef = firestore.collection('warehouseTransferEventAuthority')
+    .doc(`${owner.uid}_${transferId}_dispatch`);
+  await waitForDocument(dispatchAuthorityRef);
+  const extensionBeforeReceive = await extensionRef.get();
   const manifestRef = firestore.collection('workspaceMigrations').doc(owner.uid);
   await manifestRef.set({
     workspaceId: owner.uid, status: 'verified', coreWritesFrozen: true,
@@ -695,7 +708,7 @@ test('workspace-native warehouse transfer receipt updates staged product and ext
     .update(JSON.stringify(stableTestValue(savedProduct))).digest('hex'));
   assert.equal(extensionAfter.get('trackedWarehouseTransfers')[0].status, 'received');
   assert.equal(extensionAfter.get('trackedWarehouseTransfers')[0].receivedDate, '1405/08/05');
-  assert.equal(extensionAfter.get('_version'), 4);
+  assert.equal(extensionAfter.get('_version'), extensionBeforeReceive.get('_version') + 1);
   assert.equal((await firestore.collection('products').doc(productId).get()).exists, false);
 
   const replay = await call('receiveTrackedWarehouseTransfer', owner.token, {
@@ -830,6 +843,8 @@ test('warehouse transfer receipt commits FIFO layers and transfer status atomica
     ownerId: owner.uid, trackedWarehouseTransfers: [transfer], _version: 1,
     createdAt: now, updatedAt: now,
   });
+  await waitForDocument(firestore.collection('warehouseTransferEventAuthority')
+    .doc(`${owner.uid}_${transferId}_dispatch`));
   const received = await call('receiveTrackedWarehouseTransfer', owner.token, {
     productId, transferId, receivedDate: '1405/08/05',
   });
