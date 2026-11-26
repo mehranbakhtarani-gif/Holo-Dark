@@ -574,6 +574,23 @@ test('Stage 10 [Scenario 5]: Moving & Periodic Weighted Average — Buy 100@100k
   assert.equal(pwa.conservationDeltaIrr, 0);
 });
 
+test('Periodic Weighted Average: rejects purchase returns that create chronological negative stock even if later purchases replenish it', () => {
+  assert.throws(
+    () =>
+      recalculateInventoryLedger({
+        productId: 'prd_periodic_return_guard',
+        costingMethod: 'periodic_average',
+        movements: [
+          { id: 'open', date: '1405/01/01', sequence: 1, kind: 'opening', productId: 'prd_periodic_return_guard', qty: 10, totalCostIrr: 10_000_000 },
+          { id: 'sale', date: '1405/01/02', sequence: 2, kind: 'sale', productId: 'prd_periodic_return_guard', qty: 8 },
+          { id: 'return', date: '1405/01/03', sequence: 3, kind: 'purchase_return', productId: 'prd_periodic_return_guard', qty: 5, totalCostIrr: 5_000_000 },
+          { id: 'later_purchase', date: '1405/01/04', sequence: 4, kind: 'purchase', productId: 'prd_periodic_return_guard', qty: 10, totalCostIrr: 10_000_000 },
+        ],
+      }),
+    /موجودی انبار.*برگشت از خرید کافی نیست/
+  );
+});
+
 test('Stage 10 [Scenarios 6 & 7]: Sales Return (10 units historical cost recovery) & Purchase Return (20 units + variance)', () => {
   const res = recalculateInventoryLedger({
     productId: 'prd_ret_test',
