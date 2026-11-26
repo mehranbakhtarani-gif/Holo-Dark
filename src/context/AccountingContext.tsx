@@ -1341,8 +1341,8 @@ export const AccountingProvider: React.FC<{ children: React.ReactNode }> = ({ ch
       exchangeRate?: number;
     }): Promise<Voucher> => {
       if (!requirePermission('canCreateVoucher', 'ایجاد یا ویرایش سند حسابداری')) throw new Error('مجوز ایجاد سند حسابداری وجود ندارد.');
-      if (user && workspaceContext && (workspaceContext.workspaceId !== user.uid || workspaceContext.coreWritesFrozen || workspaceContext.coreWriteMode === 'workspace_native')) {
-        throw new Error('ثبت سند حسابداری تا انتقال اتمیک اسناد و شماره‌گذاری به Workspace موقتاً متوقف است؛ هیچ تغییری اعمال نشد.');
+      if (user && workspaceContext && !(workspaceContext.coreWritesFrozen && workspaceContext.coreWriteMode === 'workspace_native')) {
+        throw new Error('ثبت سند حسابداری تا فعال‌شدن مسیر اتمیک Workspace موقتاً متوقف است؛ هیچ تغییری اعمال نشد.');
       }
 
       const validation = validateVoucherPayload({
@@ -1365,7 +1365,6 @@ export const AccountingProvider: React.FC<{ children: React.ReactNode }> = ({ ch
         .filter((v) => (v.fiscalYear || extractFiscalYearFromDate(v.date)) === voucherFy)
         .reduce((max, v) => Math.max(max, v.voucherNumber || 0), 0);
       const workspaceNativeVoucher = Boolean(user && workspaceContext
-        && workspaceContext.workspaceId === user.uid
         && workspaceContext.coreWritesFrozen
         && workspaceContext.coreWriteMode === 'workspace_native');
       if (workspaceNativeVoucher && payload.status !== 'draft') {
@@ -1729,8 +1728,8 @@ export const AccountingProvider: React.FC<{ children: React.ReactNode }> = ({ ch
   const finalizeVoucher = useCallback(
     async (voucherId: string): Promise<boolean> => {
       if (!requirePermission('canFinalizeVoucher', 'قطعی‌سازی سند')) return false;
-      if (user && workspaceContext && (workspaceContext.workspaceId !== user.uid || workspaceContext.coreWritesFrozen || workspaceContext.coreWriteMode === 'workspace_native')) {
-        showToast('قطعی‌سازی سند تا انتقال اتمیک سند و شمارنده به Workspace موقتاً متوقف است؛ هیچ تغییری اعمال نشد.', 'error');
+      if (user && workspaceContext && !(workspaceContext.coreWritesFrozen && workspaceContext.coreWriteMode === 'workspace_native')) {
+        showToast('قطعی‌سازی سند تا فعال‌شدن مسیر اتمیک Workspace موقتاً متوقف است؛ هیچ تغییری اعمال نشد.', 'error');
         return false;
       }
 
@@ -1755,8 +1754,8 @@ export const AccountingProvider: React.FC<{ children: React.ReactNode }> = ({ ch
       const integrityHash = computeVoucherIntegrityHash(target);
       if (user) {
         try {
-          if (workspaceContext && workspaceContext.workspaceId === user.uid
-              && workspaceContext.coreWritesFrozen && workspaceContext.coreWriteMode === 'workspace_native') {
+          if (workspaceContext && workspaceContext.coreWritesFrozen
+              && workspaceContext.coreWriteMode === 'workspace_native') {
             const result = await mutateWorkspaceVoucher({
               operation: 'finalize',
               documentId: voucherId,
