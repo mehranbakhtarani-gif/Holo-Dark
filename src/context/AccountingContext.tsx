@@ -5383,7 +5383,7 @@ export const AccountingProvider: React.FC<{ children: React.ReactNode }> = ({ ch
       deviceId,
       updateCompanyProfile,
       logActivity,
-      showToast,, requirePermission]
+      showToast, requirePermission]
   );
 
   const commitHolo203Migration = useCallback(
