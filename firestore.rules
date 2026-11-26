@@ -673,27 +673,6 @@ service cloud.firestore {
         isAdmin() || (
           isOwner(userId)
           && incoming().ownerId == existing().ownerId
-          && (
-            !incoming().diff(existing()).affectedKeys().hasAny(['returnRevision', 'activeReturnCount', 'lastReturnMutationId'])
-            || (
-              ('activeReturnCount' in existing())
-              && ('returnRevision' in existing())
-              && ('activeReturnCount' in incoming())
-              && ('returnRevision' in incoming())
-              && incoming().lastReturnMutationId is string
-              && (
-                incoming().activeReturnCount == existing().activeReturnCount + 1
-                || incoming().activeReturnCount == existing().activeReturnCount - 1
-              )
-              && isPairedReturnMutation(
-                invoiceId,
-                incoming().lastReturnMutationId,
-                existing(),
-                incoming(),
-                incoming().activeReturnCount - existing().activeReturnCount
-              )
-            )
-          )
           && incoming().createdAt == existing().createdAt
           && incoming().updatedAt == request.time
           && incoming().lastVoucherNumber >= existing().lastVoucherNumber
@@ -821,6 +800,27 @@ service cloud.firestore {
         isAdmin() || (
           existing().ownerId == request.auth.uid
           && existing().status != 'cancelled'
+          && (
+            !incoming().diff(existing()).affectedKeys().hasAny(['returnRevision', 'activeReturnCount', 'lastReturnMutationId'])
+            || (
+              ('activeReturnCount' in existing())
+              && ('returnRevision' in existing())
+              && ('activeReturnCount' in incoming())
+              && ('returnRevision' in incoming())
+              && incoming().lastReturnMutationId is string
+              && (
+                incoming().activeReturnCount == existing().activeReturnCount + 1
+                || incoming().activeReturnCount == existing().activeReturnCount - 1
+              )
+              && isPairedReturnMutation(
+                invoiceId,
+                incoming().lastReturnMutationId,
+                existing(),
+                incoming(),
+                incoming().activeReturnCount - existing().activeReturnCount
+              )
+            )
+          )
           && (!(existing().invoiceType in ['sale', 'purchase']) || ('activeReturnCount' in existing()) && existing().activeReturnCount is int && existing().activeReturnCount == 0 || incoming().status != 'cancelled')
           && incoming().ownerId == existing().ownerId
           && incoming().createdAt == existing().createdAt
