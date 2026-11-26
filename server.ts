@@ -5,6 +5,7 @@ import http from 'http';
 import express, { Request, Response } from 'express';
 import path from 'path';
 import { fileURLToPath } from 'url';
+import { resolveVerifiedFirebaseIdentity } from './server/authPolicy';
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
@@ -73,9 +74,10 @@ async function startServer() {
     next();
   };
 
-  app.use(express.json({ limit: '10mb' }));
+  // Apply API throttling before JSON parsing so oversized or malformed bodies are rate-limited too.
   app.use('/api/ai', createRateLimiter(30));
   app.use('/api/supabase', createRateLimiter(80));
+  app.use(express.json({ limit: '10mb' }));
 
   app.get('/api/health', (_req: Request, res: Response) => {
     res.json({
@@ -507,14 +509,11 @@ async function startServer() {
         signal: AbortSignal.timeout(7000),
       });
       if (!resp.ok) return null;
-      const data = (await resp.json()) as {
-        users?: { localId?: string; email?: string }[];
-      };
-      const userRec = data?.users?.[0];
-      if (!userRec?.localId) return null;
+      const data: unknown = await resp.json();
+      const identity = resolveVerifiedFirebaseIdentity(data);
+      if (!identity) return null;
       return {
-        uid: String(userRec.localId),
-        email: String(userRec.email || ''),
+        ...identity,
         authSource: 'firebase',
       };
     } catch {
