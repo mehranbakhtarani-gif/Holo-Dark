@@ -44,6 +44,7 @@ import {
   sumIrr,
   toExactIrr,
 } from '../src/lib/moneyMath';
+import { selectUnreturnedSaleAllocations } from '../src/lib/inventoryCostingEngine';
 import {
   computeMultiWarehouseMatrix,
   computeWarehouseProductKardex,
@@ -153,6 +154,31 @@ function makeItem(product: Product, quantity: number, unitPrice: number, vatRate
 // ============================================================================
 // TEST 1: EXPLICIT BALANCE SHEET MANUAL-VS-SYSTEM SCENARIO (END-TO-END)
 // ============================================================================
+test('FIFO partial sale returns restore the next unreturned original cost slices', () => {
+  const original = [
+    { layerId: 'layer-a', qty: 5, unitCostIrr: 100, totalCostIrr: 500 },
+    { layerId: 'layer-b', qty: 5, unitCostIrr: 300, totalCostIrr: 1500 },
+  ];
+  const first = selectUnreturnedSaleAllocations(original, 0, 3);
+  assert.deepEqual(first, [
+    { layerId: 'layer-b', qty: 3, unitCostIrr: 300, totalCostIrr: 900 },
+  ]);
+
+  const second = selectUnreturnedSaleAllocations(original, 3, 3);
+  assert.deepEqual(second, [
+    { layerId: 'layer-a', qty: 1, unitCostIrr: 100, totalCostIrr: 100 },
+    { layerId: 'layer-b', qty: 2, unitCostIrr: 300, totalCostIrr: 600 },
+  ]);
+
+  const final = selectUnreturnedSaleAllocations(original, 6, 4);
+  assert.deepEqual(final, [
+    { layerId: 'layer-a', qty: 4, unitCostIrr: 100, totalCostIrr: 400 },
+  ]);
+  assert.equal(first.reduce((sum, row) => sum + row.totalCostIrr, 0) +
+    second.reduce((sum, row) => sum + row.totalCostIrr, 0) +
+    final.reduce((sum, row) => sum + row.totalCostIrr, 0), 2000);
+});
+
 test('1. Balance Sheet Manual-vs-System Full Verification (Vouchers + Purchase + Sales Invoice + Inventory Deduction + Lineage)', () => {
   const ws = makeFreshCleanWorkspace();
 
