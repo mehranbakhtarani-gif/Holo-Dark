@@ -14,6 +14,7 @@ import {
   computeVoucherIntegrityHash,
   filterVouchersForReport,
   planAtomicInvoiceCommit,
+  planInvoiceCancellation,
   planChequeStatusTransition,
   planYearEndClosing,
   validateVoucherPayload,
@@ -611,6 +612,103 @@ test('Stage 10 [Scenarios 6 & 7]: Sales Return (10 units historical cost recover
   assert.equal(res.finalState.stockQty, 70, 'Final stock must be 70 units');
   assert.equal(res.finalState.totalValueIrr, 105_000_000, 'Ending inventory value must equal 105,000,000 IRR');
   assert.equal(res.conservationDeltaIrr, 0, 'Exact inventory conservation after both returns');
+});
+
+test('Invoice cancellation: cancelling a FIFO sales return removes only its restored layer and preserves original FIFO layers', () => {
+  const seed = createHolooSeedData('test_owner');
+  const product: Product = {
+    ...seed.products[0],
+    id: 'prd_cancel_sale_return',
+    stock: 90,
+    buyPrice: 1_500_000,
+    costingMethod: 'fifo',
+    inventoryValueIrr: 135_000_000,
+    costLayers: [
+      {
+        layerId: 'lyr_purchase_2',
+        date: '1405/01/15',
+        sourceRef: 'inv_purchase_2',
+        warehouse: seed.products[0].warehouse,
+        originalQty: 100,
+        remainingQty: 80,
+        unitCostIrr: 1_500_000,
+        totalCostIrr: 120_000_000,
+      },
+      {
+        layerId: 'ret_inv_sale_return_1_0',
+        date: '1405/01/22',
+        sourceRef: 'inv_original_sale',
+        warehouse: seed.products[0].warehouse,
+        originalQty: 10,
+        remainingQty: 10,
+        unitCostIrr: 1_500_000,
+        totalCostIrr: 15_000_000,
+      },
+    ],
+  };
+  const returnInvoice: Invoice = {
+    id: 'inv_sale_return_1',
+    ownerId: 'test_owner',
+    invoiceNumber: 'SR-1',
+    invoiceType: 'sale_return',
+    date: '1405/01/22',
+    partyId: seed.parties[0].id,
+    partyName: seed.parties[0].name,
+    sourceInvoiceId: 'inv_original_sale',
+    warehouse: product.warehouse,
+    subtotal: 20_000_000,
+    discount: 0,
+    vatAmount: 2_000_000,
+    grandTotal: 22_000_000,
+    paidCash: 0,
+    paidBank: 0,
+    paidCheque: 0,
+    creditAmount: 22_000_000,
+    status: 'settled',
+    items: [
+      {
+        productId: product.id,
+        sku: product.sku,
+        productName: product.name,
+        unit: product.unit,
+        quantity: 10,
+        unitPrice: 2_000_000,
+        unitCostSnapshot: 1_500_000,
+        totalCostIrr: 15_000_000,
+        discount: 0,
+        vatAmount: 2_000_000,
+        lineTotal: 22_000_000,
+        consumedLayers: [
+          {
+            layerId: 'lyr_purchase_2',
+            qty: 10,
+            unitCostIrr: 1_500_000,
+            totalCostIrr: 15_000_000,
+          },
+        ],
+      },
+    ],
+  };
+
+  const plan = planInvoiceCancellation({
+    invoice: returnInvoice,
+    cancellationDate: '1405/01/23',
+    products: [product],
+    vouchers: [],
+    cheques: [],
+    costingMethod: 'fifo',
+    ownerId: 'test_owner',
+    reversalVoucherId: 'vch_cancel_sale_return_1',
+    nextVoucherNumber: 90,
+    deviceId: 'dev_test',
+  });
+
+  assert.equal(plan.updatedProducts[0].stock, 80);
+  assert.equal(plan.updatedProducts[0].inventoryValueIrr, 120_000_000);
+  assert.equal(plan.updatedProducts[0].costLayers.length, 1);
+  assert.equal(plan.updatedProducts[0].costLayers[0].layerId, 'lyr_purchase_2');
+  assert.equal(plan.updatedProducts[0].costLayers[0].remainingQty, 80);
+  assert.equal(plan.updatedProducts[0].costLayers[0].totalCostIrr, 120_000_000);
 });
 
 test('Stage 10 [Scenario 8]: Mixed Settlement Sale (Cash + Bank + Cheque + Credit + 10% VAT) & Negative Stock Guard', () => {
