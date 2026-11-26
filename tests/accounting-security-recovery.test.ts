@@ -592,6 +592,36 @@ test('Periodic Weighted Average: rejects purchase returns that create chronologi
   );
 });
 
+test('Periodic Weighted Average: rejects cumulative linked sales returns beyond the original sale quantity', () => {
+  assert.throws(
+    () => recalculateInventoryLedger({
+      productId: 'prd_periodic_return_limit',
+      costingMethod: 'periodic_average',
+      movements: [
+        { id: 'buy_periodic_return_limit', date: '1405/01/01', kind: 'purchase', productId: 'prd_periodic_return_limit', qty: 10, totalCostIrr: 10_000 },
+        { id: 'sale_periodic_return_limit', date: '1405/01/02', kind: 'sale', productId: 'prd_periodic_return_limit', qty: 5 },
+        { id: 'return_periodic_a', date: '1405/01/03', kind: 'sale_return', productId: 'prd_periodic_return_limit', qty: 3, sourceRefId: 'sale_periodic_return_limit' },
+        { id: 'return_periodic_b', date: '1405/01/04', kind: 'sale_return', productId: 'prd_periodic_return_limit', qty: 3, sourceRefId: 'sale_periodic_return_limit' },
+      ],
+    }),
+    /مقدار برگشت از فروش از مقدار فروش‌رفتهٔ باقی‌مانده بیشتر است/
+  );
+});
+
+test('Periodic Weighted Average: rejects linked sales returns when the original sale is missing', () => {
+  assert.throws(
+    () => recalculateInventoryLedger({
+      productId: 'prd_periodic_missing_sale',
+      costingMethod: 'periodic_average',
+      movements: [
+        { id: 'buy_periodic_missing_sale', date: '1405/01/01', kind: 'purchase', productId: 'prd_periodic_missing_sale', qty: 10, totalCostIrr: 10_000 },
+        { id: 'return_periodic_missing_sale', date: '1405/01/02', kind: 'sale_return', productId: 'prd_periodic_missing_sale', qty: 1, sourceRefId: 'missing_periodic_sale' },
+      ],
+    }),
+    /فاکتور فروش مرجع برای برگشت از فروش یافت نشد/
+  );
+});
+
 test('Stage 10 [Scenarios 6 & 7]: Sales Return (10 units historical cost recovery) & Purchase Return (20 units + variance)', () => {
   const res = recalculateInventoryLedger({
     productId: 'prd_ret_test',
