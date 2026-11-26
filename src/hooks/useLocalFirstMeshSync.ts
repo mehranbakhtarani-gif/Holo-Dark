@@ -99,6 +99,8 @@ export function useLocalFirstMeshSync() {
     trackedWarehouseTransfers,
     updateExtensions,
   } = useWorkspaceExtensions();
+  const latestTrackedTransfersRef = useRef(trackedWarehouseTransfers);
+  latestTrackedTransfersRef.current = trackedWarehouseTransfers;
 
   const isOnline = useOnlineStatus();
 
@@ -242,7 +244,7 @@ export function useLocalFirstMeshSync() {
     const accountingSnapshot = safeParseJsonObject(latestExportRef.current()) || {};
     const raw = JSON.stringify({
       ...accountingSnapshot,
-      trackedWarehouseTransfers,
+      trackedWarehouseTransfers: latestTrackedTransfersRef.current,
     });
     const nowIso = new Date().toISOString();
     const tagged = tagSnapshotWithSyncMetadata(raw, activeDeviceIdentity, nowIso);
@@ -254,7 +256,7 @@ export function useLocalFirstMeshSync() {
       updatedAt: nowIso,
       vectorClock: vectorClockRef.current,
     };
-  }, [activeDeviceIdentity, trackedWarehouseTransfers]);
+  }, [activeDeviceIdentity]);
 
   // ---- Helper: Mirror snapshot into selected local folder ----
   const writeSnapshotToLocalFolder = useCallback(
@@ -689,7 +691,7 @@ export function useLocalFirstMeshSync() {
         subcontractJobs.length,
         rbacOperators.length,
         trackedWarehouseTransfers.length,
-        trackedWarehouseTransfers.map((transfer) => `${transfer.id}:${transfer.status}:${transfer.updatedAt || transfer.receivedDate || transfer.date}`).join(','),
+        JSON.stringify(trackedWarehouseTransfers),
       ].join('|'),
     [
       profile.companyName,
