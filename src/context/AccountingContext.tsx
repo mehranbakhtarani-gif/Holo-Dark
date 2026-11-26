@@ -29,6 +29,7 @@ import {
   listWorkspaceCoreRecords,
   mutateWorkspaceCoreRecord,
   mutateWorkspaceVoucher,
+  adjustWorkspaceProductStockWithVoucher,
 } from '../lib/firebase';
 import type { WorkspaceContextResult } from '../lib/firebase';
 import {
@@ -2208,8 +2209,11 @@ export const AccountingProvider: React.FC<{ children: React.ReactNode }> = ({ ch
     async (productId: string, countedStock: number, reason: string) => {
       if (!requirePermission('canCreateVoucher', 'ثبت سند تعدیل موجودی')) return;
       if (!requirePermission('canEditInventory', 'انبارگردانی و تعدیل موجودی')) return;
-      if (user && workspaceContext && (workspaceContext.workspaceId !== user.uid || workspaceContext.coreWritesFrozen || workspaceContext.coreWriteMode === 'workspace_native')) {
-        showToast('عملیات اتمیک تعدیل موجودی و سند حسابداری هنوز در مرحله انتقال تراکنش‌های چندسندی است؛ هیچ تغییری اعمال نشد.', 'error');
+      const workspaceNative = Boolean(user && workspaceContext
+        && workspaceContext.coreWritesFrozen && workspaceContext.coreWriteMode === 'workspace_native');
+      if (user && workspaceContext && !workspaceNative
+          && (workspaceContext.workspaceId !== user.uid || workspaceContext.coreWritesFrozen || workspaceContext.coreWriteMode === 'workspace_native')) {
+        showToast('وضعیت فضای کاری برای تعدیل موجودی معتبر نیست؛ هیچ تغییری اعمال نشد.', 'error');
         return;
       }
 
@@ -2217,6 +2221,34 @@ export const AccountingProvider: React.FC<{ children: React.ReactNode }> = ({ ch
       if (!prod) return;
       const today = getTodayShamsi();
       const refId = generateSafeId('stk');
+      if (workspaceNative && user) {
+        const expectedVersion = workspaceCoreVersionsRef.current.get(`products:${productId}`);
+        if (!expectedVersion) throw new Error('نسخه معتبر کالا در فضای کاری موجود نیست؛ ابتدا داده‌ها را تازه‌سازی کنید.');
+        const voucherId = generateSafeId('vch');
+        try {
+          const result = await adjustWorkspaceProductStockWithVoucher({
+            productId, voucherId, operationId: generateSafeId('op'),
+            expectedVersion, countedStock, date: today,
+            reason: String(reason || '').slice(0, 300), deviceId: deviceId.slice(0, 64),
+          });
+          if (result.status !== 'no_change' && result.product) {
+            workspaceCoreVersionsRef.current.set(`products:${productId}`, result.version);
+            setProducts((prev) => prev.map((item) => item.id === productId
+              ? { ...item, ...result.product } as Product : item));
+            if (result.voucher) {
+              setVouchers((prev) => prev.some((item) => item.id === voucherId)
+                ? prev : [...prev, { ...result.voucher, id: voucherId } as unknown as Voucher]);
+            }
+            showToast('تعدیل موجودی و سند حسابداری در یک تراکنش Workspace ثبت شد.');
+          } else {
+            showToast('موجودی شمارش‌شده با موجودی ثبت‌شده برابر است؛ تغییری لازم نبود.');
+          }
+        } catch (err) {
+          showToast(err instanceof Error ? err.message : 'ثبت اتمیک تعدیل موجودی ناموفق بود.', 'error');
+          throw err;
+        }
+        return;
+      }
       let plan;
       try {
         plan = planStockAdjustmentWithCostLayers({
