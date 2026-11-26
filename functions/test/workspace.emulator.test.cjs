@@ -556,7 +556,7 @@ test('workspace voucher create, numbering, finalize and replay are atomic', asyn
   assert.equal(stagedVoucher.payload.voucherNumber, 1);
 
   const updateOperationId = randomUUID().replace(/-/g, '');
-  const updatedDraft = { ...draft, description: 'Updated atomic workspace voucher' };
+  const updatedDraft = { ...draft, referenceId: 'invoice-reference-2', description: 'Updated atomic workspace voucher' };
   const updated = await call('mutateWorkspaceVoucher', owner.token, {
     operation: 'update', documentId: secondId, operationId: updateOperationId,
     expectedVersion: 1, data: updatedDraft,
