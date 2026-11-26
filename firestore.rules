@@ -232,7 +232,7 @@ service cloud.firestore {
         );
     }
 
-    function hasAtomicReturnRevisionBump(sourceInvoiceId, returnInvoiceId, ownerId, partyId, sourceType, countDelta) {
+    function hasSourceCounterBump(sourceInvoiceId, returnInvoiceId, ownerId, partyId, sourceType, countDelta) {
       let sourcePath = /databases/$(database)/documents/invoices/$(sourceInvoiceId);
       let sourceBefore = get(sourcePath).data;
       let sourceAfter = getAfter(sourcePath).data;
@@ -247,7 +247,9 @@ service cloud.firestore {
         && sourceAfter.partyId == sourceBefore.partyId
         && sourceAfter.invoiceType == sourceBefore.invoiceType
         && sourceAfter.status == sourceBefore.status
-        && isPairedReturnMutation(sourceInvoiceId, returnInvoiceId, sourceBefore, sourceAfter, countDelta);
+        && sourceAfter.activeReturnCount == sourceBefore.activeReturnCount + countDelta
+        && sourceAfter.returnRevision == sourceBefore.returnRevision + 1
+        && sourceAfter.lastReturnMutationId == returnInvoiceId;
     }
 
     function isValidReturnSourceDocument(data) {
@@ -807,7 +809,7 @@ service cloud.firestore {
         )
         && (
           !(incoming().invoiceType in ['sale_return', 'purchase_return'])
-          || hasAtomicReturnRevisionBump(
+          || hasSourceCounterBump(
             incoming().sourceInvoiceId,
             invoiceId,
             incoming().ownerId,
