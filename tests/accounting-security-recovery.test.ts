@@ -1387,6 +1387,75 @@ test('Inter-Warehouse Transfer preserves FIFO layers with strictly ZERO P&L impa
   assert.equal(plan.remainingSourceLayers.reduce((s, l) => s + l.totalCostIrr, 0), 75_000_000);
 });
 
+test('Warehouse transfer consumes only layers belonging to the selected source warehouse', () => {
+  const state = normalizeProductCostState(
+    {
+      id: 'prd_trf_warehouse_scope',
+      stock: 100,
+      buyPrice: 1_900_000,
+      warehouse: 'انبار مرکزی',
+      costingMethod: 'fifo',
+      costLayers: [
+        { layerId: 'CENTRAL', date: '1405/01/01', sourceRef: 'central_buy', warehouse: 'انبار مرکزی', originalQty: 10, remainingQty: 10, unitCostIrr: 1_000_000, totalCostIrr: 10_000_000 },
+        { layerId: 'BRANCH', date: '1405/01/02', sourceRef: 'branch_buy', warehouse: 'انبار شعبه', originalQty: 90, remainingQty: 90, unitCostIrr: 2_000_000, totalCostIrr: 180_000_000 },
+      ],
+      inventoryValueIrr: 190_000_000,
+    },
+    'fifo'
+  );
+
+  const plan = planWarehouseTransfer({
+    state,
+    fromWarehouse: 'انبار مرکزی',
+    toWarehouse: 'انبار مقصد',
+    qty: 5,
+    transferId: 'trf_scope',
+    date: '1405/02/01',
+  });
+
+  assert.equal(plan.transferredCostIrr, 5_000_000);
+  assert.equal(plan.transferredLayers.reduce((sum, layer) => sum + layer.remainingQty, 0), 5);
+  assert.equal(
+    plan.remainingSourceLayers.find((layer) => layer.layerId === 'BRANCH')?.remainingQty,
+    90,
+    'Layers held by another warehouse must remain unchanged'
+  );
+  assert.equal(
+    plan.remainingSourceLayers.find((layer) => layer.layerId === 'CENTRAL')?.remainingQty,
+    5
+  );
+});
+
+test('Warehouse transfer rejects quantity available only in other warehouses', () => {
+  const state = normalizeProductCostState(
+    {
+      id: 'prd_trf_source_guard',
+      stock: 100,
+      buyPrice: 1_900_000,
+      warehouse: 'انبار مرکزی',
+      costingMethod: 'fifo',
+      costLayers: [
+        { layerId: 'CENTRAL', date: '1405/01/01', sourceRef: 'central_buy', warehouse: 'انبار مرکزی', originalQty: 10, remainingQty: 10, unitCostIrr: 1_000_000, totalCostIrr: 10_000_000 },
+        { layerId: 'BRANCH', date: '1405/01/02', sourceRef: 'branch_buy', warehouse: 'انبار شعبه', originalQty: 90, remainingQty: 90, unitCostIrr: 2_000_000, totalCostIrr: 180_000_000 },
+      ],
+      inventoryValueIrr: 190_000_000,
+    },
+    'fifo'
+  );
+
+  assert.throws(
+    () => planWarehouseTransfer({
+      state,
+      fromWarehouse: 'انبار مرکزی',
+      toWarehouse: 'انبار مقصد',
+      qty: 11,
+      transferId: 'trf_source_guard',
+      date: '1405/02/01',
+    }),
+    /موجودی کافی برای انتقال از/
+  );
+});
+
 test('Iran Statutory Payroll Engine: Applies 1404 vs 1405 Budget Law progressive brackets & validates custom overrides', () => {
   const emp: Employee = {
     id: 'emp_stat_1',
