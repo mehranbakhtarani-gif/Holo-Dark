@@ -841,18 +841,24 @@ export const AccountingProvider: React.FC<{ children: React.ReactNode }> = ({ ch
         try {
           // Fetch both collections completely before publishing either one to Context.
           // The server rejects reads until the verified snapshot has an explicit freeze barrier.
-          const [accountRows, productRows] = await Promise.all([
+          const [accountRows, productRows, partyRows, voucherRows] = await Promise.all([
             listWorkspaceCoreRecords<Account>('accounts'),
             listWorkspaceCoreRecords<Product>('products'),
+            listWorkspaceCoreRecords<Party>('parties'),
+            listWorkspaceCoreRecords<Voucher>('vouchers'),
           ]);
           if (cancelled) return;
           workspaceCoreVersionsRef.current = new Map([
             ...accountRows.map(({ id, version }) => [`accounts:${id}`, version] as [string, number]),
             ...productRows.map(({ id, version }) => [`products:${id}`, version] as [string, number]),
+            ...partyRows.map(({ id, version }) => [`parties:${id}`, version] as [string, number]),
+            ...voucherRows.map(({ id, version }) => [`vouchers:${id}`, version] as [string, number]),
           ]);
           setAccounts(accountRows.map(({ id, payload }) => ({ ...payload, id })));
           setProducts(productRows.map(({ id, payload }) => ({ ...payload, id })));
-          showToast('حساب‌ها و کالاهای فضای کاری با موفقیت بارگذاری شدند.');
+          setParties(partyRows.map(({ id, payload, version }) => ({ ...payload, id, _version: version })));
+          setVouchers(voucherRows.map(({ id, payload, version }) => ({ ...payload, id, _version: version })));
+          showToast('حساب‌ها، کالاها، طرف‌حساب‌ها و اسناد فضای کاری با موفقیت بارگذاری شدند.');
         } catch (error) {
           if (cancelled) return;
           workspaceCoreVersionsRef.current.clear();
