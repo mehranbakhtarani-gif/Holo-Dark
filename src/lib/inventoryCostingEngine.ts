@@ -190,6 +190,20 @@ export function normalizeProductCostState(
   const buyPrice = Math.max(0, Math.round(Number(product.buyPrice) || 0));
 
   if (Array.isArray(product.costLayers) && product.costLayers.length > 0) {
+    // Never trust a persisted cost-layer set if any layer contains invalid quantities or valuation.
+    // In particular, without inventoryValueIrr a non-finite layer value could otherwise be
+    // normalized to zero and incorrectly treated as a reconciled inventory valuation.
+    const hasInvalidLayerData = product.costLayers.some((layer) =>
+      !layer ||
+      typeof layer.layerId !== 'string' || layer.layerId.length === 0 ||
+      typeof layer.date !== 'string' || layer.date.length === 0 ||
+      typeof layer.sourceRef !== 'string' || layer.sourceRef.length === 0 ||
+      !Number.isFinite(layer.originalQty) || layer.originalQty <= 0 ||
+      !Number.isFinite(layer.remainingQty) || layer.remainingQty < 0 ||
+      layer.remainingQty > layer.originalQty + 0.00005 ||
+      !Number.isFinite(layer.unitCostIrr) || layer.unitCostIrr < 0 ||
+      !Number.isFinite(layer.totalCostIrr) || layer.totalCostIrr < 0
+    );
     const cleanLayers = product.costLayers
       .filter((l) => Number.isFinite(l.remainingQty) && roundQty(l.remainingQty) > 0)
       .map((l) => {
@@ -214,7 +228,7 @@ export function normalizeProductCostState(
       typeof snapshotValue === 'number' && Number.isFinite(snapshotValue) && snapshotValue >= 0;
     const valueMatchesSnapshot =
       !hasSnapshotValue || Math.abs(layerVal - Math.round(snapshotValue)) < 1;
-    if (Math.abs(layerQty - stockQty) < 0.005 && valueMatchesSnapshot) {
+    if (!hasInvalidLayerData && Math.abs(layerQty - stockQty) < 0.005 && valueMatchesSnapshot) {
       return {
         productId: product.id,
         costingMethod: method,
