@@ -1241,7 +1241,7 @@ export const restoreTrackedWarehouseTransfers = onCall({ region: REGION, timeout
     // scan prevents an unbounded callable read; the extension itself is capped at 100.
     const authorityQuery = authorityCollection
       .where('ownerId', '==', workspaceId)
-      .limit(1000);
+      .limit(200);
     const authoritySnap = await tx.get(authorityQuery);
     const dispatchDocs = authoritySnap.docs.filter((doc) =>
       doc.get('kind') === 'dispatch'
@@ -1272,7 +1272,7 @@ export const restoreTrackedWarehouseTransfers = onCall({ region: REGION, timeout
       ? await Promise.all(receiptRefs.map((ref) => tx.get(ref)))
       : [];
 
-    const recovered = candidates.map(({ transferId, snapshot }, index) => {
+    const recovered = candidates.flatMap(({ transferId, snapshot }, index) => {
       const receipt = receiptSnaps[index];
       const receiptSnapshot = receipt.exists
         && receipt.get('ownerId') === workspaceId
@@ -1280,12 +1280,16 @@ export const restoreTrackedWarehouseTransfers = onCall({ region: REGION, timeout
         && receipt.get('kind') === 'receipt'
         ? receipt.get('transferSnapshot') as Record<string, unknown> | undefined
         : undefined;
-      const selected = receiptSnapshot?.status === 'received'
-        && receiptSnapshot.id === transferId
-        && receiptSnapshot.receivedDate
-        ? receiptSnapshot
-        : snapshot;
-      return selected;
+      if (snapshot.status === 'received') {
+        // Never reconstruct a completed receipt from a dispatch snapshot alone.
+        if (receiptSnapshot?.status !== 'received'
+            || receiptSnapshot.id !== transferId
+            || typeof receiptSnapshot.receivedDate !== 'string'
+            || !receiptSnapshot.receivedDate) return [];
+        return [receiptSnapshot];
+      }
+      if (snapshot.status !== 'in_transit') return [];
+      return [snapshot];
     }).filter((transfer) => !existingIds.has(String(transfer.id)));
 
     const room = Math.max(0, 100 - existing.length);
