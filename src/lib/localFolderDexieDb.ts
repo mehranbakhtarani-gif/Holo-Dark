@@ -594,6 +594,20 @@ export async function enqueueDexieOutboxItem(
   }
 }
 
+export function isDurableOutboxItemVerified(
+  persisted: Pick<MeshSyncOutboxItem, 'target' | 'payloadHash' | 'snapshotJson' | 'requiredPeers' | 'deliveredToPeers'> | null | undefined,
+  expected: Pick<MeshSyncOutboxItem, 'target' | 'payloadHash' | 'snapshotJson' | 'requiredPeers' | 'deliveredToPeers'>
+): boolean {
+  return Boolean(
+    persisted &&
+    persisted.target === expected.target &&
+    persisted.payloadHash === expected.payloadHash &&
+    persisted.snapshotJson === expected.snapshotJson &&
+    expected.requiredPeers.every((peerId) => persisted.requiredPeers.includes(peerId)) &&
+    expected.deliveredToPeers.every((peerId) => persisted.deliveredToPeers.includes(peerId))
+  );
+}
+
 /**
  * Strict outbox write used by the mesh receive path. Legacy enqueue remains
  * best-effort for UI/background callers; inbound relay ACKs require a verified
@@ -607,14 +621,7 @@ export async function enqueueDexieOutboxItemDurably(
 
   await enqueueDexieOutboxItem(item);
   const persisted = await db.syncOutbox.where('operationId').equals(item.operationId).first();
-  if (
-    !persisted ||
-    persisted.target !== item.target ||
-    persisted.payloadHash !== item.payloadHash ||
-    persisted.snapshotJson !== item.snapshotJson ||
-    !item.requiredPeers.every((peerId) => persisted.requiredPeers.includes(peerId)) ||
-    !item.deliveredToPeers.every((peerId) => persisted.deliveredToPeers.includes(peerId))
-  ) {
+  if (!isDurableOutboxItemVerified(persisted, item)) {
     throw new Error('Mesh outbox persistence verification failed');
   }
   return persisted;
