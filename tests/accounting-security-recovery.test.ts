@@ -701,9 +701,9 @@ test('FIFO linked purchase return consumes all split layers from its source purc
   const state = {
     productId: 'prd_split_purchase_source',
     costingMethod: 'fifo' as const,
-    stockQty: 5,
-    totalValueIrr: 500,
-    weightedAvgUnitCostIrr: 100,
+    stockQty: 9,
+    totalValueIrr: 1_500,
+    weightedAvgUnitCostIrr: 167,
     layers: [
       {
         layerId: 'source_part_a',
