@@ -66,7 +66,7 @@ This repository currently has no trusted server provisioning path. Enforcing cus
 
 ### Explicit limitations / not yet enabled
 - Existing accounting records still use `ownerId == request.auth.uid`; invited members cannot yet access another user's records.
-- React operator administration remains local and is not yet connected to the callable functions.
+- The original local operator matrix remains a legacy/local workflow; secure workspace administration is implemented separately as documented in Phase 3.
 - No email delivery provider is configured; invitation tokens require secure manual delivery.
 - Firestore rules have intentionally NOT been broadened to workspace members. This avoids accidentally opening every accounting collection before migration and emulator verification.
 - Functions have not been installed, compiled, emulator-tested or deployed. The source is a provisioning foundation, not a completed multi-user authorization rollout.
