@@ -407,6 +407,53 @@ export const listWorkspaceStagedRecords = onCall({ region: REGION, timeoutSecond
   };
 });
 
+
+
+/** Core read adapter for accounts/products. A verified snapshot is not sufficient:
+ * reads stay closed until an explicit write-freeze barrier prevents post-verification drift.
+ */
+export const listWorkspaceCoreRecords = onCall({ region: REGION, timeoutSeconds: 60 }, async (request) => {
+  const auth = request.auth as CallableAuth | undefined;
+  requireVerifiedAuth(auth);
+  const { workspaceId, role } = await requireActiveWorkspaceMember(auth);
+  const collectionName = request.data?.collection;
+  if (collectionName !== 'accounts' && collectionName !== 'products') {
+    throw new HttpsError('invalid-argument', 'این آداپتور فقط حساب‌ها و کالاها را می‌خواند.');
+  }
+  if (!(STAGED_READ_COLLECTIONS[role] || []).includes(collectionName)) {
+    throw new HttpsError('permission-denied', 'نقش شما به مشاهده این مجموعه دسترسی ندارد.');
+  }
+  const manifest = await db.collection('workspaceMigrations').doc(workspaceId).get();
+  const barrier = manifest.get('readBarrier');
+  if (!manifest.exists || manifest.get('status') !== 'verified'
+      || !barrier || barrier.status !== 'frozen'
+      || typeof barrier.generation !== 'string' || !barrier.generation
+      || !barrier.frozenAt) {
+    throw new HttpsError('failed-precondition', 'خواندن داده‌ها تا ثبت مانع همگام‌سازی و توقف نوشتن‌های قدیمی مجاز نیست.');
+  }
+  const requestedLimit = Number(request.data?.limit ?? 100);
+  if (!Number.isInteger(requestedLimit) || requestedLimit < 1 || requestedLimit > 100) {
+    throw new HttpsError('invalid-argument', 'اندازه صفحه باید بین ۱ تا ۱۰۰ باشد.');
+  }
+  const cursor = request.data?.cursor;
+  if (cursor !== undefined && cursor !== null && (typeof cursor !== 'string' || !/^[A-Za-z0-9_\\-]{1,128}$/.test(cursor))) {
+    throw new HttpsError('invalid-argument', 'نشانگر صفحه‌بندی معتبر نیست.');
+  }
+  const records = migrationDestination(workspaceId, collectionName);
+  let query = records.orderBy(FieldPath.documentId()).limit(requestedLimit);
+  if (typeof cursor === 'string' && cursor) query = query.startAfter(cursor);
+  const snapshot = await query.get();
+  const items = snapshot.docs.map((record) => ({ id: record.id, payload: record.get('payload') }));
+  const responseBytes = Buffer.byteLength(JSON.stringify(items), 'utf8');
+  if (responseBytes > 7 * 1024 * 1024) {
+    throw new HttpsError('resource-exhausted', 'حجم صفحه از حد مجاز پاسخ بیشتر است.');
+  }
+  return {
+    workspaceId, collection: collectionName, generation: barrier.generation, role, items,
+    nextCursor: snapshot.size === requestedLimit ? snapshot.docs[snapshot.docs.length - 1].id : null,
+  };
+});
+
 /** Creates a short-lived, email-bound invitation. The raw token is returned only once. */
 export const createWorkspaceInvitation = onCall({ region: REGION }, async (request) => {
   const auth = request.auth as CallableAuth | undefined;
