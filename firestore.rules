@@ -124,7 +124,7 @@ service cloud.firestore {
 
     function isValidProduct(data) {
       return data.keys().hasAll(['ownerId', 'sku', 'name', 'category', 'warehouse', 'unit', 'buyPrice', 'sellPrice', 'stock', 'reorderPoint', 'vatExempt', 'createdAt', 'updatedAt'])
-        && data.keys().hasOnly(['ownerId', 'sku', 'name', 'category', 'warehouse', 'unit', 'secondaryUnit', 'kgPerCarton', 'bobbinUnit', 'bobbinsPerCarton', 'yarnCount', 'lotNumber', 'originCountry', 'buyPrice', 'sellPrice', 'stock', 'reorderPoint', 'vatExempt', '_version', 'updatedByDevice', 'createdAt', 'updatedAt'])
+        && data.keys().hasOnly(['ownerId', 'sku', 'name', 'category', 'warehouse', 'unit', 'secondaryUnit', 'kgPerCarton', 'bobbinUnit', 'bobbinsPerCarton', 'yarnCount', 'lotNumber', 'originCountry', 'buyPrice', 'sellPrice', 'stock', 'reorderPoint', 'vatExempt', 'costingMethod', 'costLayers', 'inventoryValueIrr', '_version', 'updatedByDevice', 'createdAt', 'updatedAt'])
         && data.ownerId == request.auth.uid
         && isValidId(data.ownerId)
         && isNonEmptyString(data.sku, 48)
@@ -144,6 +144,25 @@ service cloud.firestore {
         && data.stock is number
         && data.reorderPoint is number && data.reorderPoint >= 0
         && data.vatExempt is bool
+        && (!('costingMethod' in data) || data.costingMethod in ['fifo', 'moving_average', 'periodic_average'])
+        && (!('inventoryValueIrr' in data) || (data.inventoryValueIrr is number && data.inventoryValueIrr >= 0))
+        && (!('costLayers' in data) || (
+          data.costLayers is list
+          && data.costLayers.size() <= 200
+          && (data.costLayers.size() == 0 || (
+            data.costLayers[0] is map
+            && data.costLayers[0].keys().hasAll(['layerId', 'date', 'sourceRef', 'originalQty', 'remainingQty', 'unitCostIrr', 'totalCostIrr'])
+            && isNonEmptyString(data.costLayers[0].layerId, 128)
+            && isNonEmptyString(data.costLayers[0].date, 20)
+            && isNonEmptyString(data.costLayers[0].sourceRef, 128)
+            && data.costLayers[0].originalQty is number && data.costLayers[0].originalQty > 0
+            && data.costLayers[0].remainingQty is number && data.costLayers[0].remainingQty >= 0
+            && data.costLayers[0].remainingQty <= data.costLayers[0].originalQty
+            && data.costLayers[0].unitCostIrr is number && data.costLayers[0].unitCostIrr >= 0
+            && data.costLayers[0].totalCostIrr is number && data.costLayers[0].totalCostIrr >= 0
+            && isOptionalString(data.costLayers[0], 'warehouse', 80)
+          ))
+        ))
         && isOptionalVersion(data)
         && data.createdAt is timestamp
         && data.updatedAt is timestamp;
@@ -625,6 +644,8 @@ service cloud.firestore {
           && incoming().updatedAt == request.time
           && (
             incoming().diff(existing()).affectedKeys().hasOnly(['stock', '_version', 'updatedByDevice', 'updatedAt']) ||
+            incoming().diff(existing()).affectedKeys().hasOnly(['stock', 'buyPrice', 'costingMethod', 'costLayers', 'inventoryValueIrr', '_version', 'updatedByDevice', 'updatedAt']) ||
+            incoming().diff(existing()).affectedKeys().hasOnly(['stock', 'costingMethod', 'costLayers', 'inventoryValueIrr', '_version', 'updatedByDevice', 'updatedAt']) ||
             incoming().diff(existing()).affectedKeys().hasOnly(['stock', 'buyPrice', 'lotNumber', '_version', 'updatedByDevice', 'updatedAt']) ||
             incoming().diff(existing()).affectedKeys().hasOnly(['warehouse', '_version', 'updatedByDevice', 'updatedAt']) ||
             incoming().diff(existing()).affectedKeys().hasOnly(['name', 'category', 'warehouse', 'unit', 'secondaryUnit', 'kgPerCarton', 'bobbinUnit', 'bobbinsPerCarton', 'yarnCount', 'lotNumber', 'originCountry', 'buyPrice', 'sellPrice', 'stock', 'reorderPoint', 'vatExempt', '_version', 'updatedByDevice', 'updatedAt'])
