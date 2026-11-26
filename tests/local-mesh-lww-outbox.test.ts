@@ -209,6 +209,29 @@ runTest('3. mergeWorkspacesDeterministicLWW converges deterministically across 3
   assert.equal(parsedBA.profile.companyName, 'پارس نخ مهران (آپدیت موبایل)');
 });
 
+runTest('3b. LWW merge converges when same-device writes share an identical timestamp', () => {
+  const timestamp = '2026-11-26T12:00:00.000Z';
+  const deviceId = 'holoo-mesh-mehran-phone1';
+  const makeSnapshot = (description: string) => JSON.stringify({
+    vouchers: [{
+      id: 'same-ms-voucher',
+      uuid: 'same-ms-voucher',
+      deviceId,
+      updatedAt: timestamp,
+      isDeleted: false,
+      description,
+    }],
+  });
+  const alpha = makeSnapshot('alpha');
+  const zeta = makeSnapshot('zeta');
+  const alphaThenZeta = mergeWorkspacesDeterministicLWW(alpha, zeta, deviceId);
+  const zetaThenAlpha = mergeWorkspacesDeterministicLWW(zeta, alpha, deviceId);
+  const recordA = JSON.parse(alphaThenZeta.mergedSnapshotJson).vouchers[0];
+  const recordB = JSON.parse(zetaThenAlpha.mergedSnapshotJson).vouchers[0];
+  assert.equal(recordA.description, 'zeta');
+  assert.deepEqual(recordA, recordB);
+});
+
 runTest('4. safeParseJsonObject strips prototype pollution payloads', () => {
   const malicious = '{"__proto__":{"polluted":true},"constructor":{"bad":1},"safe":42}';
   const parsed = safeParseJsonObject(malicious);
