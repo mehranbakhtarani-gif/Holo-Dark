@@ -590,6 +590,24 @@ export const mutateWorkspaceCoreRecord = onCall({ region: REGION, timeoutSeconds
 });
 
 
+function workspaceFnv1aHex(input: string, seed: number): string {
+  let hash = seed >>> 0;
+  for (let i = 0; i < input.length; i += 1) {
+    hash ^= input.charCodeAt(i);
+    hash = Math.imul(hash, 0x01000193) >>> 0;
+  }
+  return hash.toString(16).padStart(8, '0');
+}
+
+function workspaceVoucherIntegrityHash(voucher: Record<string, unknown>): string {
+  const lines = voucher.lines as Record<string, unknown>[];
+  const canonicalLines = lines.map((line) =>
+    `${String(line.accountCode).trim()}|${String(line.partyId || '').trim()}|${String(line.costCenterId || '').trim()}|${Math.round(Number(line.debit) || 0)}|${Math.round(Number(line.credit) || 0)}`
+  ).join(';');
+  const payload = `${voucher.voucherNumber}|${String(voucher.date).trim()}|${voucher.voucherType}|${Math.round(Number(voucher.totalDebit))}|${Math.round(Number(voucher.totalCredit))}|${canonicalLines}`;
+  return `vseal_${workspaceFnv1aHex(payload, 0x811c9dc5)}${workspaceFnv1aHex(payload.split('').reverse().join(''), 0x9e3779b9)}`;
+}
+
 /** Workspace-native voucher create/finalize. Voucher and fiscal counter commit together. */
 export const mutateWorkspaceVoucher = onCall({ region: REGION, timeoutSeconds: 60 }, async (request) => {
   const auth = request.auth as CallableAuth | undefined;
@@ -693,8 +711,9 @@ export const mutateWorkspaceVoucher = onCall({ region: REGION, timeoutSeconds: 6
     const currentPayload = voucherSnap.get('payload') as Record<string, unknown>;
     if (currentPayload.status !== 'draft') throw new HttpsError('failed-precondition', 'فقط سند پیش‌نویس قابل قطعی‌سازی است.');
     const integrityHash = request.data?.integrityHash;
-    if (typeof integrityHash !== 'string' || !/^vseal_[0-9a-f]{16}$/.test(integrityHash)) {
-      throw new HttpsError('invalid-argument', 'مهر اصالت سند معتبر نیست.');
+    if (typeof integrityHash !== 'string' || !/^vseal_[0-9a-f]{16}$/.test(integrityHash)
+        || workspaceVoucherIntegrityHash(currentPayload) !== integrityHash) {
+      throw new HttpsError('invalid-argument', 'مهر اصالت سند با محتوای فعلی سند تطبیق ندارد.');
     }
     const nextPayload = { ...currentPayload, status: 'permanent', integrityHash, updatedAt: now, _version: currentVersion + 1 };
     tx.set(voucherRef, {
