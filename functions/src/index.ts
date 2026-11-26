@@ -1,7 +1,7 @@
 import { createHash, randomBytes } from 'node:crypto';
 import { initializeApp } from 'firebase-admin/app';
 import { getAuth } from 'firebase-admin/auth';
-import { FieldValue, Firestore } from '@google-cloud/firestore';
+import { FieldPath, FieldValue, Firestore } from '@google-cloud/firestore';
 import { HttpsError, onCall } from 'firebase-functions/v2/https';
 
 const app = initializeApp();
@@ -421,7 +421,7 @@ export const migrateWorkspaceDataBatch = onCall({ region: REGION, timeoutSeconds
     }
     const collectionName = WORKSPACE_MIGRATION_COLLECTIONS[index];
     let query = db.collection(collectionName).where('ownerId', '==', workspaceId)
-      .orderBy('__name__').limit(MIGRATION_PAGE_SIZE);
+      .orderBy(FieldPath.documentId()).limit(MIGRATION_PAGE_SIZE);
     const cursor = manifest.get('lastDocumentId');
     if (typeof cursor === 'string' && cursor) query = query.startAfter(cursor);
     const page = await tx.get(query);
@@ -437,22 +437,12 @@ export const migrateWorkspaceDataBatch = onCall({ region: REGION, timeoutSeconds
       return { status: nextIndex >= WORKSPACE_MIGRATION_COLLECTIONS.length ? 'verifying' : 'copying', copied: 0, collection: collectionName };
     }
     const nextCounts = { ...(manifest.get('copiedCounts') || {}) } as Record<string, number>;
-    const batch = db.batch();
     for (const sourceDoc of page.docs) {
       const payload = sourceDoc.data() as Record<string, unknown>;
       const serialized = JSON.stringify(stableMigrationValue(payload));
       if (Buffer.byteLength(serialized, 'utf8') > 850_000) {
         throw new HttpsError('resource-exhausted', `سند ${collectionName}/${sourceDoc.id} برای بسته‌بندی امن مهاجرت بیش از حد بزرگ است.`);
       }
-      batch.set(migrationDestination(workspaceId, collectionName).doc(sourceDoc.id), {
-        workspaceId,
-        sourceCollection: collectionName,
-        sourceId: sourceDoc.id,
-        sourceHash: workspaceMigrationHash(payload),
-        schemaVersion: 1,
-        payload,
-        copiedAt: FieldValue.serverTimestamp(),
-      });
     }
     nextCounts[collectionName] = (nextCounts[collectionName] || 0) + page.size;
     const reachedEnd = page.size < MIGRATION_PAGE_SIZE;
@@ -465,10 +455,7 @@ export const migrateWorkspaceDataBatch = onCall({ region: REGION, timeoutSeconds
       verifyCollectionIndex: nextIndex >= WORKSPACE_MIGRATION_COLLECTIONS.length ? 0 : manifest.get('verifyCollectionIndex') || 0,
       updatedAt: FieldValue.serverTimestamp(),
     });
-    await tx.get(migrationRef);
-    // Transactional writes keep the cursor and copied page atomic.
-    for (const write of batch['_ops'] || []) void write;
-    // Re-issue staged writes through the transaction (the batch is intentionally not committed).
+    // Staged writes and cursor advance commit atomically.
     for (const sourceDoc of page.docs) {
       const payload = sourceDoc.data() as Record<string, unknown>;
       tx.set(migrationDestination(workspaceId, collectionName).doc(sourceDoc.id), {
