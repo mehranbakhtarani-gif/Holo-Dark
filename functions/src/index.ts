@@ -660,10 +660,10 @@ export const mutateWorkspaceVoucher = onCall({ region: REGION, timeoutSeconds: 6
       if (voucherSnap.exists) throw new HttpsError('already-exists', 'شناسه سند از قبل وجود دارد.');
       const fiscalYear = String(input!.fiscalYear);
       const voucherQuery = migrationDestination(workspaceId, 'vouchers')
-        .where('deleted', '==', false).where('payload.fiscalYear', '==', fiscalYear);
+        .where('payload.fiscalYear', '==', fiscalYear);
       const existingVouchers = await tx.get(voucherQuery);
       const maxExisting = existingVouchers.docs.reduce((max, item) => Math.max(max, Number(item.get('payload.voucherNumber')) || 0), 0);
-      const nextNumber = Math.max(Number(counterSnap.get('lastVoucherNumber')) || 0, maxExisting) + 1;
+      const nextNumber = Math.max(Number(counterSnap.get('payload.lastVoucherNumber')) || 0, maxExisting) + 1;
       const payload = { ...input!, voucherNumber: nextNumber, createdAt: now, updatedAt: now, _version: 1 };
       tx.create(voucherRef, {
         workspaceId, sourceCollection: 'vouchers', sourceId: documentId,
