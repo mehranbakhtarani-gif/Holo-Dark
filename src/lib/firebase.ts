@@ -205,3 +205,34 @@ export async function resolveWorkspaceContext(): Promise<WorkspaceContextResult>
   const result = await callable();
   return result.data;
 }
+
+
+export interface WorkspaceCoreRecord<T = Record<string, unknown>> {
+  id: string;
+  payload: T;
+}
+
+/** Reads a complete, frozen Workspace snapshot. Partial pages are never returned. */
+export async function listWorkspaceCoreRecords<T = Record<string, unknown>>(
+  collectionName: 'accounts' | 'products'
+): Promise<WorkspaceCoreRecord<T>[]> {
+  const callable = httpsCallable<
+    { collection: 'accounts' | 'products'; limit: number; cursor?: string },
+    { workspaceId: string; collection: string; generation: string; items: WorkspaceCoreRecord<T>[]; nextCursor: string | null }
+  >(functions, 'listWorkspaceCoreRecords');
+  const all: WorkspaceCoreRecord<T>[] = [];
+  let cursor: string | undefined;
+  let generation: string | undefined;
+  for (let page = 0; page < 50; page += 1) {
+    const response = await callable({ collection: collectionName, limit: 100, ...(cursor ? { cursor } : {}) });
+    const data = response.data;
+    if (data.collection !== collectionName || !data.generation || (generation && generation !== data.generation)) {
+      throw new Error('Workspace snapshot generation changed during pagination.');
+    }
+    generation = data.generation;
+    all.push(...data.items);
+    if (!data.nextCursor) return all;
+    cursor = data.nextCursor;
+  }
+  throw new Error('Workspace collection exceeds the safe pagination limit; no partial result was returned.');
+}
