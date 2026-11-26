@@ -897,6 +897,57 @@ test('Multi-warehouse reconciliation preserves fractional FIFO quantities', () =
   assert.equal(matrix.reconciliation[0].isBalanced, true);
 });
 
+test('Tracked warehouse transfer preserves fractional FIFO quantity through receipt', () => {
+  const product: Product = {
+    id: 'prod_fractional_transfer',
+    ownerId: 'owner_test',
+    sku: 'TRF-FRAC',
+    name: 'کالای وزنی کسری',
+    category: 'آزمایشی',
+    unit: 'کیلوگرم',
+    warehouse: 'انبار مبدأ',
+    buyPrice: 10_000,
+    sellPrice: 12_000,
+    stock: 0.1234,
+    reorderPoint: 0,
+    vatExempt: true,
+    inventoryValueIrr: 1_234,
+    costingMethod: 'fifo',
+    costLayers: [
+      { layerId: 'fractional_source_layer', date: '1405/01/01', sourceRef: 'PUR-FRAC', warehouse: 'انبار مبدأ', originalQty: 0.1234, remainingQty: 0.1234, unitCostIrr: 10_000, totalCostIrr: 1_234 },
+    ],
+  };
+  const dispatched = executeTrackedWarehouseTransfer({
+    product,
+    fromWarehouse: 'انبار مبدأ',
+    toWarehouse: 'انبار مقصد',
+    qty: 0.1234,
+    date: '1405/01/02',
+    transferNumber: 'TRF-FRAC-001',
+    mode: 'in_transit',
+    defaultCostingMethod: 'fifo',
+  });
+  assert.equal(dispatched.plan.qty, 0.1234);
+  assert.equal(dispatched.transferRecord.qty, 0.1234);
+  assert.equal(dispatched.updatedProduct.stock, 0.1234);
+  assert.equal(dispatched.updatedProduct.inventoryValueIrr, 1_234);
+
+  const received = receiveTrackedWarehouseTransfer({
+    product: dispatched.updatedProduct,
+    transfer: dispatched.transferRecord,
+    receivedDate: '1405/01/03',
+  });
+  assert.equal(received.updatedTransfer.status, 'received');
+  const destinationKardex = computeWarehouseProductKardex({
+    product: received.updatedProduct,
+    warehouse: 'انبار مقصد',
+    invoices: [],
+    transfers: [received.updatedTransfer],
+  });
+  assert.equal(destinationKardex[0].inQty, 0.1234);
+  assert.equal(destinationKardex[0].balanceQty, 0.1234);
+});
+
 test('Warehouse Kardex preserves four-decimal fractional quantities', () => {
   const product: Product = {
     id: 'prod_kardex_fractional',
