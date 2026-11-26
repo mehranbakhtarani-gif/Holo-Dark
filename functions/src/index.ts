@@ -716,6 +716,112 @@ function workspaceVoucherIntegrityHash(voucher: Record<string, unknown>): string
   return `vseal_${workspaceFnv1aHex(payload, 0x811c9dc5)}${workspaceFnv1aHex(payload.split('').reverse().join(''), 0x9e3779b9)}`;
 }
 
+/** Creates an in-transit transfer and splits source FIFO layers atomically. */
+export const createTrackedWarehouseTransfer = onCall({ region: REGION, timeoutSeconds: 60 }, async (request) => {
+  const auth = request.auth as CallableAuth | undefined;
+  requireVerifiedAuth(auth);
+  const { workspaceId, role } = await requireActiveWorkspaceMember(auth);
+  if (!(WORKSPACE_WRITE_COLLECTIONS[role] || []).includes('products')) {
+    throw new HttpsError('permission-denied', 'نقش فعلی اجازه انتقال انبار را ندارد.');
+  }
+  const { productId, transferId, transferNumber, fromWarehouse, toWarehouse, qty, date, operatorName, notes } = request.data || {};
+  if (typeof productId !== 'string' || !/^[A-Za-z0-9_-]{1,128}$/.test(productId)
+      || typeof transferId !== 'string' || !/^[A-Za-z0-9_-]{16,128}$/.test(transferId)
+      || typeof transferNumber !== 'string' || !transferNumber.trim() || transferNumber.length > 64
+      || typeof fromWarehouse !== 'string' || !fromWarehouse.trim() || fromWarehouse.length > 120
+      || typeof toWarehouse !== 'string' || !toWarehouse.trim() || toWarehouse.length > 120
+      || fromWarehouse.trim() === toWarehouse.trim()
+      || typeof date !== 'string' || !/^\d{4}\/\d{2}\/\d{2}$/.test(date)
+      || !Number.isFinite(qty) || qty <= 0 || qty > 1e12
+      || (operatorName !== undefined && (typeof operatorName !== 'string' || operatorName.length > 120))
+      || (notes !== undefined && (typeof notes !== 'string' || notes.length > 500))) {
+    throw new HttpsError('invalid-argument', 'اطلاعات حواله انتقال معتبر نیست.');
+  }
+  const manifestRef = db.collection('workspaceMigrations').doc(workspaceId);
+  const extensionRef = db.collection('workspaceExtensions').doc(workspaceId);
+  return db.runTransaction(async (tx) => {
+    const manifestSnap = await tx.get(manifestRef);
+    const nativeMode = manifestSnap.exists && manifestSnap.get('coreWriteMode') === 'workspace_native';
+    if (nativeMode && (manifestSnap.get('status') !== 'verified'
+        || manifestSnap.get('coreWritesFrozen') !== true
+        || manifestSnap.get('readBarrier.status') !== 'frozen')) {
+      throw new HttpsError('failed-precondition', 'نوشتن بومی workspace در وضعیت معتبر و قفل‌شده نیست.');
+    }
+    if (!nativeMode && manifestSnap.exists && manifestSnap.get('coreWritesFrozen') === true) {
+      throw new HttpsError('failed-precondition', 'نوشتن کالا در دوره توقف مهاجرت مسدود است.');
+    }
+    const productRef = nativeMode ? migrationDestination(workspaceId, 'products').doc(productId) : db.collection('products').doc(productId);
+    const [productSnap, extensionSnap] = await Promise.all([tx.get(productRef), tx.get(extensionRef)]);
+    if (!productSnap.exists || !extensionSnap.exists) throw new HttpsError('not-found', 'کالا یا سند انتقال فضای کاری یافت نشد.');
+    let productData: Record<string, unknown>;
+    let productVersion = 0;
+    if (nativeMode) {
+      if (productSnap.get('workspaceId') !== workspaceId || productSnap.get('sourceCollection') !== 'products' || productSnap.get('deleted') === true) throw new HttpsError('not-found', 'کالای فعال یافت نشد.');
+      productData = productSnap.get('payload') as Record<string, unknown>;
+      productVersion = Number(productSnap.get('version') || 1);
+    } else productData = productSnap.data() as Record<string, unknown>;
+    if (!productData || productData.ownerId !== workspaceId) throw new HttpsError('permission-denied', 'کالا متعلق به این فضای کاری نیست.');
+    const ext = extensionSnap.data() as Record<string, unknown>;
+    if (ext.ownerId !== workspaceId) throw new HttpsError('permission-denied', 'سند انتقال متعلق به این فضای کاری نیست.');
+    const transfers = Array.isArray(ext.trackedWarehouseTransfers) ? ext.trackedWarehouseTransfers as Record<string, unknown>[] : [];
+    if (transfers.some((t) => t && t.id === transferId)) throw new HttpsError('already-exists', 'شناسه حواله تکراری است.');
+    if (transfers.length >= 100) throw new HttpsError('resource-exhausted', 'ظرفیت اسناد انتقال فضای کاری تکمیل است.');
+    const layers = Array.isArray(productData.costLayers) ? productData.costLayers as Record<string, unknown>[] : [];
+    if (!layers.length) throw new HttpsError('failed-precondition', 'لایه‌های بهای تمام‌شده کالا موجود نیست؛ ابتدا بهای FIFO کالا را بازسازی کنید.');
+    const roundQty = (n: number) => Math.round(n * 10000) / 10000;
+    let remaining = roundQty(qty);
+    const nextLayers = layers.map((layer) => ({ ...layer }));
+    const moved: Record<string, unknown>[] = [];
+    let movedCost = 0;
+    for (const layer of nextLayers) {
+      if (remaining <= 0.00005) break;
+      const warehouse = layer.warehouse || productData.warehouse;
+      const available = Number(layer.remainingQty);
+      const cost = Number(layer.totalCostIrr);
+      if (warehouse !== fromWarehouse || !Number.isFinite(available) || available <= 0 || !Number.isFinite(cost) || cost < 0) continue;
+      const take = roundQty(Math.min(available, remaining));
+      const takeCost = take >= available - 0.00005 ? Math.round(cost) : Math.round(cost * take / available);
+      layer.remainingQty = roundQty(Math.max(0, available - take));
+      layer.totalCostIrr = Math.max(0, Math.round(cost - takeCost));
+      movedCost += takeCost;
+      moved.push({
+        layerId: `trf_${transferId}_${String(layer.layerId)}`,
+        date,
+        sourceRef: layer.sourceRef,
+        warehouse: `در راه → ${toWarehouse}`,
+        originalQty: take,
+        remainingQty: take,
+        unitCostIrr: take > 0 ? Math.round(takeCost / take) : Number(layer.unitCostIrr) || 0,
+        totalCostIrr: takeCost,
+      });
+      remaining = roundQty(Math.max(0, remaining - take));
+    }
+    if (remaining > 0.0001 || !moved.length) throw new HttpsError('failed-precondition', 'موجودی کافی در انبار مبدأ وجود ندارد.');
+    const cleanLayers = [...nextLayers.filter((l) => Number(l.remainingQty) > 0.00005), ...moved];
+    const transfer = {
+      id: transferId, transferNumber: transferNumber.trim(), date, productId,
+      sku: String(productData.sku || ''), productName: String(productData.name || ''),
+      fromWarehouse: fromWarehouse.trim(), toWarehouse: toWarehouse.trim(),
+      qty: roundQty(qty), transferredCostIrr: movedCost,
+      transferredLayers: moved.map(({ warehouse: _warehouse, date: _date, originalQty: _originalQty, unitCostIrr: _unitCostIrr, ...layer }) => layer),
+      status: 'in_transit', operatorName: operatorName || '', notes: notes || '',
+    };
+    const now = FieldValue.serverTimestamp();
+    if (nativeMode) {
+      const payload = { ...productData, costLayers: cleanLayers };
+      validateCoreWorkspacePayload('products', payload, workspaceId);
+      productVersion += 1;
+      tx.update(productRef, { payload, sourceHash: workspaceMigrationHash(payload), version: productVersion, updatedAt: now });
+    } else tx.update(productRef, { costLayers: cleanLayers, updatedAt: now });
+    tx.update(extensionRef, {
+      trackedWarehouseTransfers: [...transfers, transfer].slice(-100),
+      _version: Math.max(0, Number(ext._version) || 0) + 1,
+      updatedAt: now,
+    });
+    return { status: 'committed', transfer, productVersion };
+  });
+});
+
 /** Atomically receives an in-transit warehouse transfer and moves its FIFO layers. */
 export const receiveTrackedWarehouseTransfer = onCall({ region: REGION, timeoutSeconds: 60 }, async (request) => {
   const auth = request.auth as CallableAuth | undefined;
