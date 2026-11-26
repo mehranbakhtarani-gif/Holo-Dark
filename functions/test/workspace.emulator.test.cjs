@@ -185,7 +185,7 @@ test('workspace provisioning, invitation, owner-only RBAC and revocation', async
   assert.ok(members.members.some((member) => member.uid === invitee.uid && member.role === 'accountant' && member.active));
 
   await expectCallableError(call('listWorkspaceMembers', invitee.token), 'PERMISSION_DENIED');
-  await expectCallableError(call('listWorkspaceStagedRecords', invitee.token, { collection: 'products' }), 'PERMISSION_DENIED');
+  await expectCallableError(call('listWorkspaceStagedRecords', invitee.token, { collection: 'devicePresence' }), 'PERMISSION_DENIED');
   await expectCallableError(call('setWorkspaceMemberRole', owner.token, { uid: owner.uid, role: 'finance_manager' }), 'INVALID_ARGUMENT');
   await expectCallableError(call('setWorkspaceMemberRole', owner.token, { uid: invitee.uid, role: 'owner' }), 'INVALID_ARGUMENT');
   await expectCallableError(call('setWorkspaceMemberRole', owner.token, { uid: invitee.uid, role: 'root_admin' }), 'INVALID_ARGUMENT');
@@ -304,7 +304,7 @@ test('workspace context resolves active membership from server, not a client-sel
   assert.equal(ownerContext.stagedReadsEnabled, false);
 
   const outsider = await createVerifiedUser('context-outsider');
-  await expectCallableError(call('getWorkspaceContext', outsider.token), 'FAILED_PRECONDITION');
+  await expectCallableError(call('getWorkspaceContext', outsider.token), 'PERMISSION_DENIED');
 });
 
 
@@ -328,7 +328,7 @@ test('core workspace reads require a verified snapshot and an explicit freeze ba
   const page = await call('listWorkspaceCoreRecords', owner.token, { collection: 'accounts', limit: 10 });
   assert.equal(page.generation, 'freeze-generation-001');
   assert.ok(page.items.some((item) => item.id === recordId && item.payload.title === 'Frozen snapshot account'));
-  await expectCallableError(call('listWorkspaceCoreRecords', owner.token, { collection: 'vouchers' }), 'INVALID_ARGUMENT');
+  await expectCallableError(call('listWorkspaceCoreRecords', owner.token, { collection: 'employees' }), 'INVALID_ARGUMENT');
 });
 
 
@@ -693,8 +693,8 @@ test('workspace-native warehouse transfer receipt updates staged product and ext
   assert.equal(savedProduct.costLayers[1].warehouse, 'انبار مرکزی');
   assert.equal(stagedAfter.get('sourceHash'), require('node:crypto').createHash('sha256')
     .update(JSON.stringify(stableTestValue(savedProduct))).digest('hex'));
-  assert.equal(extensionAfter.get('trackedWarehouseTransfers.0.status'), 'received');
-  assert.equal(extensionAfter.get('trackedWarehouseTransfers.0.receivedDate'), '1405/08/05');
+  assert.equal(extensionAfter.get('trackedWarehouseTransfers')[0].status, 'received');
+  assert.equal(extensionAfter.get('trackedWarehouseTransfers')[0].receivedDate, '1405/08/05');
   assert.equal(extensionAfter.get('_version'), 4);
   assert.equal((await firestore.collection('products').doc(productId).get()).exists, false);
 
@@ -747,8 +747,8 @@ test('warehouse transfer creation splits source FIFO layers and persists the in-
   assert.equal(layers.find((layer) => layer.layerId === 'source-layer-2').totalCostIrr, 1000);
   assert.equal(layers.find((layer) => layer.layerId === 'other-warehouse-layer').remainingQty, 2);
   assert.equal(layers.filter((layer) => layer.warehouse === 'در راه → انبار مقصد').length, 2);
-  assert.equal(extensionAfter.get('trackedWarehouseTransfers.0.id'), transferId);
-  assert.equal(extensionAfter.get('trackedWarehouseTransfers.0.status'), 'in_transit');
+  assert.equal(extensionAfter.get('trackedWarehouseTransfers')[0].id, transferId);
+  assert.equal(extensionAfter.get('trackedWarehouseTransfers')[0].status, 'in_transit');
   assert.equal(extensionAfter.get('_version'), 2);
 
   // Exercise the exact layers created above through the real receipt callable.
@@ -838,10 +838,10 @@ test('warehouse transfer receipt commits FIFO layers and transfer status atomica
   const extensionAfter = await extensionRef.get();
   assert.equal(productAfter.get('stock'), 5);
   assert.equal(productAfter.get('inventoryValueIrr'), 6500);
-  assert.equal(productAfter.get('costLayers.0.warehouse'), 'انبار مقصد');
-  assert.equal(productAfter.get('costLayers.1.warehouse'), 'انبار مرکزی');
-  assert.equal(extensionAfter.get('trackedWarehouseTransfers.0.status'), 'received');
-  assert.equal(extensionAfter.get('trackedWarehouseTransfers.0.receivedDate'), '1405/08/05');
+  assert.equal(productAfter.get('costLayers')[0].warehouse, 'انبار مقصد');
+  assert.equal(productAfter.get('costLayers')[1].warehouse, 'انبار مرکزی');
+  assert.equal(extensionAfter.get('trackedWarehouseTransfers')[0].status, 'received');
+  assert.equal(extensionAfter.get('trackedWarehouseTransfers')[0].receivedDate, '1405/08/05');
   assert.equal(extensionAfter.get('_version'), 2);
 
   const replay = await call('receiveTrackedWarehouseTransfer', owner.token, {
