@@ -737,6 +737,14 @@ export const receiveTrackedWarehouseTransfer = onCall({ region: REGION, timeoutS
   return db.runTransaction(async (tx) => {
     const manifestSnap = await tx.get(manifestRef);
     const nativeMode = manifestSnap.exists && manifestSnap.get('coreWriteMode') === 'workspace_native';
+    if (nativeMode && (manifestSnap.get('status') !== 'verified'
+        || manifestSnap.get('coreWritesFrozen') !== true
+        || manifestSnap.get('readBarrier.status') !== 'frozen')) {
+      throw new HttpsError('failed-precondition', 'نوشتن بومی workspace در وضعیت معتبر و قفل‌شده نیست.');
+    }
+    if (!nativeMode && manifestSnap.exists && manifestSnap.get('coreWritesFrozen') === true) {
+      throw new HttpsError('failed-precondition', 'نوشتن کالا در دوره توقف مهاجرت مسدود است.');
+    }
     const productRef = nativeMode ? migrationDestination(workspaceId, 'products').doc(productId) : db.collection('products').doc(productId);
     const [productSnap, extensionSnap] = await Promise.all([tx.get(productRef), tx.get(extensionRef)]);
     if (!productSnap.exists || !extensionSnap.exists) throw new HttpsError('failed-precondition', 'کالا یا سند همگام‌سازی انتقال‌ها در فضای کاری موجود نیست.');
