@@ -27,6 +27,7 @@ import {
   resolveWorkspaceContext,
   listWorkspaceCoreRecords,
   mutateWorkspaceCoreRecord,
+  mutateWorkspaceVoucher,
 } from '../lib/firebase';
 import type { WorkspaceContextResult } from '../lib/firebase';
 import {
@@ -1363,8 +1364,16 @@ export const AccountingProvider: React.FC<{ children: React.ReactNode }> = ({ ch
       const sameYearMax = vouchers
         .filter((v) => (v.fiscalYear || extractFiscalYearFromDate(v.date)) === voucherFy)
         .reduce((max, v) => Math.max(max, v.voucherNumber || 0), 0);
-      const nextNumber =
-        voucherFy === profile.fiscalYear
+      const workspaceNativeVoucher = Boolean(user && workspaceContext
+        && workspaceContext.workspaceId === user.uid
+        && workspaceContext.coreWritesFrozen
+        && workspaceContext.coreWriteMode === 'workspace_native');
+      if (workspaceNativeVoucher && payload.status !== 'draft') {
+        throw new Error('در Workspace ابتدا سند را به‌صورت پیش‌نویس ثبت و سپس قطعی کنید.');
+      }
+      const nextNumber = workspaceNativeVoucher
+        ? 0
+        : voucherFy === profile.fiscalYear
           ? await reserveNextVoucherNumber(sameYearMax)
           : sameYearMax + 1;
       const id = generateSafeId('vch');
@@ -1416,9 +1425,38 @@ export const AccountingProvider: React.FC<{ children: React.ReactNode }> = ({ ch
           ? { ...baseFull, integrityHash: computeVoucherIntegrityHash(baseFull) }
           : baseFull;
 
+      let committedVoucher = full;
       if (user) {
         try {
-          await setDoc(doc(db, 'vouchers', id), {
+          if (workspaceNativeVoucher) {
+            const result = await mutateWorkspaceVoucher({
+              operation: 'create',
+              documentId: id,
+              operationId: generateSafeId('op'),
+              data: {
+                ownerId,
+                date: full.date.slice(0, 20),
+                fiscalYear: full.fiscalYear,
+                description: full.description,
+                voucherType: full.voucherType,
+                status: 'draft',
+                totalDebit,
+                totalCredit,
+                ...(isFx && safeRate ? {
+                  currencyCode: normCode.slice(0, 10),
+                  exchangeRate: safeRate,
+                  foreignTotalDebit: foreignTotalDebit ?? 0,
+                  foreignTotalCredit: foreignTotalCredit ?? 0,
+                } : {}),
+                ...(full.referenceId ? { referenceId: full.referenceId.slice(0, 128) } : {}),
+                ...(full.reversalOfVoucherId ? { reversalOfVoucherId: full.reversalOfVoucherId } : {}),
+                lines: full.lines,
+                updatedByDevice: deviceId.slice(0, 64),
+              },
+            });
+            committedVoucher = { ...full, voucherNumber: result.voucherNumber, _version: result.version };
+          } else {
+            await setDoc(doc(db, 'vouchers', id), {
             ownerId,
             voucherNumber: nextNumber,
             date: full.date.slice(0, 20),
@@ -1445,6 +1483,7 @@ export const AccountingProvider: React.FC<{ children: React.ReactNode }> = ({ ch
             createdAt: serverTimestamp(),
             updatedAt: serverTimestamp(),
           });
+          }
         } catch (err) {
           handleFirestoreError(err, OperationType.CREATE, `vouchers/${id}`);
         }
@@ -1453,10 +1492,10 @@ export const AccountingProvider: React.FC<{ children: React.ReactNode }> = ({ ch
       }
       showToast(
         isFx
-          ? `سند ارزی شماره ${nextNumber} (${normCode}) با موفقیت ثبت شد.`
-          : `سند حسابداری شماره ${nextNumber} با موفقیت ثبت شد.`
+          ? `سند ارزی شماره ${committedVoucher.voucherNumber} (${normCode}) با موفقیت ثبت شد.`
+          : `سند حسابداری شماره ${committedVoucher.voucherNumber} با موفقیت ثبت شد.`
       );
-      return full;
+      return committedVoucher;
     },
     [
       accounts,
@@ -1712,9 +1751,21 @@ export const AccountingProvider: React.FC<{ children: React.ReactNode }> = ({ ch
       const integrityHash = computeVoucherIntegrityHash(target);
       if (user) {
         try {
-          await updateDoc(doc(db, 'vouchers', voucherId), {
-            status: 'permanent', fiscalYear: fy, integrityHash, updatedAt: serverTimestamp(),
-          });
+          if (workspaceContext && workspaceContext.workspaceId === user.uid
+              && workspaceContext.coreWritesFrozen && workspaceContext.coreWriteMode === 'workspace_native') {
+            const result = await mutateWorkspaceVoucher({
+              operation: 'finalize',
+              documentId: voucherId,
+              operationId: generateSafeId('op'),
+              expectedVersion: target._version ?? 1,
+              integrityHash,
+            });
+            target._version = result.version;
+          } else {
+            await updateDoc(doc(db, 'vouchers', voucherId), {
+              status: 'permanent', fiscalYear: fy, integrityHash, updatedAt: serverTimestamp(),
+            });
+          }
         } catch (err) {
           handleFirestoreError(err, OperationType.UPDATE, `vouchers/${voucherId}`);
           return false;
