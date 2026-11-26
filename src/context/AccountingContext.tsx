@@ -672,6 +672,7 @@ export const AccountingProvider: React.FC<{ children: React.ReactNode }> = ({ ch
   useEffect(() => {
     if (!authReady) return;
     if (!user) {
+      setWorkspaceContext(null);
       let cancelledLocal = false;
 
       const hydrateFallbackLocal = () => {
@@ -911,7 +912,9 @@ export const AccountingProvider: React.FC<{ children: React.ReactNode }> = ({ ch
     };
   }, [authReady, user, ensureCloudSeed, showToast]);
 
-  const ownerId = user?.uid ?? DEMO_OWNER;
+  // For an invited member this is the tenant owner ID, not the member UID.
+  // Until server-backed CRUD adapters are ready, existing root Rules reject member writes (fail closed).
+  const ownerId = workspaceContext?.workspaceId ?? user?.uid ?? DEMO_OWNER;
   const isCloudMode = !!user;
 
   const reportFilterOpts = useMemo(
