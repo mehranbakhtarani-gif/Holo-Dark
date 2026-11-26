@@ -620,10 +620,11 @@ export const mutateWorkspaceVoucher = onCall({ region: REGION, timeoutSeconds: 6
   const operationId = request.data?.operationId;
   const documentId = request.data?.documentId;
   const expectedVersion = request.data?.expectedVersion;
-  if (!['create', 'finalize'].includes(operation)
+  if (!['create', 'update', 'delete', 'finalize'].includes(operation)
       || typeof operationId !== 'string' || !/^[A-Za-z0-9_-]{16,128}$/.test(operationId)
       || typeof documentId !== 'string' || !/^[A-Za-z0-9_-]{1,128}$/.test(documentId)
-      || (operation === 'finalize' && (!Number.isInteger(expectedVersion) || expectedVersion < 1))) {
+      || (['update', 'delete', 'finalize'].includes(String(operation))
+        && (!Number.isInteger(expectedVersion) || expectedVersion < 1))) {
     throw new HttpsError('invalid-argument', 'پارامترهای عملیات سند معتبر نیستند.');
   }
   const manifestRef = db.collection('workspaceMigrations').doc(workspaceId);
@@ -631,7 +632,7 @@ export const mutateWorkspaceVoucher = onCall({ region: REGION, timeoutSeconds: 6
   const operationRef = db.collection('workspaceWriteOperations').doc(`${workspaceId}_voucher_${operationId}`);
   const counterRef = migrationDestination(workspaceId, 'counters').doc(workspaceId);
   const input = request.data?.data as Record<string, unknown> | undefined;
-  if (operation === 'create') {
+  if (operation === 'create' || operation === 'update') {
     if (!input || input.ownerId !== workspaceId || input.status !== 'draft'
         || typeof input.date !== 'string' || typeof input.fiscalYear !== 'string'
         || !input.fiscalYear || input.fiscalYear.length > 16
@@ -655,8 +656,8 @@ export const mutateWorkspaceVoucher = onCall({ region: REGION, timeoutSeconds: 6
     }
   }
   const requestHash = createHash('sha256').update(JSON.stringify(stableMigrationValue({
-    operation, documentId, expectedVersion: operation === 'finalize' ? expectedVersion : null,
-    data: operation === 'create' ? input : null,
+    operation, documentId, expectedVersion: ['update', 'delete', 'finalize'].includes(String(operation)) ? expectedVersion : null,
+    data: ['create', 'update'].includes(String(operation)) ? input : null,
     integrityHash: operation === 'finalize' ? request.data?.integrityHash : null,
   }))).digest('hex');
   return db.runTransaction(async (tx) => {
@@ -675,6 +676,41 @@ export const mutateWorkspaceVoucher = onCall({ region: REGION, timeoutSeconds: 6
       return { status: 'replayed', operationId, version: operationSnap.get('resultVersion'), voucherNumber: operationSnap.get('voucherNumber') };
     }
     const now = FieldValue.serverTimestamp();
+    if (operation === 'update' || operation === 'delete') {
+      if (!voucherSnap.exists || voucherSnap.get('deleted') === true) {
+        throw new HttpsError('not-found', 'سند موردنظر یافت نشد.');
+      }
+      const currentVersion = Number(voucherSnap.get('version') || 1);
+      if (currentVersion !== expectedVersion) {
+        throw new HttpsError('aborted', 'نسخه سند تغییر کرده است؛ ابتدا اطلاعات را تازه‌سازی کنید.', { expectedVersion, currentVersion });
+      }
+      const currentPayload = voucherSnap.get('payload') as Record<string, unknown>;
+      if (currentPayload.status !== 'draft') {
+        throw new HttpsError('failed-precondition', 'فقط سند پیش‌نویس قابل ویرایش یا حذف است.');
+      }
+      const nextVersion = currentVersion + 1;
+      if (operation === 'delete') {
+        tx.set(voucherRef, {
+          ...voucherSnap.data(), version: nextVersion, deleted: true, updatedAt: now,
+          deletedAt: now, deletedBy: auth.uid,
+        });
+      } else {
+        const nextPayload = {
+          ...input!, voucherNumber: currentPayload.voucherNumber,
+          createdAt: currentPayload.createdAt || voucherSnap.get('createdAt') || now,
+          updatedAt: now, _version: nextVersion,
+        };
+        tx.set(voucherRef, {
+          ...voucherSnap.data(), version: nextVersion, deleted: false,
+          sourceHash: workspaceMigrationHash(nextPayload), payload: nextPayload, updatedAt: now,
+        });
+      }
+      tx.create(operationRef, {
+        workspaceId, uid: auth.uid, collection: 'vouchers', documentId, operation,
+        requestHash, resultVersion: nextVersion, voucherNumber: currentPayload.voucherNumber, createdAt: now,
+      });
+      return { status: 'committed', operationId, version: nextVersion, voucherNumber: currentPayload.voucherNumber };
+    }
     if (operation === 'create') {
       if (voucherSnap.exists) throw new HttpsError('already-exists', 'شناسه سند از قبل وجود دارد.');
       const fiscalYear = String(input!.fiscalYear);
