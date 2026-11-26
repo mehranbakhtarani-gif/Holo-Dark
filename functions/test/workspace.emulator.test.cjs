@@ -208,19 +208,17 @@ test('workspace provisioning, invitation, owner-only RBAC and revocation', async
     'PERMISSION_DENIED',
   );
   await call('setWorkspaceMemberRole', owner.token, { uid: invitee.uid, role: 'accountant' });
-  const accountantPage = await call('listWorkspaceStagedRecords', invitee.token, {
+  await expectCallableError(call('listWorkspaceStagedRecords', invitee.token, {
     collection: 'accounts', limit: 10,
-  });
-  assert.ok(accountantPage.items.some((item) => item.id === ownerAccountId));
+  }), 'FAILED_PRECONDITION');
   await call('setWorkspaceMemberRole', owner.token, { uid: invitee.uid, role: 'warehouse_keeper' });
   await expectCallableError(
     call('listWorkspaceStagedRecords', invitee.token, { collection: 'accounts' }),
     'PERMISSION_DENIED',
   );
-  const warehousePage = await call('listWorkspaceStagedRecords', invitee.token, {
+  await expectCallableError(call('listWorkspaceStagedRecords', invitee.token, {
     collection: 'products', limit: 10,
-  });
-  assert.equal(warehousePage.collection, 'products');
+  }), 'FAILED_PRECONDITION');
 
   await call('revokeWorkspaceMember', owner.token, { uid: invitee.uid });
   const revoked = await call('listWorkspaceMembers', owner.token);
