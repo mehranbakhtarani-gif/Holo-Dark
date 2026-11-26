@@ -343,10 +343,14 @@ export const LocalStorageMeshSettingsPanel: React.FC<{
           <div className="flex-1 space-y-1">
             <label className="text-[11px] font-semibold text-slate-700 dark:text-slate-300 flex items-center gap-1.5">
               <KeyRound className="w-3.5 h-3.5 text-teal-600" />
-              <span>کلید امنیتی مشترک شبکه خصوصی ۳ دستگاه (Auth Passphrase)</span>
+              <span>کلید امنیتی مشترک شبکه خصوصی ۳ دستگاه (حداقل ۱۶ نویسه)</span>
             </label>
+            <p className="text-[10px] text-slate-500 dark:text-slate-400">یک عبارت طولانی و تصادفی انتخاب کنید و آن را به‌صورت امن روی هر سه دستگاه وارد کنید. کلید پیش‌فرض عمومی وجود ندارد.</p>
             <input
-              type="text"
+              type="password"
+              autoComplete="new-password"
+              minLength={16}
+              placeholder="حداقل ۱۶ نویسه تصادفی؛ در هر سه دستگاه یکسان"
               value={passphraseDraft}
               onChange={(e) => setPassphraseDraft(e.target.value)}
               dir="ltr"
