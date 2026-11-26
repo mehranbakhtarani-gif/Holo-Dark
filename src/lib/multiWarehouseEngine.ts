@@ -590,6 +590,102 @@ export function computeWarehouseProductKardex(params: {
   });
 }
 
+export interface WarehouseKardexReconciliation {
+  warehouse: string;
+  productId: string;
+  openingQty: number;
+  openingValueIrr: number;
+  kardexQty: number;
+  kardexValueIrr: number;
+  physicalQty: number;
+  physicalValueIrr: number;
+  quantityDifference: number;
+  valueDifferenceIrr: number;
+  isQuantityBalanced: boolean;
+  isValueBalanced: boolean;
+  isBalanced: boolean;
+}
+
+/**
+ * Reconciles a warehouse Kardex against its current physical FIFO layers.
+ * Opening balances must represent the balance immediately before the supplied
+ * invoices/transfers; in-transit layers are excluded from physical warehouse stock.
+ */
+export function reconcileWarehouseKardex(params: {
+  product: Product;
+  warehouse: string;
+  invoices: Invoice[];
+  transfers?: TrackedWarehouseTransfer[];
+  openingQty: number;
+  openingValueIrr: number;
+  defaultCostingMethod?: InventoryCostingMethod;
+}): WarehouseKardexReconciliation {
+  const {
+    product,
+    warehouse,
+    invoices,
+    transfers = [],
+    openingQty,
+    openingValueIrr,
+    defaultCostingMethod = 'moving_average',
+  } = params;
+  if (!Number.isFinite(openingQty) || openingQty < 0) {
+    throw new Error('موجودی افتتاحیه کاردکس باید عددی معتبر و غیرمنفی باشد.');
+  }
+  if (!Number.isSafeInteger(openingValueIrr) || openingValueIrr < 0) {
+    throw new Error('ارزش افتتاحیه کاردکس باید مبلغ صحیح و غیرمنفی باشد.');
+  }
+
+  const rows = computeWarehouseProductKardex({ product, warehouse, invoices, transfers });
+  const movementQty = rows.reduce((sum, row) => sum + row.inQty - row.outQty, 0);
+  const movementValueIrr = rows.reduce(
+    (sum, row) => addIrr(sum, row.inQty > 0 ? row.valueIrr : -row.valueIrr),
+    0
+  );
+  const kardexQty = roundQtyFixed(openingQty + movementQty, 4);
+  const kardexValueIrr = addIrr(openingValueIrr, movementValueIrr);
+
+  const state = normalizeProductCostState(product, defaultCostingMethod);
+  const physicalLayers = state.layers.filter((layer) => {
+    const layerWarehouse = layer.warehouse || product.warehouse || 'انبار مرکزی';
+    return layerWarehouse === warehouse && !layerWarehouse.startsWith('در راه → ');
+  });
+  const physicalQty = roundQtyFixed(
+    physicalLayers.length > 0
+      ? physicalLayers.reduce((sum, layer) => sum + layer.remainingQty, 0)
+      : state.layers.length === 0 && product.warehouse === warehouse
+        ? product.stock
+        : 0,
+    4
+  );
+  const physicalValueIrr = physicalLayers.length > 0
+    ? sumIrr(physicalLayers.map((layer) => layer.totalCostIrr))
+    : state.layers.length === 0 && product.warehouse === warehouse
+      ? toExactIrr(product.inventoryValueIrr ?? mulQtyByIrr(product.stock, product.buyPrice))
+      : 0;
+
+  const quantityDifference = roundQtyFixed(kardexQty - physicalQty, 4);
+  const valueDifferenceIrr = subIrr(kardexValueIrr, physicalValueIrr);
+  const isQuantityBalanced = Math.abs(quantityDifference) < 0.0001;
+  const isValueBalanced = Math.abs(valueDifferenceIrr) <= 1;
+
+  return {
+    warehouse,
+    productId: product.id,
+    openingQty: roundQtyFixed(openingQty, 4),
+    openingValueIrr: toExactIrr(openingValueIrr),
+    kardexQty,
+    kardexValueIrr,
+    physicalQty,
+    physicalValueIrr,
+    quantityDifference,
+    valueDifferenceIrr,
+    isQuantityBalanced,
+    isValueBalanced,
+    isBalanced: isQuantityBalanced && isValueBalanced,
+  };
+}
+
 /**
  * Evaluates physical stocktake count vs book stock for shortage/surplus control.
  */
