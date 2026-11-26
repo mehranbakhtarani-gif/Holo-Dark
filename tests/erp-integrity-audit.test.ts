@@ -792,6 +792,14 @@ test('6. Multi-Warehouse Physical/Reserved/Available/In-Transit, Tracked Transfe
     'In-transit valuation is attributed to the destination summary without physical quantity');
   assert.equal(matrix.totalPhysicalValuationIrr, 400_000_000,
     'The inventory asset valuation still includes the goods in transit');
+  assert.equal(matrix.totalInventoryValuationIrr, 400_000_000);
+  assert.equal(matrix.reconciliation.length, 1);
+  assert.equal(matrix.reconciliation[0].physicalQty, 90);
+  assert.equal(matrix.reconciliation[0].inTransitQty, 10);
+  assert.equal(matrix.reconciliation[0].accountedQty, 100);
+  assert.equal(matrix.reconciliation[0].accountedValueIrr, 400_000_000);
+  assert.equal(matrix.reconciliation[0].isBalanced, true,
+    'Physical plus in-transit FIFO layers must reconcile to product stock and inventory asset value');
 
   // Per-warehouse Kardex
   const shadKardex = computeWarehouseProductKardex({
@@ -814,6 +822,53 @@ test('6. Multi-Warehouse Physical/Reserved/Available/In-Transit, Tracked Transfe
   assert.equal(shortage.kind, 'shortage');
   assert.equal(shortage.varianceQty, -3);
   assert.equal(shortage.varianceValueIrr, -12_000_000);
+});
+
+test('A fully depleted transfer source remains visible and reconciles physical plus in-transit FIFO stock', () => {
+  const product: Product = {
+    id: 'prod_fully_transferred',
+    ownerId: 'owner_test',
+    sku: 'TRF-FULL',
+    name: 'کالای انتقال کامل',
+    category: 'آزمایشی',
+    unit: 'عدد',
+    warehouse: 'انبار مبدأ',
+    buyPrice: 200,
+    sellPrice: 300,
+    stock: 5,
+    reorderPoint: 0,
+    vatExempt: true,
+    inventoryValueIrr: 1_000,
+    costingMethod: 'fifo',
+    costLayers: [
+      { layerId: 'only_source_layer', date: '1405/01/01', sourceRef: 'purchase_full', warehouse: 'انبار مبدأ', originalQty: 5, remainingQty: 5, unitCostIrr: 200, totalCostIrr: 1_000 },
+    ],
+  };
+  const transfer = executeTrackedWarehouseTransfer({
+    product,
+    fromWarehouse: 'انبار مبدأ',
+    toWarehouse: 'انبار مقصد',
+    qty: 5,
+    date: '1405/01/02',
+    transferNumber: 'TRF-FULL-001',
+    mode: 'in_transit',
+    defaultCostingMethod: 'fifo',
+  });
+  const matrix = computeMultiWarehouseMatrix({
+    products: [transfer.updatedProduct],
+    transfers: [transfer.transferRecord],
+    defaultCostingMethod: 'fifo',
+  });
+  const source = matrix.positions.find((position) => position.warehouse === 'انبار مبدأ');
+  const destination = matrix.positions.find((position) => position.warehouse === 'انبار مقصد');
+  assert.ok(source && destination);
+  assert.equal(source.physicalQty, 0);
+  assert.equal(source.inTransitOutQty, 5);
+  assert.equal(destination.physicalQty, 0);
+  assert.equal(destination.inTransitInQty, 5);
+  assert.equal(matrix.reconciliation[0].isBalanced, true);
+  assert.equal(matrix.reconciliation[0].accountedQty, 5);
+  assert.equal(matrix.reconciliation[0].accountedValueIrr, 1_000);
 });
 
 test('Receiving an in-transit transfer moves only its exact FIFO layers and preserves valuation', () => {
