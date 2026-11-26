@@ -3784,6 +3784,7 @@ export function planInvoiceCancellation(input: {
   products: Product[];
   vouchers: Voucher[];
   cheques: Cheque[];
+  existingInvoices?: Invoice[];
   costingMethod?: InventoryCostingMethod;
   closedFiscalYears?: string[];
   ownerId: string;
@@ -3797,6 +3798,7 @@ export function planInvoiceCancellation(input: {
     products,
     vouchers,
     cheques,
+    existingInvoices = [],
     costingMethod = 'fifo',
     closedFiscalYears = [],
     ownerId,
@@ -3810,6 +3812,19 @@ export function planInvoiceCancellation(input: {
   }
   if (!isValidShamsiDate(cancellationDate)) {
     throw new Error(`تاریخ ابطال فاکتور («${cancellationDate}») فرمت شمسی معتبر ندارد.`);
+  }
+  if (invoice.invoiceType === 'sale' || invoice.invoiceType === 'purchase') {
+    const activeReturns = existingInvoices.filter(
+      (candidate) =>
+        candidate.status !== 'cancelled' &&
+        candidate.sourceInvoiceId === invoice.id &&
+        (candidate.invoiceType === 'sale_return' || candidate.invoiceType === 'purchase_return')
+    );
+    if (activeReturns.length > 0) {
+      throw new Error(
+        `ابطال فاکتور ${invoice.invoiceNumber} مجاز نیست؛ ابتدا ${activeReturns.length} فاکتور برگشت فعال مرتبط را ابطال کنید.`
+      );
+    }
   }
 
   const invFy = extractFiscalYearFromDate(invoice.date);
