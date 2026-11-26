@@ -684,6 +684,36 @@ test('warehouse transfer creation splits source FIFO layers and persists the in-
   assert.equal(extensionAfter.get('trackedWarehouseTransfers.0.id'), transferId);
   assert.equal(extensionAfter.get('trackedWarehouseTransfers.0.status'), 'in_transit');
   assert.equal(extensionAfter.get('_version'), 2);
+
+  // Exercise the exact layers created above through the real receipt callable.
+  const received = await call('receiveTrackedWarehouseTransfer', owner.token, {
+    productId, transferId, receivedDate: '1405/08/02',
+  });
+  assert.equal(received.status, 'committed');
+  const receivedProduct = await firestore.collection('products').doc(productId).get();
+  const receivedExtension = await extensionRef.get();
+  assert.equal(receivedProduct.get('stock'), 7);
+  assert.equal(receivedProduct.get('inventoryValueIrr'), 10000);
+  assert.equal(receivedProduct.get('costLayers').filter((layer) => layer.warehouse === 'انبار مقصد')
+    .reduce((sum, layer) => sum + layer.remainingQty, 0), 4);
+  assert.equal(receivedProduct.get('costLayers').filter((layer) => layer.warehouse === 'در راه → انبار مقصد').length, 0);
+  assert.equal(receivedProduct.get('costLayers').find((layer) => layer.layerId === 'other-warehouse-layer').warehouse, 'انبار دیگر');
+  assert.equal(receivedExtension.get('trackedWarehouseTransfers.0.status'), 'received');
+  assert.equal(receivedExtension.get('trackedWarehouseTransfers.0.receivedDate'), '1405/08/02');
+  assert.equal(receivedExtension.get('_version'), 3);
+
+  const receiptReplay = await call('receiveTrackedWarehouseTransfer', owner.token, {
+    productId, transferId, receivedDate: '1405/08/02',
+  });
+  assert.equal(receiptReplay.status, 'replayed');
+  const creationReplay = await call('createTrackedWarehouseTransfer', owner.token, {
+    productId, transferId, transferNumber: 'TR-CREATE-01',
+    fromWarehouse: 'انبار مرکزی', toWarehouse: 'انبار مقصد',
+    qty: 4, date: '1405/08/01',
+  });
+  assert.equal(creationReplay.status, 'replayed');
+  assert.equal(creationReplay.transfer.status, 'received');
+
   await expectCallableError(call('createTrackedWarehouseTransfer', owner.token, {
     productId, transferId: `trf-create-replay-${owner.uid}`, transferNumber: 'TR-OVER',
     fromWarehouse: 'انبار مرکزی', toWarehouse: 'انبار مقصد',
