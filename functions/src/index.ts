@@ -140,23 +140,41 @@ export const sequenceSyncedWarehouseTransferEvents = onDocumentWritten(
       const counterSnap = await tx.get(counterRef);
       let nextSequence = Math.max(0, Number(counterSnap.data()?.lastInventorySequence) || 0);
 
-      // Extension arrays are newest-first in the UI. Reverse traversal gives the
-      // oldest visible pending transfer first, while the sync provenance preserves ambiguity.
-      for (let i = nextTransfers.length - 1; i >= 0; i -= 1) {
-        const transfer = nextTransfers[i];
+      const pendingEvents: Array<{
+        transfer: Record<string, unknown>;
+        kind: 'dispatch' | 'receipt';
+        timestamp: number;
+        id: string;
+      }> = [];
+      for (const transfer of nextTransfers) {
         if (!transfer || typeof transfer.id !== 'string' || !transfer.id
             || typeof transfer.productId !== 'string' || !transfer.productId
             || !Number.isFinite(Number(transfer.qty)) || Number(transfer.qty) <= 0) continue;
-
+        const parsedTimestamp = typeof transfer.updatedAt === 'string'
+          ? Date.parse(transfer.updatedAt)
+          : Number.NaN;
+        const timestamp = Number.isFinite(parsedTimestamp) ? parsedTimestamp : 0;
         if (!Number.isSafeInteger(transfer.eventSequence)) {
-          nextSequence += 1;
-          transfer.eventSequence = nextSequence;
-          transfer.eventSequenceSource = 'sync';
+          pendingEvents.push({ transfer, kind: 'dispatch', timestamp, id: transfer.id });
         }
         if (transfer.status === 'received' && !Number.isSafeInteger(transfer.receivedEventSequence)) {
+          pendingEvents.push({ transfer, kind: 'receipt', timestamp, id: transfer.id });
+        }
+      }
+      // Use a deterministic acceptance order, not array insertion order. The sync
+      // provenance still marks these numbers as ambiguous relative to offline actions.
+      pendingEvents.sort((a, b) =>
+        a.timestamp - b.timestamp || a.id.localeCompare(b.id) || a.kind.localeCompare(b.kind)
+      );
+      for (const pending of pendingEvents) {
+        if (pending.kind === 'dispatch' && !Number.isSafeInteger(pending.transfer.eventSequence)) {
           nextSequence += 1;
-          transfer.receivedEventSequence = nextSequence;
-          transfer.receivedEventSequenceSource = 'sync';
+          pending.transfer.eventSequence = nextSequence;
+          pending.transfer.eventSequenceSource = 'sync';
+        } else if (pending.kind === 'receipt' && !Number.isSafeInteger(pending.transfer.receivedEventSequence)) {
+          nextSequence += 1;
+          pending.transfer.receivedEventSequence = nextSequence;
+          pending.transfer.receivedEventSequenceSource = 'sync';
         }
       }
 
