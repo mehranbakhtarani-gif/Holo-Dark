@@ -70,3 +70,7 @@ This repository currently has no trusted server provisioning path. Enforcing cus
 - No email delivery provider is configured; invitation tokens require secure manual delivery.
 - Firestore rules have intentionally NOT been broadened to workspace members. This avoids accidentally opening every accounting collection before migration and emulator verification.
 - Functions have not been installed, compiled, emulator-tested or deployed. The source is a provisioning foundation, not a completed multi-user authorization rollout.
+
+
+### Named Firestore client decision
+The Functions access the existing named database through `@google-cloud/firestore` with explicit `projectId` and `databaseId`; they do not use the Firebase Admin SDK's named-database `getFirestore(app, databaseId)` API, which is documented as preview. Firebase Admin remains responsible for Auth custom claims.
