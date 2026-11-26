@@ -17,7 +17,7 @@ async function sha256Hex(value: string): Promise<string> {
 
 /** Stable SHA-256 fingerprint that ignores the export-time timestamp. */
 export async function fingerprintWorkspacePayload(rawJson: string): Promise<string> {
-  const normalized = rawJson.replace(/"exportedAt"\\s*:\\s*"[^"]*"/, '"exportedAt":""');
+  const normalized = rawJson.replace(/"exportedAt"\s*:\s*"[^"]*"/, '"exportedAt":""');
   const digest = await sha256Hex(normalized);
   return `${normalized.length}_${digest}`;
 }
