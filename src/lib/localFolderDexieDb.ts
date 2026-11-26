@@ -594,6 +594,32 @@ export async function enqueueDexieOutboxItem(
   }
 }
 
+/**
+ * Strict outbox write used by the mesh receive path. Legacy enqueue remains
+ * best-effort for UI/background callers; inbound relay ACKs require a verified
+ * record in IndexedDB before the operation can be acknowledged upstream.
+ */
+export async function enqueueDexieOutboxItemDurably(
+  item: Omit<MeshSyncOutboxItem, 'id' | 'createdAt' | 'updatedAt'>
+): Promise<MeshSyncOutboxItem> {
+  const db = getMeshDexieDb();
+  if (!db) throw new Error('Mesh IndexedDB is unavailable; outbox operation was not persisted');
+
+  await enqueueDexieOutboxItem(item);
+  const persisted = await db.syncOutbox.where('operationId').equals(item.operationId).first();
+  if (
+    !persisted ||
+    persisted.target !== item.target ||
+    persisted.payloadHash !== item.payloadHash ||
+    persisted.snapshotJson !== item.snapshotJson ||
+    !item.requiredPeers.every((peerId) => persisted.requiredPeers.includes(peerId)) ||
+    !item.deliveredToPeers.every((peerId) => persisted.deliveredToPeers.includes(peerId))
+  ) {
+    throw new Error('Mesh outbox persistence verification failed');
+  }
+  return persisted;
+}
+
 export async function listDexieOutboxItems(): Promise<MeshSyncOutboxItem[]> {
   const db = getMeshDexieDb();
   if (!db) return [];
