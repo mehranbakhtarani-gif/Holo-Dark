@@ -23,6 +23,7 @@ import {
   readMirrorFromSelectedFolder,
   requestDirectoryPermission,
   requestPersistentDeviceStorage,
+  safeParseJsonObject,
   saveSnapshotFallbackToDownloads,
   tagSnapshotWithSyncMetadata,
   updateDexieOutboxItem,
