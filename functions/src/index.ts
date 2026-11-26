@@ -486,7 +486,7 @@ export const verifyWorkspaceDataMigration = onCall({ region: REGION, timeoutSeco
     }
     const collectionName = WORKSPACE_MIGRATION_COLLECTIONS[index];
     let query = db.collection(collectionName).where('ownerId', '==', workspaceId)
-      .orderBy('__name__').limit(MIGRATION_PAGE_SIZE);
+      .orderBy(FieldPath.documentId()).limit(MIGRATION_PAGE_SIZE);
     const cursor = manifest.get('verifyLastDocumentId');
     if (typeof cursor === 'string' && cursor) query = query.startAfter(cursor);
     const page = await tx.get(query);
@@ -502,6 +502,10 @@ export const verifyWorkspaceDataMigration = onCall({ region: REGION, timeoutSeco
     }
     verifiedCounts[collectionName] = (verifiedCounts[collectionName] || 0) + page.size;
     const reachedEnd = page.size < MIGRATION_PAGE_SIZE;
+    const copiedCounts = (manifest.get('copiedCounts') || {}) as Record<string, number>;
+    if (reachedEnd && (copiedCounts[collectionName] || 0) !== verifiedCounts[collectionName]) {
+      throw new HttpsError('data-loss', `تعداد رکوردهای ${collectionName} با نسخه staging برابر نیست.`);
+    }
     const nextIndex = reachedEnd ? index + 1 : index;
     tx.update(migrationRef, {
       verifiedCounts,
