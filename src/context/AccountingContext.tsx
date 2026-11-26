@@ -2442,6 +2442,9 @@ export const AccountingProvider: React.FC<{ children: React.ReactNode }> = ({ ch
           batch.update(doc(db, 'products', prod.id), {
             stock: prod.stock,
             buyPrice: prod.buyPrice,
+            costingMethod: prod.costingMethod ?? profile.defaultCostingMethod ?? 'moving_average',
+            costLayers: prod.costLayers ?? [],
+            inventoryValueIrr: prod.inventoryValueIrr ?? 0,
             _version: prod._version ?? 2,
             updatedByDevice: deviceId.slice(0, 64),
             updatedAt: serverTimestamp(),
@@ -2493,6 +2496,13 @@ export const AccountingProvider: React.FC<{ children: React.ReactNode }> = ({ ch
                         ...base,
                         stock: Number(d.stock) || 0,
                         buyPrice: Number(d.buyPrice) || 0,
+                        costingMethod: d.costingMethod === 'fifo' || d.costingMethod === 'moving_average' || d.costingMethod === 'periodic_average'
+                          ? d.costingMethod
+                          : base?.costingMethod,
+                        costLayers: Array.isArray(d.costLayers) ? d.costLayers : (base?.costLayers ?? []),
+                        inventoryValueIrr: typeof d.inventoryValueIrr === 'number'
+                          ? d.inventoryValueIrr
+                          : (base?.inventoryValueIrr ?? 0),
                         _version: Number(d._version) || 1,
                       });
                     }
@@ -2545,6 +2555,9 @@ export const AccountingProvider: React.FC<{ children: React.ReactNode }> = ({ ch
                 tx.update(doc(db, 'products', prod.id), {
                   stock: prod.stock,
                   buyPrice: prod.buyPrice,
+                  costingMethod: prod.costingMethod ?? profile.defaultCostingMethod ?? 'moving_average',
+                  costLayers: prod.costLayers ?? [],
+                  inventoryValueIrr: prod.inventoryValueIrr ?? 0,
                   _version: prod._version ?? 2,
                   updatedByDevice: deviceId.slice(0, 64),
                   updatedAt: serverTimestamp(),
