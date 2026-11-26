@@ -302,6 +302,47 @@ test('core freeze blocks bridge writes and reconciliation seals only an exact sn
   assert.equal(page.generation, freeze.generation);
 });
 
+test('workspace-native core writes activate only after reconciliation and enforce versions', async () => {
+  const owner = await createVerifiedUser('native-core-owner');
+  await call('bootstrapWorkspace', owner.token);
+  await refreshUserToken(owner);
+  const now = Timestamp.now();
+  const accountId = `native-account-${owner.uid}`;
+  const account = { ownerId: owner.uid, code: '99401', title: 'Native account', level: 'kol', category: 'asset', nature: 'debit', isSystem: false, createdAt: now, updatedAt: now };
+  await firestore.collection('accounts').doc(accountId).set(account);
+  const manifestRef = firestore.collection('workspaceMigrations').doc(owner.uid);
+  await manifestRef.set({ workspaceId: owner.uid, status: 'verified' });
+  await firestore.collection('workspaces').doc(owner.uid).collection('migrationData').doc('accounts').collection('records').doc(accountId).set({
+    workspaceId: owner.uid, sourceCollection: 'accounts', sourceId: accountId,
+    sourceHash: require('node:crypto').createHash('sha256').update(JSON.stringify(stableTestValue(account))).digest('hex'),
+    schemaVersion: 1, payload: account,
+  });
+  await firestore.collection('workspaces').doc(owner.uid).collection('migrationData').doc('products').collection('records').doc('unused').set({
+    workspaceId: owner.uid, sourceCollection: 'products', sourceId: 'unused',
+    sourceHash: 'fixture', schemaVersion: 1, payload: { fixture: true },
+  });
+  // Keep source and staging counts equal for both core collections.
+  await firestore.collection('workspaces').doc(owner.uid).collection('migrationData').doc('products').collection('records').doc('unused').delete();
+  await call('freezeWorkspaceCoreWrites', owner.token);
+  await call('reconcileWorkspaceCoreSnapshot', owner.token);
+  const activated = await call('activateWorkspaceCoreWrites', owner.token);
+  assert.equal(activated.status, 'active');
+  const updated = { ...account, title: 'Workspace-native title', updatedAt: Timestamp.now() };
+  const operationId = randomUUID().replace(/-/g, '');
+  const write = await call('mutateWorkspaceCoreRecord', owner.token, {
+    collection: 'accounts', documentId: accountId, operation: 'update',
+    operationId, expectedVersion: 1, data: updated,
+  });
+  assert.equal(write.version, 2);
+  assert.equal((await firestore.collection('accounts').doc(accountId).get()).get('title'), 'Native account');
+  await expectCallableError(call('mutateWorkspaceCoreRecord', owner.token, {
+    collection: 'accounts', documentId: accountId, operation: 'update',
+    operationId: randomUUID().replace(/-/g, ''), expectedVersion: 1, data: updated,
+  }), 'ABORTED');
+  const page = await call('listWorkspaceCoreRecords', owner.token, { collection: 'accounts', limit: 10 });
+  assert.ok(page.items.some((item) => item.id === accountId && item.version === 2 && item.payload.title === 'Workspace-native title'));
+});
+
 test('core reconciliation keeps the read barrier closed when source and staging differ', async () => {
   const owner = await createVerifiedUser('core-freeze-mismatch');
   await call('bootstrapWorkspace', owner.token);
