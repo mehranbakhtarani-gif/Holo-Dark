@@ -40,6 +40,7 @@ import {
   loadMeshPassphrase,
   loadSelectedMeshPeerId,
   loadVectorClock,
+  getAcknowledgableMeshOperationIds,
   PeerMeshConnector,
   saveMeshPassphrase,
   saveSelectedMeshPeerId,
@@ -508,7 +509,7 @@ export function useLocalFirstMeshSync() {
                   errorDetail: 'importBackupJson returned false',
                 });
                 await refreshOutboxAndLogs();
-                return [];
+                return getAcknowledgableMeshOperationIds(ackedOpIds, false);
               }
               {
                 const mergedSnapshot = safeParseJsonObject(currentMergedJson);
@@ -601,7 +602,7 @@ export function useLocalFirstMeshSync() {
           });
 
           await refreshOutboxAndLogs();
-          return ackedOpIds;
+          return getAcknowledgableMeshOperationIds(ackedOpIds, true);
         } finally {
           setIsP2PSyncing(false);
         }
