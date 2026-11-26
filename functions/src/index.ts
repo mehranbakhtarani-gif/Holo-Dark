@@ -125,49 +125,52 @@ export const sequenceSyncedWarehouseTransferEvents = onDocumentWritten(
       if (!transfers.length) return;
 
       const nextTransfers = transfers.map((transfer) => ({ ...transfer }));
-      // A numeric sequence without recognized provenance is incomplete metadata:
-      // reassign it at server acceptance rather than treating it as authoritative.
-      const hasValidSequence = (sequence: unknown, source: unknown) =>
-        Number.isSafeInteger(sequence) && (source === 'online' || source === 'sync');
-      const hasPendingSequence = nextTransfers.some((transfer) =>
-        transfer && typeof transfer.id === 'string' && (
-          !hasValidSequence(transfer.eventSequence, transfer.eventSequenceSource) ||
-          (transfer.status === 'received' &&
-            !hasValidSequence(transfer.receivedEventSequence, transfer.receivedEventSequenceSource))
-        )
+      const validTransfers = nextTransfers.filter((transfer) =>
+        transfer && typeof transfer.id === 'string' && /^[A-Za-z0-9_-]{1,128}$/.test(transfer.id)
+        && typeof transfer.productId === 'string' && transfer.productId
+        && Number.isFinite(Number(transfer.qty)) && Number(transfer.qty) > 0
       );
-      if (!hasPendingSequence) return;
+      if (!validTransfers.length) return;
 
-      const nativeMode = manifestSnap.exists && manifestSnap.get('coreWriteMode') === 'workspace_native';
-      const counterRef = nativeMode
+      // The extension array is client-writable, so its sequence fields are never
+      // authoritative. A server-only ledger is the source of truth for provenance.
+      const authorityCollection = db.collection('warehouseTransferEventAuthority');
+      const eventRefs = validTransfers.flatMap((transfer) => {
+        const refs = [{
+          transfer,
+          kind: 'dispatch' as const,
+          ref: authorityCollection.doc(`${workspaceId}_${transfer.id}_dispatch`),
+        }];
+        if (transfer.status === 'received') refs.push({
+          transfer,
+          kind: 'receipt' as const,
+          ref: authorityCollection.doc(`${workspaceId}_${transfer.id}_receipt`),
+        });
+        return refs;
+      });
+      const authoritySnaps = await Promise.all(eventRefs.map(({ ref }) => tx.get(ref)));
+      const counterRef = manifestSnap.exists && manifestSnap.get('coreWriteMode') === 'workspace_native'
         ? migrationDestination(workspaceId, 'counters').doc(workspaceId)
         : db.collection('counters').doc(workspaceId);
       const counterSnap = await tx.get(counterRef);
       let nextSequence = Math.max(0, Number(counterSnap.data()?.lastInventorySequence) || 0);
+      const pendingEvents = eventRefs.map((item, index) => ({
+        ...item,
+        authority: authoritySnaps[index],
+        timestamp: Number.isFinite(Date.parse(String(item.transfer.updatedAt || '')))
+          ? Date.parse(String(item.transfer.updatedAt))
+          : 0,
+        id: String(item.transfer.id),
+      })).filter(({ authority }) => !authority.exists
+        || !Number.isSafeInteger(authority.get('eventSequence'))
+        || !['online', 'sync'].includes(String(authority.get('source'))));
 
-      const pendingEvents: Array<{
-        transfer: Record<string, unknown>;
-        kind: 'dispatch' | 'receipt';
-        timestamp: number;
-        id: string;
-      }> = [];
-      for (const transfer of nextTransfers) {
-        if (!transfer || typeof transfer.id !== 'string' || !transfer.id
-            || typeof transfer.productId !== 'string' || !transfer.productId
-            || !Number.isFinite(Number(transfer.qty)) || Number(transfer.qty) <= 0) continue;
-        const parsedTimestamp = typeof transfer.updatedAt === 'string'
-          ? Date.parse(transfer.updatedAt)
-          : Number.NaN;
-        const timestamp = Number.isFinite(parsedTimestamp) ? parsedTimestamp : 0;
-        if (!hasValidSequence(transfer.eventSequence, transfer.eventSequenceSource)) {
-          pendingEvents.push({ transfer, kind: 'dispatch', timestamp, id: transfer.id });
-        }
-        if (transfer.status === 'received' && !hasValidSequence(transfer.receivedEventSequence, transfer.receivedEventSequenceSource)) {
-          pendingEvents.push({ transfer, kind: 'receipt', timestamp, id: transfer.id });
+      // Keep the server's counter at least as high as every existing authority record.
+      for (const snap of authoritySnaps) {
+        if (snap.exists && Number.isSafeInteger(snap.get('eventSequence'))) {
+          nextSequence = Math.max(nextSequence, Number(snap.get('eventSequence')));
         }
       }
-      // Use a deterministic acceptance order, not array insertion order. The sync
-      // provenance still marks these numbers as ambiguous relative to offline actions.
       pendingEvents.sort((a, b) =>
         a.timestamp - b.timestamp || a.id.localeCompare(b.id) || a.kind.localeCompare(b.kind)
       );
@@ -179,21 +182,43 @@ export const sequenceSyncedWarehouseTransferEvents = onDocumentWritten(
         );
         transfer.updatedAt = new Date(nextTimestamp).toISOString();
       };
-      for (const pending of pendingEvents) {
-        if (pending.kind === 'dispatch' && !hasValidSequence(pending.transfer.eventSequence, pending.transfer.eventSequenceSource)) {
-          nextSequence += 1;
-          pending.transfer.eventSequence = nextSequence;
-          pending.transfer.eventSequenceSource = 'sync';
-          touchTransfer(pending.transfer);
-        } else if (pending.kind === 'receipt' && !hasValidSequence(pending.transfer.receivedEventSequence, pending.transfer.receivedEventSequenceSource)) {
-          nextSequence += 1;
-          pending.transfer.receivedEventSequence = nextSequence;
-          pending.transfer.receivedEventSequenceSource = 'sync';
-          touchTransfer(pending.transfer);
+      let changed = false;
+      for (const item of eventRefs) {
+        const snap = authoritySnaps[eventRefs.indexOf(item)];
+        if (!snap.exists || !Number.isSafeInteger(snap.get('eventSequence'))
+            || !['online', 'sync'].includes(String(snap.get('source')))) continue;
+        const sequence = Number(snap.get('eventSequence'));
+        const source = String(snap.get('source'));
+        const sequenceKey = item.kind === 'dispatch' ? 'eventSequence' : 'receivedEventSequence';
+        const sourceKey = item.kind === 'dispatch' ? 'eventSequenceSource' : 'receivedEventSequenceSource';
+        if (item.transfer[sequenceKey] !== sequence || item.transfer[sourceKey] !== source) {
+          item.transfer[sequenceKey] = sequence;
+          item.transfer[sourceKey] = source;
+          touchTransfer(item.transfer);
+          changed = true;
         }
       }
+      for (const pending of pendingEvents) {
+        nextSequence += 1;
+        const source = 'sync' as const;
+        const sequenceKey = pending.kind === 'dispatch' ? 'eventSequence' : 'receivedEventSequence';
+        const sourceKey = pending.kind === 'dispatch' ? 'eventSequenceSource' : 'receivedEventSequenceSource';
+        pending.transfer[sequenceKey] = nextSequence;
+        pending.transfer[sourceKey] = source;
+        touchTransfer(pending.transfer);
+        tx.set(pending.ref, {
+          ownerId: workspaceId,
+          transferId: pending.id,
+          kind: pending.kind,
+          eventSequence: nextSequence,
+          source,
+          createdAt: FieldValue.serverTimestamp(),
+        });
+        changed = true;
+      }
 
-      if (nextSequence === Math.max(0, Number(counterSnap.data()?.lastInventorySequence) || 0)) return;
+      const previousCounter = Math.max(0, Number(counterSnap.data()?.lastInventorySequence) || 0);
+      if (!changed && nextSequence === previousCounter) return;
       const now = FieldValue.serverTimestamp();
       tx.update(extensionRef, {
         trackedWarehouseTransfers: nextTransfers,
@@ -1010,6 +1035,10 @@ export const createTrackedWarehouseTransfer = onCall({ region: REGION, timeoutSe
       _version: Math.max(0, Number(ext._version) || 0) + 1,
       updatedAt: now,
     });
+    tx.set(db.collection('warehouseTransferEventAuthority').doc(`${workspaceId}_${transferId}_dispatch`), {
+      ownerId: workspaceId, transferId, kind: 'dispatch', eventSequence,
+      source: 'online', createdAt: now,
+    });
     tx.set(counterRef, {
       ownerId: workspaceId,
       lastVoucherNumber: Math.max(0, Number(counterSnap.data()?.lastVoucherNumber) || 0),
@@ -1118,6 +1147,10 @@ export const receiveTrackedWarehouseTransfer = onCall({ region: REGION, timeoutS
       tx.update(productRef, { payload: nextPayload, sourceHash: workspaceMigrationHash(nextPayload), version: productVersion, updatedAt: now });
     } else tx.update(productRef, { costLayers: nextLayers, updatedAt: now });
     tx.update(extensionRef, { trackedWarehouseTransfers: nextTransfers.slice(0, 100), _version: Math.max(0, Number(extensionData._version) || 0) + 1, updatedAt: now });
+    tx.set(db.collection('warehouseTransferEventAuthority').doc(`${workspaceId}_${transferId}_receipt`), {
+      ownerId: workspaceId, transferId, kind: 'receipt', eventSequence,
+      source: 'online', createdAt: now,
+    });
     tx.set(counterRef, {
       ownerId: workspaceId,
       lastVoucherNumber: Math.max(0, Number(counterSnap.data()?.lastVoucherNumber) || 0),
