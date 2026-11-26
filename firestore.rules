@@ -782,6 +782,7 @@ service cloud.firestore {
       allow list: if isVerified() && resource.data.ownerId == request.auth.uid;
       allow create: if isValidId(invoiceId) && isVerified()
         && isValidInvoice(incoming())
+        && (!(incoming().invoiceType in ['sale', 'purchase']) || ('returnRevision' in incoming() && 'activeReturnCount' in incoming()))
         && isValidReturnSource(incoming())
         && (
           !(incoming().invoiceType in ['sale_return', 'purchase_return'])
