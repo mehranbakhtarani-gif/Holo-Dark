@@ -1458,7 +1458,10 @@ export const adjustWorkspaceProductStockWithVoucher = onCall({ region: REGION, t
           costingMethod: productSnap.get('payload.costingMethod'), costLayers: productSnap.get('payload.costLayers'),
           inventoryValueIrr: productSnap.get('payload.inventoryValueIrr'), _version: productSnap.get('payload._version'),
         },
-        ...(voucherSnap.exists ? { voucher: voucherSnap.get('payload') } : {}),
+        ...(voucherSnap.exists ? {
+          voucher: Object.fromEntries(Object.entries(voucherSnap.get('payload') as Record<string, unknown>)
+            .filter(([key]) => key !== 'createdAt' && key !== 'updatedAt')),
+        } : {}),
       };
     }
     if (!productSnap.exists || productSnap.get('workspaceId') !== workspaceId
@@ -1613,6 +1616,7 @@ export const adjustWorkspaceProductStockWithVoucher = onCall({ region: REGION, t
 
     let voucherNumber: number | null = null;
     let voucherPayload: Record<string, unknown> | null = null;
+    let voucherForClient: Record<string, unknown> | null = null;
     if (adjustmentCostIrr > 0) {
       const accountsByCode = new Map(accountSnaps.docs
         .filter((snapshot) => snapshot.get('deleted') !== true)
@@ -1652,9 +1656,12 @@ export const adjustWorkspaceProductStockWithVoucher = onCall({ region: REGION, t
         totalCredit: adjustmentCostIrr, referenceId, lines,
         _version: 1, updatedByDevice: typeof deviceId === 'string' ? deviceId : 'workspace_server',
       };
-      voucherPayload = {
+      voucherForClient = {
         ...unsignedVoucher,
         integrityHash: workspaceVoucherIntegrityHash(unsignedVoucher),
+      };
+      voucherPayload = {
+        ...voucherForClient,
         createdAt: operationNow, updatedAt: operationNow,
       };
     }
@@ -1692,7 +1699,7 @@ export const adjustWorkspaceProductStockWithVoucher = onCall({ region: REGION, t
         costLayers: nextPayload.costLayers, inventoryValueIrr: nextPayload.inventoryValueIrr,
         _version: nextPayload._version,
       },
-      ...(voucherPayload ? { voucher: voucherPayload } : {}),
+      ...(voucherForClient ? { voucher: voucherForClient } : {}),
     };
   });
 });
