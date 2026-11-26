@@ -429,9 +429,12 @@ export const EnterpriseControlPanels: React.FC<{ activeTab: EnterpriseControlTab
         transfer,
         receivedDate: transferReceivedDate,
       });
-      await updateProduct(product.id, {
+      const productUpdated = await updateProduct(product.id, {
         costLayers: result.updatedProduct.costLayers,
       });
+      if (!productUpdated) {
+        throw new Error('به‌روزرسانی موجودی کالا انجام نشد؛ وضعیت انتقال تغییر نکرد.');
+      }
       const nextTransfers = trackedTransfers.map((item) =>
         item.id === transfer.id ? result.updatedTransfer : item
       );
