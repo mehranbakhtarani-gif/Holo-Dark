@@ -776,13 +776,21 @@ test('6. Multi-Warehouse Physical/Reserved/Available/In-Transit, Tracked Transfe
   });
   const central = matrix.positions.find((p) => p.warehouse === 'انبار مرکزی');
   const shadabad = matrix.positions.find((p) => p.warehouse === 'انبار شادآباد');
-  assert.ok(central && shadabad);
+  const tabriz = matrix.positions.find((p) => p.warehouse === 'انبار تبریز');
+  assert.ok(central && shadabad && tabriz);
   assert.equal(central.physicalQty, 60);
   assert.equal(central.reservedQty, 15);
   assert.equal(central.availableToSellQty, 45);
   assert.equal(central.inTransitOutQty, 10);
   assert.equal(shadabad.physicalQty, 30);
-  assert.equal(matrix.totalPhysicalValuationIrr, 400_000_000);
+  assert.equal(tabriz.physicalQty, 0, 'Goods in transit must not be counted as destination physical stock before receipt');
+  assert.equal(tabriz.inTransitInQty, 10, 'Goods in transit must remain visible as expected inbound quantity');
+  assert.equal(matrix.warehouseSummaries.reduce((sum, row) => sum + row.totalPhysicalQty, 0), 90,
+    'Physical warehouse quantities exclude the 10 kg still in transit');
+  assert.equal(matrix.warehouseSummaries.find((row) => row.warehouse === 'انبار تبریز')?.totalValuationIrr, 40_000_000,
+    'In-transit valuation is attributed to the destination summary without physical quantity');
+  assert.equal(matrix.totalPhysicalValuationIrr, 400_000_000,
+    'The inventory asset valuation still includes the goods in transit');
 
   // Per-warehouse Kardex
   const shadKardex = computeWarehouseProductKardex({
