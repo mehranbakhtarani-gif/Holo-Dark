@@ -221,7 +221,7 @@ interface AccountingContextValue {
     }
   ) => Promise<void>;
   deleteVoucher: (voucherId: string) => Promise<boolean>;
-  finalizeVoucher: (voucherId: string) => Promise<void>;
+  finalizeVoucher: (voucherId: string) => Promise<boolean>;
   finalizeAllDraftVouchers: () => Promise<number>;
   createReversingVoucher: (voucherId: string) => Promise<Voucher | null>;
   renumberVouchersChronologically: () => Promise<void>;
@@ -1310,6 +1310,9 @@ export const AccountingProvider: React.FC<{ children: React.ReactNode }> = ({ ch
             status: full.status,
             totalDebit,
             totalCredit,
+            fiscalYear: full.fiscalYear,
+            ...(full.reversalOfVoucherId ? { reversalOfVoucherId: full.reversalOfVoucherId } : {}),
+            ...(full.integrityHash ? { integrityHash: full.integrityHash } : {}),
             ...(isFx && safeRate
               ? {
                   currencyCode: normCode.slice(0, 10),
@@ -1550,36 +1553,42 @@ export const AccountingProvider: React.FC<{ children: React.ReactNode }> = ({ ch
   );
 
   const finalizeVoucher = useCallback(
-    async (voucherId: string) => {
+    async (voucherId: string): Promise<boolean> => {
       const target = vouchers.find((v) => v.id === voucherId);
-      if (target) {
-        const fy = target.fiscalYear || extractFiscalYearFromDate(target.date);
-        if (fy && profile.closedFiscalYears?.includes(fy)) {
-          showToast(`سال مالی ${fy} بسته شده است و امکان تغییر وضعیت سند وجود ندارد.`, 'error');
-          return;
-        }
+      if (!target || target.status !== 'draft') return false;
+      const validation = validateVoucherPayload({
+        payload: { date: target.date, description: target.description, voucherType: target.voucherType,
+          referenceId: target.referenceId, reversalOfVoucherId: target.reversalOfVoucherId, lines: target.lines },
+        accounts, parties, existingVouchers: vouchers, closedFiscalYears: profile.closedFiscalYears,
+        ignoreVoucherId: target.id, allowDuplicate: Boolean(target.reversalOfVoucherId),
+        isReversal: Boolean(target.reversalOfVoucherId),
+      });
+      if (!validation.valid || validation.totalDebit !== target.totalDebit || validation.totalCredit !== target.totalCredit) {
+        showToast(validation.errors[0] || 'جمع بدهکار/بستانکار سند با آرتیکل‌های معتبر مطابقت ندارد.', 'error');
+        return false;
       }
+      const fy = target.fiscalYear || validation.fiscalYear || extractFiscalYearFromDate(target.date);
+      if (!fy || (profile.closedFiscalYears || []).includes(fy)) {
+        showToast(fy ? `سال مالی ${fy} بسته شده است و امکان تغییر وضعیت سند وجود ندارد.` : 'سال مالی سند قابل تشخیص نیست.', 'error');
+        return false;
+      }
+      const integrityHash = computeVoucherIntegrityHash(target);
       if (user) {
         try {
           await updateDoc(doc(db, 'vouchers', voucherId), {
-            status: 'permanent',
-            updatedAt: serverTimestamp(),
+            status: 'permanent', integrityHash, updatedAt: serverTimestamp(),
           });
         } catch (err) {
           handleFirestoreError(err, OperationType.UPDATE, `vouchers/${voucherId}`);
+          return false;
         }
-      } else {
-        setVouchers((prev) =>
-          prev.map((v) =>
-            v.id === voucherId
-              ? { ...v, status: 'permanent', integrityHash: computeVoucherIntegrityHash(v) }
-              : v
-          )
-        );
       }
-      showToast('سند حسابداری به وضعیت «دائم و قطعی» تبدیل و مُهر اصالت ثبت شد.');
+      setVouchers((prev) => prev.map((v) => v.id === voucherId
+        ? { ...target, fiscalYear: fy, status: 'permanent', integrityHash } : v));
+      showToast('سند حسابداری پس از اعتبارسنجی کامل، دائم و مُهر اصالت شد.');
+      return true;
     },
-    [vouchers, profile.closedFiscalYears, user, showToast]
+    [vouchers, accounts, parties, profile.closedFiscalYears, user, showToast]
   );
 
   const createReversingVoucher = useCallback(
@@ -1914,6 +1923,9 @@ export const AccountingProvider: React.FC<{ children: React.ReactNode }> = ({ ch
           totalDebit: fullVoucher.totalDebit,
           totalCredit: fullVoucher.totalCredit,
           referenceId: refId.slice(0, 128),
+          fiscalYear: fullVoucher.fiscalYear,
+          ...(fullVoucher.reversalOfVoucherId ? { reversalOfVoucherId: fullVoucher.reversalOfVoucherId } : {}),
+          integrityHash: fullVoucher.integrityHash,
           lines: fullVoucher.lines,
           _version: 1,
           updatedByDevice: deviceId.slice(0, 64),
@@ -2056,6 +2068,9 @@ export const AccountingProvider: React.FC<{ children: React.ReactNode }> = ({ ch
           totalDebit: fullVoucher.totalDebit,
           totalCredit: fullVoucher.totalCredit,
           referenceId: batchRefId.slice(0, 128),
+          fiscalYear: fullVoucher.fiscalYear,
+          ...(fullVoucher.reversalOfVoucherId ? { reversalOfVoucherId: fullVoucher.reversalOfVoucherId } : {}),
+          integrityHash: fullVoucher.integrityHash,
           lines: fullVoucher.lines,
           _version: 1,
           updatedByDevice: deviceId.slice(0, 64),
@@ -2101,12 +2116,9 @@ export const AccountingProvider: React.FC<{ children: React.ReactNode }> = ({ ch
     }
     let finalized = 0;
     for (const v of drafts) {
-      if (v.totalDebit === v.totalCredit && v.totalDebit > 0 && v.lines.length >= 2) {
-        await finalizeVoucher(v.id);
-        finalized += 1;
-      }
+      if (await finalizeVoucher(v.id)) finalized += 1;
     }
-    showToast(`${finalized} سند موقت تراز با موفقیت به دائم تبدیل شد.`);
+    showToast(`${finalized} سند موقت پس از اعتبارسنجی کامل به دائم تبدیل شد.`);
     return finalized;
   }, [vouchers, finalizeVoucher, showToast]);
 
@@ -2515,6 +2527,11 @@ export const AccountingProvider: React.FC<{ children: React.ReactNode }> = ({ ch
             : {}),
           ...(vch.referenceId ? { referenceId: vch.referenceId.slice(0, 128) } : {}),
           lines: annotatedLines.slice(0, 100),
+          fiscalYear: vch.fiscalYear || extractFiscalYearFromDate(vch.date),
+          ...(vch.reversalOfVoucherId ? { reversalOfVoucherId: vch.reversalOfVoucherId.slice(0, 128) } : {}),
+          ...(vch.status === 'permanent'
+            ? { integrityHash: computeVoucherIntegrityHash({ ...vch, lines: annotatedLines.slice(0, 100) }) }
+            : {}),
           _version: 1,
           updatedByDevice: deviceId.slice(0, 64),
           createdAt: serverTimestamp(),
