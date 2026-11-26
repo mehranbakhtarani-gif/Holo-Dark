@@ -10,6 +10,7 @@ import {
   clearStoredDirectoryHandle,
   clearSyncedDexieOutboxItems,
   enqueueDexieOutboxItem,
+  enqueueDexieOutboxItemDurably,
   isDirectoryPickerSupported,
   listDexieOutboxItems,
   listMeshSyncEventLogs,
@@ -576,8 +577,8 @@ export function useLocalFirstMeshSync() {
           // If policy explicitly kept our local version, forward that winning version
           // instead of forwarding the rejected incoming relay envelopes.
           if (keepLocalByPolicy) {
-            const opId = `p2p_keep_local_relay_${Date.now()}_${localBuilt.payloadHash.slice(0, 8)}`;
-            await enqueueDexieOutboxItem({
+            const opId = `p2p_keep_local_relay_${selectedPeerId}_${fromPeerId}_${localBuilt.payloadHash}`;
+            await enqueueDexieOutboxItemDurably({
               operationId: opId,
               target: 'p2p_mesh',
               originDeviceId: selectedPeerId,
@@ -596,7 +597,7 @@ export function useLocalFirstMeshSync() {
             connectorRef.current?.queueLocalUpdate(opId);
           } else {
             for (const relayItem of relayOutboxItems) {
-              await enqueueDexieOutboxItem(relayItem);
+              await enqueueDexieOutboxItemDurably(relayItem);
             }
           }
 
