@@ -2016,10 +2016,7 @@ async function startServer() {
         }
       }
 
-      const hasRemoteConflict =
-        Boolean(existing) &&
-        serverRev > clientRevision &&
-        existing?.last_device_id !== deviceId;
+      const hasRemoteConflict = Boolean(existing) && hasSupabaseRevisionConflict(serverRev, clientRevision);
 
       const writeAuditLog = async (outcome: string, nextRev: number, details: string) => {
         try {
