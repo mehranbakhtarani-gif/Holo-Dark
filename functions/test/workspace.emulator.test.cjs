@@ -127,6 +127,8 @@ test('offline invoice creates receive a server inventory sequence exactly once',
   };
   const sequences = await Promise.all(invoiceRefs.map(waitForSequence));
   assert.deepEqual([...sequences].sort((a, b) => a - b), [41, 42]);
+  assert.equal((await invoiceRefs[0].get()).get('eventSequenceSource'), 'sync');
+  assert.equal((await invoiceRefs[1].get()).get('eventSequenceSource'), 'sync');
   const counterAfter = await counterRef.get();
   assert.equal(counterAfter.get('lastInventorySequence'), 42);
 
