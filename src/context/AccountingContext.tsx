@@ -1906,7 +1906,7 @@ export const AccountingProvider: React.FC<{ children: React.ReactNode }> = ({ ch
             ownerId: workspaceContext.workspaceId,
             voucherNumber: result.voucherNumber,
             date: reversalDate,
-            fiscalYear: extractFiscalYearFromDate(reversalDate) || profile.fiscalYear,
+            fiscalYear: reversalFiscalYear,
             description: reversalDescription,
             voucherType: 'general',
             status: 'draft',
