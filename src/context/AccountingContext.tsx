@@ -2051,7 +2051,7 @@ export const AccountingProvider: React.FC<{ children: React.ReactNode }> = ({ ch
         ...(product.costingMethod ? { costingMethod: product.costingMethod } : {}),
         ...(Array.isArray(product.costLayers) ? { costLayers: product.costLayers } : {}),
         ...(typeof product.inventoryValueIrr === 'number' && Number.isFinite(product.inventoryValueIrr) ? { inventoryValueIrr: Math.max(0, Math.round(product.inventoryValueIrr)) } : {}),
-        createdAt: new Date(),
+        createdAt: existing.createdAt,
         updatedAt: new Date(),
       };
       if (user && workspaceContext && (workspaceContext.workspaceId !== user.uid || workspaceContext.coreWritesFrozen || workspaceContext.coreWriteMode === 'workspace_native')) {
