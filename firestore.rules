@@ -197,11 +197,18 @@ service cloud.firestore {
         && isOptionalString(data, 'referenceId', 128)
         && isOptionalString(data, 'reversalOfVoucherId', 128)
         && isOptionalString(data, 'fiscalYear', 4)
-        && (!('integrityHash' in data) || (data.integrityHash is string && data.integrityHash.matches('^vseal_[0-9a-f]{16}
+        && (!('integrityHash' in data) || (data.integrityHash is string && data.integrityHash.matches('^vseal_[0-9a-f]{16}$')))
+        && (data.status != 'permanent' || ('integrityHash' in data && data.integrityHash is string && data.integrityHash.matches('^vseal_[0-9a-f]{16}$')))
+        && data.lines is list && data.lines.size() >= 2 && data.lines.size() <= 100 && data.lines[0] is map
+        && data.lines[0].keys().hasAll(['accountCode', 'debit', 'credit'])
+        && isNonEmptyString(data.lines[0].accountCode, 32)
+        && data.lines[0].debit is number && data.lines[0].debit >= 0
+        && data.lines[0].credit is number && data.lines[0].credit >= 0
+        && !(data.lines[0].debit > 0 && data.lines[0].credit > 0)
+        && isOptionalVersion(data)
         && data.createdAt is timestamp
         && data.updatedAt is timestamp;
     }
-
     function isValidInvoice(data) {
       return data.keys().hasAll(['ownerId', 'invoiceNumber', 'invoiceType', 'date', 'partyId', 'partyName', 'warehouse', 'subtotal', 'discount', 'vatAmount', 'grandTotal', 'paidCash', 'paidBank', 'paidCheque', 'creditAmount', 'status', 'items', 'createdAt', 'updatedAt'])
         && data.keys().hasOnly(['ownerId', 'invoiceNumber', 'taxSerial', 'invoiceType', 'date', 'partyId', 'partyName', 'intermediaryId', 'intermediaryName', 'warehouse', 'costCenterId', 'currencyCode', 'exchangeRate', 'foreignSubtotal', 'foreignDiscount', 'foreignVatAmount', 'foreignGrandTotal', 'subtotal', 'discount', 'vatAmount', 'grandTotal', 'paidCash', 'paidBank', 'paidCheque', 'creditAmount', 'status', 'voucherId', 'items', '_version', 'updatedByDevice', 'createdAt', 'updatedAt'])
@@ -1054,185 +1061,5 @@ service cloud.firestore {
       allow update: if false;
       allow delete: if isValidId(backupId) && isVerified() && (existing().ownerId == request.auth.uid || isAdmin());
     }
-  }
-}
-)))
-        && (data.status != 'permanent' || ('integrityHash' in data && data.integrityHash is string && data.integrityHash.matches('^vseal_[0-9a-f]{16}
-        && data.createdAt is timestamp
-        && data.updatedAt is timestamp;
-    }
-
-    
-
-    
-
-    
-
-    
-
-    
-
-    
-
-    
-
-    
-
-    
-
-    
-
-    
-
-    
-
-    
-
-    
-
-    
-
-    
-
-    
-
-    // --- Collection Rules ---
-
-    
-
-    
-
-    
-
-    
-
-    
-
-    
-
-    
-
-    
-
-    
-
-    
-
-    
-
-    
-
-    
-
-    
-
-    
-
-    
-
-    
-
-    
-
-    
-
-    
-
-    
-
-    
-  }
-}
-)))
-        && data.lines is list && data.lines.size() >= 2 && data.lines.size() <= 100 && data.lines[0] is map
-        && data.lines[0].keys().hasAll(['accountCode', 'debit', 'credit'])
-        && isNonEmptyString(data.lines[0].accountCode, 32)
-        && data.lines[0].debit is number && data.lines[0].debit >= 0
-        && data.lines[0].credit is number && data.lines[0].credit >= 0
-        && !(data.lines[0].debit > 0 && data.lines[0].credit > 0)
-        && isOptionalVersion(data)
-        && data.createdAt is timestamp
-        && data.updatedAt is timestamp;
-    }
-
-    
-
-    
-
-    
-
-    
-
-    
-
-    
-
-    
-
-    
-
-    
-
-    
-
-    
-
-    
-
-    
-
-    
-
-    
-
-    
-
-    
-
-    // --- Collection Rules ---
-
-    
-
-    
-
-    
-
-    
-
-    
-
-    
-
-    
-
-    
-
-    
-
-    
-
-    
-
-    
-
-    
-
-    
-
-    
-
-    
-
-    
-
-    
-
-    
-
-    
-
-    
-
-    
   }
 }
