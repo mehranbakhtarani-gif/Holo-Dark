@@ -335,12 +335,25 @@ test('workspace-native core writes activate only after reconciliation and enforc
   });
   assert.equal(write.version, 2);
   assert.equal((await firestore.collection('accounts').doc(accountId).get()).get('title'), 'Native account');
+  const replay = await call('mutateWorkspaceCoreRecord', owner.token, {
+    collection: 'accounts', documentId: accountId, operation: 'update',
+    operationId, expectedVersion: 1, data: updated,
+  });
+  assert.equal(replay.status, 'replayed');
   await expectCallableError(call('mutateWorkspaceCoreRecord', owner.token, {
     collection: 'accounts', documentId: accountId, operation: 'update',
     operationId: randomUUID().replace(/-/g, ''), expectedVersion: 1, data: updated,
   }), 'ABORTED');
   const page = await call('listWorkspaceCoreRecords', owner.token, { collection: 'accounts', limit: 10 });
   assert.ok(page.items.some((item) => item.id === accountId && item.version === 2 && item.payload.title === 'Workspace-native title'));
+  const deleted = await call('mutateWorkspaceCoreRecord', owner.token, {
+    collection: 'accounts', documentId: accountId, operation: 'delete',
+    operationId: randomUUID().replace(/-/g, ''), expectedVersion: 2,
+  });
+  assert.equal(deleted.version, 3);
+  const afterDelete = await call('listWorkspaceCoreRecords', owner.token, { collection: 'accounts', limit: 10 });
+  assert.equal(afterDelete.items.some((item) => item.id === accountId), false);
+  assert.equal((await firestore.collection('accounts').doc(accountId).get()).exists, true);
 });
 
 test('core reconciliation keeps the read barrier closed when source and staging differ', async () => {
