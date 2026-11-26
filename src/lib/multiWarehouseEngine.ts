@@ -44,7 +44,9 @@ export interface TrackedWarehouseTransfer {
   transferredLayers: InventoryCostLayer[];
   status: WarehouseTransferStatus;
   eventSequence?: number; // Server-allocated dispatch order for same-day Kardex movements
+  eventSequenceSource?: 'online' | 'sync';
   receivedEventSequence?: number; // Server-allocated receipt order; distinct from dispatch
+  receivedEventSequenceSource?: 'online' | 'sync';
   voucherId?: string;
   operatorName?: string;
   notes?: string;
@@ -88,6 +90,7 @@ export interface WarehouseKardexRow {
   valueIrr: number;
   notes: string;
   eventSequence?: number;
+  eventSequenceSource?: 'online' | 'sync';
   orderIsAmbiguous: boolean;
 }
 
@@ -576,6 +579,7 @@ export function computeWarehouseProductKardex(params: {
     valueIrr: number;
     notes: string;
     eventSequence?: number;
+    eventSequenceSource?: 'online' | 'sync';
   };
 
   const events: RawEvent[] = [];
@@ -601,6 +605,8 @@ export function computeWarehouseProductKardex(params: {
           valueIrr: val,
           notes: `${inv.invoiceType === 'purchase' ? 'خرید از' : 'برگشت فروش از'} ${inv.partyName}`,
           eventSequence: inv.eventSequence,
+          eventSequenceSource: inv.eventSequenceSource,
+          eventSequenceSource: inv.eventSequenceSource,
         });
       } else {
         events.push({
@@ -634,6 +640,7 @@ export function computeWarehouseProductKardex(params: {
         valueIrr: trf.transferredCostIrr,
         notes: `انتقال خروجی به ${trf.toWarehouse}`,
         eventSequence: trf.eventSequence,
+        eventSequenceSource: trf.eventSequenceSource,
       });
     }
     if (trf.toWarehouse === warehouse && trf.status === 'received') {
@@ -646,6 +653,7 @@ export function computeWarehouseProductKardex(params: {
         valueIrr: trf.transferredCostIrr,
         notes: `انتقال ورودی از ${trf.fromWarehouse}`,
         eventSequence: trf.receivedEventSequence,
+        eventSequenceSource: trf.receivedEventSequenceSource,
       });
     }
   }
@@ -668,6 +676,11 @@ export function computeWarehouseProductKardex(params: {
         new Set(sequences).size === sequences.length;
       if (hasCompleteUniqueSequence) {
         dayEvents.sort((a, b) => Number(a.eventSequence) - Number(b.eventSequence));
+        if (dayEvents.some((event) => event.eventSequenceSource === 'sync')) {
+          // Firestore trigger delivery order is not guaranteed; retain its sequence for repeatability,
+          // but do not present it as proof of the original order of offline device actions.
+          ambiguousDates.add(date);
+        }
       } else {
         // Do not fabricate chronology for legacy records; preserve source order and flag the day.
         ambiguousDates.add(date);
