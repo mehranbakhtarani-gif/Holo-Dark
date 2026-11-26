@@ -1496,17 +1496,19 @@ export const adjustWorkspaceProductStockWithVoucher = onCall({ region: REGION, t
     if (stock > 0 && (!Array.isArray(layersRaw) || layersRaw.length === 0)) {
       throw new HttpsError('failed-precondition', 'لایه‌های بهای تمام‌شده موجود نیست؛ ابتدا بهای FIFO کالا را بازسازی کنید.');
     }
-    const layers = (Array.isArray(layersRaw) ? layersRaw : []).map((layer) => ({ ...(layer as Record<string, unknown>) }));
-    if (layers.some((layer) => typeof layer.layerId !== 'string' || !layer.layerId
-        || typeof layer.remainingQty !== 'number' || !Number.isFinite(layer.remainingQty) || layer.remainingQty <= 0
+    const rawLayers = (Array.isArray(layersRaw) ? layersRaw : []).map((layer) => ({ ...(layer as Record<string, unknown>) }));
+    if (rawLayers.some((layer) => typeof layer.layerId !== 'string' || !layer.layerId
+        || typeof layer.remainingQty !== 'number' || !Number.isFinite(layer.remainingQty) || layer.remainingQty < 0
         || typeof layer.totalCostIrr !== 'number' || !Number.isFinite(layer.totalCostIrr) || layer.totalCostIrr < 0
         || typeof layer.unitCostIrr !== 'number' || !Number.isFinite(layer.unitCostIrr) || layer.unitCostIrr < 0)) {
       throw new HttpsError('failed-precondition', 'ساختار لایه‌های بهای تمام‌شده نامعتبر است.');
     }
+    const layers = rawLayers.filter((layer) => Number(layer.remainingQty) > 0.00005);
     const layerQty = roundQty(layers.reduce((sum, layer) => sum + Number(layer.remainingQty), 0));
     const layerValue = layers.reduce((sum, layer) => sum + Number(layer.totalCostIrr), 0);
     const inventoryValue = product.inventoryValueIrr === undefined
-      ? Math.round(stock * product.buyPrice) : Number(product.inventoryValueIrr);
+      ? (layers.length > 0 ? Math.round(layerValue) : Math.round(stock * product.buyPrice))
+      : Number(product.inventoryValueIrr);
     if (!Number.isFinite(inventoryValue) || inventoryValue < 0
         || Math.abs(layerQty - stock) >= 0.005
         || Math.abs(layerValue - Math.round(inventoryValue)) >= 1) {
