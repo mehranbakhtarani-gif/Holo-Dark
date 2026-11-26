@@ -1097,8 +1097,10 @@ export const receiveTrackedWarehouseTransfer = onCall({ region: REGION, timeoutS
       ? migrationDestination(workspaceId, 'counters').doc(workspaceId)
       : db.collection('counters').doc(workspaceId);
     const dispatchAuthorityRef = db.collection('warehouseTransferEventAuthority').doc(`${workspaceId}_${transferId}_dispatch`);
-    const [productSnap, extensionSnap, counterSnap, dispatchAuthoritySnap] = await Promise.all([
-      tx.get(productRef), tx.get(extensionRef), tx.get(counterRef), tx.get(dispatchAuthorityRef),
+    const receiptAuthorityRef = db.collection('warehouseTransferEventAuthority').doc(`${workspaceId}_${transferId}_receipt`);
+    const [productSnap, extensionSnap, counterSnap, dispatchAuthoritySnap, receiptAuthoritySnap] = await Promise.all([
+      tx.get(productRef), tx.get(extensionRef), tx.get(counterRef),
+      tx.get(dispatchAuthorityRef), tx.get(receiptAuthorityRef),
     ]);
     if (!productSnap.exists || !extensionSnap.exists) throw new HttpsError('failed-precondition', 'کالا یا سند همگام‌سازی انتقال‌ها در فضای کاری موجود نیست.');
     let productData: Record<string, unknown>;
@@ -1140,10 +1142,18 @@ export const receiveTrackedWarehouseTransfer = onCall({ region: REGION, timeoutS
     }
     if (transfer.productId !== productId) throw new HttpsError('failed-precondition', 'انتقال به کالای دیگری تعلق دارد.');
     if (transfer.status === 'received') {
+      const authoritativeReceipt = receiptAuthoritySnap.get('transferSnapshot') as Record<string, unknown> | undefined;
+      if (!receiptAuthoritySnap.exists || !authoritativeReceipt
+          || authoritativeReceipt.status !== 'received'
+          || authoritativeReceipt.receivedDate !== transfer.receivedDate) {
+        throw new HttpsError('failed-precondition', 'وضعیت دریافت حواله با مرجع ثبت‌شده سرور مطابقت ندارد.');
+      }
       if (transfer.receivedDate === receivedDate) return { status: 'replayed', productVersion };
       throw new HttpsError('failed-precondition', 'این انتقال قبلاً با تاریخ دیگری دریافت شده است.');
     }
-    if (transfer.status !== 'in_transit') throw new HttpsError('failed-precondition', 'فقط انتقال در راه قابل دریافت است.');
+    if (transfer.status !== 'in_transit' || authoritativeTransfer?.status !== 'in_transit') {
+      throw new HttpsError('failed-precondition', 'فقط انتقال معتبر در راه قابل دریافت است.');
+    }
     const expectedLayers = Array.isArray(transfer.transferredLayers) ? transfer.transferredLayers as Record<string, unknown>[] : [];
     const currentLayers = Array.isArray(productData.costLayers) ? productData.costLayers as Record<string, unknown>[] : [];
     if (!expectedLayers.length || !currentLayers.length || !Number.isFinite(Number(transfer.qty)) || Number(transfer.qty) <= 0 || !Number.isFinite(Number(transfer.transferredCostIrr)) || Number(transfer.transferredCostIrr) < 0 || typeof transfer.toWarehouse !== 'string' || !transfer.toWarehouse) throw new HttpsError('failed-precondition', 'اطلاعات لایه‌ها یا مقادیر انتقال معتبر نیست.');
