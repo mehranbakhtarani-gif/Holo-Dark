@@ -68,15 +68,27 @@ after(async () => {
   await testEnv?.cleanup();
 });
 
-test('invoice and workspace counter enforce monotonic inventory event sequences', async () => {
+test('invoice event sequences require an atomic server-counter reservation', async () => {
   await testEnv.clearFirestore();
   const uid = 'rules_inventory_sequence';
   const db = testEnv.authenticatedContext(uid, { email_verified: true }).firestore();
+  const counterRef = doc(db, 'counters', uid);
+  const invoiceRef = doc(db, 'invoices', 'sale_with_sequence');
 
-  await assertSucceeds(setDoc(doc(db, 'invoices', 'sale_with_sequence'), invoiceBase(uid, 'sale', {
+  // A client cannot claim an online sequence without reserving that exact value.
+  await assertFails(setDoc(invoiceRef, invoiceBase(uid, 'sale', {
     returnRevision: 0,
     activeReturnCount: 0,
     eventSequence: 7,
+    eventSequenceSource: 'online',
+  })));
+
+  // Offline clients must omit sequence provenance; only the trusted trigger may
+  // later mark a record as sync-assigned using Admin SDK privileges.
+  await assertFails(setDoc(doc(db, 'invoices', 'sale_with_forged_sync_sequence'), invoiceBase(uid, 'sale', {
+    returnRevision: 0,
+    activeReturnCount: 0,
+    eventSequence: 8,
     eventSequenceSource: 'sync',
   })));
   await assertFails(setDoc(doc(db, 'invoices', 'sale_with_invalid_sequence_source'), invoiceBase(uid, 'sale', {
@@ -89,23 +101,38 @@ test('invoice and workspace counter enforce monotonic inventory event sequences'
     returnRevision: 0,
     activeReturnCount: 0,
     eventSequence: 7.5,
+    eventSequenceSource: 'online',
   })));
 
-  const counterRef = doc(db, 'counters', uid);
-  await assertSucceeds(setDoc(counterRef, {
+  // The counter reservation and invoice creation must share one atomic commit.
+  const createBatch = writeBatch(db);
+  createBatch.set(counterRef, {
     ownerId: uid,
     lastVoucherNumber: 0,
     lastInvoiceSeq: 102,
     lastInventorySequence: 7,
     createdAt: serverTimestamp(),
     updatedAt: serverTimestamp(),
+  });
+  createBatch.set(invoiceRef, invoiceBase(uid, 'sale', {
+    returnRevision: 0,
+    activeReturnCount: 0,
+    eventSequence: 7,
+    eventSequenceSource: 'online',
   }));
+  await assertSucceeds(createBatch.commit());
+
   await assertSucceeds(updateDoc(counterRef, {
     lastInventorySequence: 8,
     updatedAt: serverTimestamp(),
   }));
   await assertFails(updateDoc(counterRef, {
     lastInventorySequence: 6,
+    updatedAt: serverTimestamp(),
+  }));
+  await assertFails(updateDoc(invoiceRef, {
+    eventSequence: 9,
+    eventSequenceSource: 'online',
     updatedAt: serverTimestamp(),
   }));
 });
