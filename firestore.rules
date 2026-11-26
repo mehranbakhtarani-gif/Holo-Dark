@@ -209,6 +209,22 @@ service cloud.firestore {
         && data.createdAt is timestamp
         && data.updatedAt is timestamp;
     }
+    function hasAtomicReturnRevisionBump(sourceInvoiceId, ownerId, partyId, sourceType) {
+      let sourcePath = /databases/$(database)/documents/invoices/$(sourceInvoiceId);
+      let sourceBefore = get(sourcePath).data;
+      let sourceAfter = getAfter(sourcePath).data;
+      return exists(sourcePath)
+        && sourceBefore.ownerId == ownerId
+        && sourceBefore.partyId == partyId
+        && sourceBefore.invoiceType == sourceType
+        && sourceBefore.status != 'cancelled'
+        && sourceAfter.ownerId == sourceBefore.ownerId
+        && sourceAfter.partyId == sourceBefore.partyId
+        && sourceAfter.invoiceType == sourceBefore.invoiceType
+        && sourceAfter.status == sourceBefore.status
+        && sourceAfter.returnRevision == (('returnRevision' in sourceBefore) ? sourceBefore.returnRevision : 0) + 1;
+    }
+
     function isValidReturnSource(data) {
       return !(data.invoiceType in ['sale_return', 'purchase_return']) || (
         ('sourceInvoiceId' in data)
@@ -738,6 +754,15 @@ service cloud.firestore {
       allow create: if isValidId(invoiceId) && isVerified()
         && isValidInvoice(incoming())
         && isValidReturnSource(incoming())
+        && (
+          !(incoming().invoiceType in ['sale_return', 'purchase_return'])
+          || hasAtomicReturnRevisionBump(
+            incoming().sourceInvoiceId,
+            incoming().ownerId,
+            incoming().partyId,
+            incoming().invoiceType == 'sale_return' ? 'sale' : 'purchase'
+          )
+        )
         && incoming().createdAt == request.time
         && incoming().updatedAt == request.time;
       allow update: if isValidId(invoiceId) && isVerified() && isValidInvoice(incoming()) && (
@@ -747,6 +772,29 @@ service cloud.firestore {
           && incoming().ownerId == existing().ownerId
           && incoming().createdAt == existing().createdAt
           && incoming().updatedAt == request.time
+          && (
+            !incoming().diff(existing()).affectedKeys().hasAny(['returnRevision'])
+            || (
+              incoming().returnRevision == (('returnRevision' in existing()) ? existing().returnRevision : 0) + 1
+              && incoming().status == existing().status
+            )
+          )
+          && (
+            (
+              existing().invoiceType in ['sale_return', 'purchase_return']
+              && incoming().status == 'cancelled'
+              && existing().status != 'cancelled'
+              && hasAtomicReturnRevisionBump(
+                existing().sourceInvoiceId,
+                existing().ownerId,
+                existing().partyId,
+                existing().invoiceType == 'sale_return' ? 'sale' : 'purchase'
+              )
+            )
+            || existing().invoiceType not in ['sale_return', 'purchase_return']
+            || incoming().status != 'cancelled'
+            || existing().status == 'cancelled'
+          )
           && (
             incoming().diff(existing()).affectedKeys().hasOnly(['status', 'returnRevision', '_version', 'updatedByDevice', 'updatedAt']) ||
             incoming().diff(existing()).affectedKeys().hasOnly(['paidCash', 'paidBank', 'paidCheque', 'creditAmount', 'status', 'returnRevision', '_version', 'updatedByDevice', 'updatedAt']) ||
