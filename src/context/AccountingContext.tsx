@@ -42,6 +42,7 @@ import {
   Party,
   Product,
   RbacOperator,
+  RbacPermissions,
   SalesOrder,
   SubcontractJob,
   Voucher,
@@ -406,6 +407,15 @@ export const AccountingProvider: React.FC<{ children: React.ReactNode }> = ({ ch
       rbacOperators[0] ??
       initialSeed.rbacOperators[0],
     [rbacOperators, activeOperatorId, initialSeed.rbacOperators]
+  );
+
+  const requirePermission = useCallback(
+    (permission: keyof RbacPermissions, operation: string): boolean => {
+      if (activeOperator?.active && activeOperator.permissions?.[permission] === true) return true;
+      showToast(\`اپراتور فعال مجوز «\${operation}» را ندارد؛ عملیات انجام نشد.\`, 'error');
+      return false;
+    },
+    [activeOperator, showToast]
   );
 
   const showToast = useCallback((msg: string, explicitTone?: AudioFeedbackTone) => {
@@ -1228,6 +1238,8 @@ export const AccountingProvider: React.FC<{ children: React.ReactNode }> = ({ ch
       currencyCode?: string;
       exchangeRate?: number;
     }): Promise<Voucher> => {
+      if (!requirePermission('canCreateVoucher', 'ایجاد یا ویرایش سند حسابداری')) throw new Error('مجوز ایجاد سند حسابداری وجود ندارد.');
+
       const validation = validateVoucherPayload({
         payload,
         accounts,
@@ -1369,6 +1381,8 @@ export const AccountingProvider: React.FC<{ children: React.ReactNode }> = ({ ch
         exchangeRate?: number;
       }
     ) => {
+      if (!requirePermission('canCreateVoucher', 'ویرایش سند حسابداری')) return;
+
       const existing = vouchers.find((v) => v.id === voucherId);
       if (!existing) return;
       if (existing.status === 'permanent') {
@@ -1522,11 +1536,13 @@ export const AccountingProvider: React.FC<{ children: React.ReactNode }> = ({ ch
       }
       showToast(`سند موقت شماره ${existing.voucherNumber} با موفقیت اصلاح شد.`);
     },
-    [accounts, parties, vouchers, profile.closedFiscalYears, user, deviceId, showToast]
+    [accounts, parties, vouchers, profile.closedFiscalYears, user, deviceId, showToast, requirePermission]
   );
 
   const deleteVoucher = useCallback(
     async (voucherId: string): Promise<boolean> => {
+      if (!requirePermission('canDeleteRecords', 'حذف سند موقت')) return false;
+
       const existing = vouchers.find((v) => v.id === voucherId);
       if (!existing) return false;
       if (existing.status === 'permanent') {
@@ -1550,11 +1566,13 @@ export const AccountingProvider: React.FC<{ children: React.ReactNode }> = ({ ch
       showToast(`سند موقت شماره ${existing.voucherNumber} حذف شد.`);
       return true;
     },
-    [vouchers, profile.closedFiscalYears, user, showToast]
+    [vouchers, profile.closedFiscalYears, user, showToast, requirePermission]
   );
 
   const finalizeVoucher = useCallback(
     async (voucherId: string): Promise<boolean> => {
+      if (!requirePermission('canFinalizeVoucher', 'قطعی‌سازی سند')) return false;
+
       const target = vouchers.find((v) => v.id === voucherId);
       if (!target || target.status !== 'draft') return false;
       const validation = validateVoucherPayload({
@@ -1589,7 +1607,7 @@ export const AccountingProvider: React.FC<{ children: React.ReactNode }> = ({ ch
       showToast('سند حسابداری پس از اعتبارسنجی کامل، دائم و مُهر اصالت شد.');
       return true;
     },
-    [vouchers, accounts, parties, profile.closedFiscalYears, user, showToast]
+    [vouchers, accounts, parties, profile.closedFiscalYears, user, showToast, requirePermission]
   );
 
   const createReversingVoucher = useCallback(
@@ -1798,6 +1816,8 @@ export const AccountingProvider: React.FC<{ children: React.ReactNode }> = ({ ch
 
   const adjustProductStock = useCallback(
     async (productId: string, newStock: number) => {
+      if (!requirePermission('canEditInventory', 'تعدیل مستقیم موجودی')) return;
+
       if (user) {
         try {
           await updateDoc(doc(db, 'products', productId), {
@@ -1813,11 +1833,12 @@ export const AccountingProvider: React.FC<{ children: React.ReactNode }> = ({ ch
         );
       }
     },
-    [user]
-  );
+    [user, requirePermission]
 
   const adjustProductStockWithVoucher = useCallback(
     async (productId: string, countedStock: number, reason: string) => {
+      if (!requirePermission('canEditInventory', 'انبارگردانی و تعدیل موجودی')) return;
+
       const prod = products.find((p) => p.id === productId);
       if (!prod) return;
       const today = getTodayShamsi();
@@ -2125,6 +2146,8 @@ export const AccountingProvider: React.FC<{ children: React.ReactNode }> = ({ ch
 
   const transferProductWarehouse = useCallback(
     async (productId: string, targetWarehouse: string) => {
+      if (!requirePermission('canEditInventory', 'انتقال بین انبارها')) return;
+
       const prod = products.find((p) => p.id === productId);
       if (!prod || !targetWarehouse.trim()) return;
       const cleanWh = targetWarehouse.trim().slice(0, 80);
@@ -2144,12 +2167,14 @@ export const AccountingProvider: React.FC<{ children: React.ReactNode }> = ({ ch
       }
       showToast(`حواله انتقال کالای «${prod.name}» به «${cleanWh}» ثبت شد.`);
     },
-    [products, user, showToast]
+    [products, user, showToast, requirePermission]
   );
 
   // ---------------- CHEQUES & TREASURY ----------------
   const addCheque = useCallback(
     async (payload: Omit<Cheque, 'id' | 'ownerId'>, skipVoucher = false) => {
+      if (!requirePermission('canManageTreasury', 'ثبت چک')) return;
+
       const id = generateSafeId('chq');
       const full: Cheque = { ...payload, id, ownerId };
 
@@ -2233,7 +2258,7 @@ export const AccountingProvider: React.FC<{ children: React.ReactNode }> = ({ ch
         });
       }
     },
-    [ownerId, user, createVoucher]
+    [ownerId, user, createVoucher, requirePermission]
   );
 
   const updateCheque = useCallback(
@@ -2266,6 +2291,8 @@ export const AccountingProvider: React.FC<{ children: React.ReactNode }> = ({ ch
       newStatus: ChequeStatus,
       options?: { bankAccountCode?: string; endorsePartyId?: string }
     ) => {
+      if (!requirePermission('canManageTreasury', 'تغییر وضعیت چک')) return;
+
       const chq = cheques.find((c) => c.id === chequeId);
       if (!chq || chq.status === newStatus) return;
 
@@ -2427,6 +2454,8 @@ export const AccountingProvider: React.FC<{ children: React.ReactNode }> = ({ ch
   // ---------------- INVOICES CRUD & COMMERCIAL OPS (STRICT 4-ENTITY ATOMICITY) ----------------
   const createInvoice = useCallback(
     async (payload: Omit<Invoice, 'id' | 'ownerId' | 'voucherId'>): Promise<Invoice> => {
+      if (!requirePermission('canIssueInvoice', 'صدور فاکتور')) throw new Error('مجوز صدور فاکتور وجود ندارد.');
+
       const id = generateSafeId('inv');
       const plannedVoucherId = generateSafeId('vch');
       const plannedChequeId = generateSafeId('chq');
@@ -2834,11 +2863,14 @@ export const AccountingProvider: React.FC<{ children: React.ReactNode }> = ({ ch
       user,
       deviceId,
       showToast,
+      requirePermission,
     ]
   );
 
   const cancelInvoice = useCallback(
     async (invoiceId: string) => {
+      if (!requirePermission('canIssueInvoice', 'ابطال فاکتور')) return;
+
       const inv = invoices.find((i) => i.id === invoiceId);
       if (!inv || inv.status === 'cancelled') return;
 
@@ -3317,6 +3349,7 @@ export const AccountingProvider: React.FC<{ children: React.ReactNode }> = ({ ch
     },
     [
       activeOperator,
+      requirePermission,
       invoices,
       products,
       parties,
@@ -3329,6 +3362,7 @@ export const AccountingProvider: React.FC<{ children: React.ReactNode }> = ({ ch
       createVoucher,
       user,
       showToast,
+      requirePermission,
     ]
   );
 
@@ -3767,6 +3801,7 @@ export const AccountingProvider: React.FC<{ children: React.ReactNode }> = ({ ch
       createVoucher,
       updateCompanyProfile,
       showToast,
+      requirePermission,
     ]
   );
 
