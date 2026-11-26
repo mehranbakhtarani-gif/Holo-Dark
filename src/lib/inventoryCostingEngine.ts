@@ -551,23 +551,27 @@ export function applyInventoryMovementStep(
     let inventoryCostRemovedIrr = 0;
 
     if (method === 'fifo') {
-      // First target the exact originating purchase layer if sourceRefId is provided
+      // A linked purchase return must consume only its originating purchase layer.
+      // Never silently substitute stock from an unrelated receipt.
       if (movement.sourceRefId) {
         const target = layers.find(
           (l) => l.sourceRef === movement.sourceRefId && l.remainingQty > 0.00005
         );
-        if (target) {
-          const take = roundQty(Math.min(target.remainingQty, remainingToRemove));
-          const takeVal = allocateLayerCostIrr(target, take);
-          target.remainingQty = roundQty(Math.max(0, target.remainingQty - take));
-          target.totalCostIrr = Math.max(0, target.totalCostIrr - takeVal);
-          remainingToRemove = roundQty(Math.max(0, remainingToRemove - take));
-          inventoryCostRemovedIrr += takeVal;
+        const sourceRemainingQty = target?.remainingQty ?? 0;
+        if (!target || sourceRemainingQty + 0.0001 < qty) {
+          throw new Error(
+            `موجودی باقی‌مانده از خرید مرجع برای برگشت کافی نیست (شناسه خرید: ${movement.sourceRefId}، موجودی قابل برگشت: ${roundQty2(sourceRemainingQty)}، مقدار درخواستی: ${roundQty2(qty)}).`
+          );
         }
-      }
-
-      // If still remaining (or no explicit sourceRefId), adjust newest purchase layers first (LIFO layer reversal)
-      for (let i = layers.length - 1; i >= 0 && remainingToRemove > 0.00005; i--) {
+        const take = roundQty(Math.min(target.remainingQty, remainingToRemove));
+        const takeVal = allocateLayerCostIrr(target, take);
+        target.remainingQty = roundQty(Math.max(0, target.remainingQty - take));
+        target.totalCostIrr = Math.max(0, target.totalCostIrr - takeVal);
+        remainingToRemove = roundQty(Math.max(0, remainingToRemove - take));
+        inventoryCostRemovedIrr += takeVal;
+      } else {
+        // Without a source reference, reverse the newest available layers first (LIFO).
+        for (let i = layers.length - 1; i >= 0 && remainingToRemove > 0.00005; i--) {
         const layer = layers[i];
         if (layer.remainingQty <= 0.00005) continue;
         const take = roundQty(Math.min(layer.remainingQty, remainingToRemove));
@@ -576,6 +580,7 @@ export function applyInventoryMovementStep(
         layer.totalCostIrr = Math.max(0, layer.totalCostIrr - takeVal);
         remainingToRemove = roundQty(Math.max(0, remainingToRemove - take));
         inventoryCostRemovedIrr += takeVal;
+        }
       }
 
       const activeLayers = layers.filter((l) => l.remainingQty > 0.00005);
