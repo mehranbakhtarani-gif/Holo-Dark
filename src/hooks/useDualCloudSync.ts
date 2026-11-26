@@ -46,8 +46,8 @@ import {
 } from '../lib/firebaseCloudBackup';
 import {
   clearPendingSyncOutboxOperations,
-  clearSyncOutboxOperationsForScope,
   enqueueSyncOutboxOperation,
+  markSyncOutboxOperationStatus,
 } from '../lib/operationalDb';
 import { getTodayShamsi, toPersianDigits } from '../lib/format';
 import { playSuccessChime, playWarningTone } from '../lib/audioFeedback';
@@ -933,12 +933,8 @@ export function useDualCloudSync() {
         saveLastSupabaseSyncAt(stamp);
         clearOfflineOutbox();
         setOutbox([]);
-        // The accepted full snapshot supersedes earlier pending snapshots in this same sync scope.
-        try {
-          await clearSyncOutboxOperationsForScope('supabase', syncWorkspaceId, deviceId);
-        } catch {
-          // Keep the durable operation for an idempotent replay if local cleanup fails.
-        }
+        // Acknowledge only this operation; never erase another tab's pending operation.
+        await markSyncOutboxOperationStatus(operationId, 'synced');
 
         if (Array.isArray(res.data.retainedBackups)) {
           setSupabaseBackups(normalizeSupabaseBackups(res.data.retainedBackups));
@@ -1516,11 +1512,7 @@ export function useDualCloudSync() {
         }
         clearOfflineOutbox();
         setOutbox([]);
-        try {
-          await clearSyncOutboxOperationsForScope('supabase', resolveWorkspaceId, deviceId);
-        } catch {
-          // Retain the operation so the next retry can be recognized as an idempotent replay.
-        }
+        await markSyncOutboxOperationStatus(resolveOperationId, 'synced');
         setPendingConflict(null);
 
         const note = `آخرین تغییر محلی حفظ و به‌عنوان نسخه #${toPersianDigits(pushRes.data.serverRevision)} در ابر ثبت شد${defaultSuffix}.`;
