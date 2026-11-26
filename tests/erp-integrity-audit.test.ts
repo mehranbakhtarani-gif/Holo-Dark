@@ -50,6 +50,7 @@ import {
   evaluateWarehouseShortageSurplus,
   executeTrackedWarehouseTransfer,
   receiveTrackedWarehouseTransfer,
+  reconcileWarehouseKardex,
 } from '../src/lib/multiWarehouseEngine';
 import {
   computeSandboxDiff,
@@ -896,6 +897,52 @@ test('Receiving an in-transit transfer moves only its exact FIFO layers and pres
     'The destination Kardex must record the physical receipt date, not dispatch date');
   assert.equal(destinationAfterReceipt[0].inQty, 5);
   assert.equal(destinationAfterReceipt[0].balanceQty, 5);
+
+  const sourceReconciliation = reconcileWarehouseKardex({
+    product,
+    warehouse: 'انبار مرکزی',
+    invoices: [],
+    transfers: [transfer],
+    openingQty: 8,
+    openingValueIrr: 1_000,
+    defaultCostingMethod: 'fifo',
+  });
+  assert.equal(sourceReconciliation.kardexQty, 3);
+  assert.equal(sourceReconciliation.physicalQty, 3);
+  assert.equal(sourceReconciliation.kardexValueIrr, 300);
+  assert.equal(sourceReconciliation.physicalValueIrr, 300);
+  assert.equal(sourceReconciliation.isBalanced, true,
+    'Source Kardex quantity and value must reconcile after transfer dispatch');
+
+  const destinationReconciliation = reconcileWarehouseKardex({
+    product: received.updatedProduct,
+    warehouse: 'انبار مقصد',
+    invoices: [],
+    transfers: [received.updatedTransfer],
+    openingQty: 0,
+    openingValueIrr: 0,
+    defaultCostingMethod: 'fifo',
+  });
+  assert.equal(destinationReconciliation.kardexQty, 5);
+  assert.equal(destinationReconciliation.physicalQty, 5);
+  assert.equal(destinationReconciliation.kardexValueIrr, 700);
+  assert.equal(destinationReconciliation.physicalValueIrr, 700);
+  assert.equal(destinationReconciliation.isBalanced, true,
+    'Destination Kardex must reconcile quantity and FIFO value on actual receipt');
+
+  const mismatchedOpening = reconcileWarehouseKardex({
+    product,
+    warehouse: 'انبار مرکزی',
+    invoices: [],
+    transfers: [transfer],
+    openingQty: 9,
+    openingValueIrr: 1_100,
+    defaultCostingMethod: 'fifo',
+  });
+  assert.equal(mismatchedOpening.isBalanced, false,
+    'Opening-balance discrepancies must be reported rather than silently normalized');
+  assert.equal(mismatchedOpening.isQuantityBalanced, false);
+  assert.equal(mismatchedOpening.isValueBalanced, false);
 
   assert.throws(
     () => receiveTrackedWarehouseTransfer({ product: received.updatedProduct, transfer: received.updatedTransfer, receivedDate: '1405/01/04' }),
