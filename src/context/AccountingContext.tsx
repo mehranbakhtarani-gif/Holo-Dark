@@ -2855,12 +2855,177 @@ export const AccountingProvider: React.FC<{ children: React.ReactNode }> = ({ ch
           costingMethod: profile.defaultCostingMethod ?? 'fifo',
           closedFiscalYears: profile.closedFiscalYears ?? [],
           ownerId,
-          reversalVoucherId: generateSafeId('vch'),
+          reversalVoucherId: 'vch_cancel_' + invoiceId,
           nextVoucherNumber: nextNum,
           deviceId,
         });
       } catch (err) {
         showToast(err instanceof Error ? err.message : 'خطا در ابطال فاکتور.');
+        return;
+      }
+
+
+      // Authenticated cancellation requires an online transaction to prevent stale offline replay.
+      if (user) {
+        if (typeof navigator !== 'undefined' && !navigator.onLine) {
+          showToast('ابطال فاکتور در حالت آفلاین مجاز نیست؛ برای جلوگیری از ثبت تکراری، اتصال را برقرار و دوباره تلاش کنید.', 'error');
+          return;
+        }
+        try {
+          const invoiceRef = doc(db, 'invoices', invoiceId);
+          const counterRef = doc(db, 'counters', user.uid);
+          const reversalId = 'vch_cancel_' + invoiceId;
+          const candidateChequeIds = [...new Set(plan.chequeIdsToCancel)];
+          const chequeRefs = candidateChequeIds.map((id) => doc(db, 'cheques', id));
+          const productRefs = [...plan.productDeltas.keys()].map((id) => doc(db, 'products', id));
+          const linkedOriginalVoucher = vouchers.find((v) => v.id === inv.voucherId || (v.referenceId === inv.id && !v.reversalOfVoucherId));
+          const originalVoucherRef = linkedOriginalVoucher ? doc(db, 'vouchers', linkedOriginalVoucher.id) : null;
+
+          const committed = await runTransaction(db, async (tx) => {
+            const invoiceSnap = await tx.get(invoiceRef);
+            if (!invoiceSnap.exists()) throw new Error('فاکتور در پایگاه داده یافت نشد.');
+            const liveInvoice = { ...inv, ...invoiceSnap.data(), id: invoiceId } as Invoice;
+            if (liveInvoice.status === 'cancelled') return { alreadyCancelled: true as const };
+
+            const counterSnap = await tx.get(counterRef);
+            const productSnaps = await Promise.all(productRefs.map((ref) => tx.get(ref)));
+            const chequeSnaps = await Promise.all(chequeRefs.map((ref) => tx.get(ref)));
+            const originalVoucherSnap = originalVoucherRef ? await tx.get(originalVoucherRef) : null;
+
+            const liveProducts = productSnaps.map((snap) => {
+              if (!snap.exists()) throw new Error('یکی از کالاهای فاکتور در انبار یافت نشد؛ ابطال متوقف شد.');
+              const prior = products.find((p) => p.id === snap.id);
+              if (!prior) throw new Error('اطلاعات پایه یکی از کالاهای فاکتور در دسترس نیست.');
+              return { ...prior, ...snap.data(), id: snap.id } as Product;
+            });
+            const liveCheques = chequeSnaps.filter((snap) => snap.exists()).map((snap) => {
+              const prior = cheques.find((ch) => ch.id === snap.id);
+              return { ...(prior || {} as Cheque), ...snap.data(), id: snap.id } as Cheque;
+            });
+            for (const cheque of liveCheques) {
+              if (cheque.status !== 'in_box') throw new Error('وضعیت یکی از چک‌های مرتبط تغییر کرده است؛ ابتدا وضعیت چک را بررسی کنید.');
+            }
+            const liveOriginalVoucher = originalVoucherSnap?.exists()
+              ? ({ ...linkedOriginalVoucher, ...originalVoucherSnap.data(), id: originalVoucherSnap.id } as Voucher)
+              : undefined;
+            const liveVouchers = [
+              ...vouchers.filter((v) => v.id !== liveOriginalVoucher?.id),
+              ...(liveOriginalVoucher ? [liveOriginalVoucher] : []),
+            ];
+            const maxVoucherNumber = liveVouchers
+              .filter((v) => (v.fiscalYear || extractFiscalYearFromDate(v.date)) === extractFiscalYearFromDate(today))
+              .reduce((max, v) => Math.max(max, Number(v.voucherNumber) || 0), 0);
+            const liveCounter = counterSnap.exists() ? Number(counterSnap.data().lastVoucherNumber) || 0 : 0;
+            const livePlan = planInvoiceCancellation({
+              invoice: liveInvoice,
+              cancellationDate: today,
+              products: liveProducts,
+              vouchers: liveVouchers,
+              cheques: liveCheques,
+              costingMethod: profile.defaultCostingMethod ?? 'fifo',
+              closedFiscalYears: profile.closedFiscalYears ?? [],
+              ownerId,
+              reversalVoucherId: reversalId,
+              nextVoucherNumber: Math.max(maxVoucherNumber, liveCounter) + 1,
+              deviceId,
+            });
+
+            // All reads are complete. Stock, invoice, cheque, reversal voucher and sequence are one commit.
+            for (const [pid, delta] of livePlan.productDeltas.entries()) {
+              const snap = productSnaps.find((item) => item.id === pid);
+              if (!snap?.exists()) throw new Error('کالای مرتبط برای به‌روزرسانی موجود نیست.');
+              tx.update(doc(db, 'products', pid), {
+                stock: delta.stock,
+                buyPrice: delta.buyPrice,
+                costLayers: delta.costLayers,
+                inventoryValueIrr: delta.inventoryValueIrr,
+                _version: (Number(snap.data()._version) || 1) + 1,
+                updatedByDevice: deviceId.slice(0, 64),
+                updatedAt: serverTimestamp(),
+              });
+            }
+            for (const cheque of liveCheques) {
+              tx.update(doc(db, 'cheques', cheque.id), {
+                status: 'cancelled',
+                notes: ((cheque.notes || '') + ' (ابطال خودکار همراه فاکتور ' + liveInvoice.invoiceNumber + ')').slice(0, 300),
+                _version: (cheque._version ?? 1) + 1,
+                updatedByDevice: deviceId.slice(0, 64),
+                updatedAt: serverTimestamp(),
+              });
+            }
+            tx.update(invoiceRef, {
+              status: 'cancelled',
+              _version: (Number(invoiceSnap.data()._version) || 1) + 1,
+              updatedByDevice: deviceId.slice(0, 64),
+              updatedAt: serverTimestamp(),
+            });
+            if (livePlan.reversalVoucher) {
+              const rev = livePlan.reversalVoucher;
+              const fxLines = liveOriginalVoucher && isForeignCurrency(liveOriginalVoucher.currencyCode) && liveOriginalVoucher.exchangeRate
+                ? rev.lines.map((line) => ({
+                    ...line,
+                    ...(line.foreignCredit !== undefined ? { foreignDebit: line.foreignCredit } : {}),
+                    ...(line.foreignDebit !== undefined ? { foreignCredit: line.foreignDebit } : {}),
+                  }))
+                : rev.lines;
+              const sealedBase = { ...rev, lines: fxLines };
+              const sealed = { ...sealedBase, integrityHash: computeVoucherIntegrityHash(sealedBase) };
+              tx.set(doc(db, 'vouchers', reversalId), {
+                ownerId,
+                voucherNumber: sealed.voucherNumber,
+                date: sealed.date.slice(0, 20),
+                description: sealed.description.slice(0, 300),
+                voucherType: sealed.voucherType,
+                status: 'permanent',
+                totalDebit: sealed.totalDebit,
+                totalCredit: sealed.totalCredit,
+                fiscalYear: sealed.fiscalYear,
+                reversalOfVoucherId: sealed.reversalOfVoucherId,
+                integrityHash: sealed.integrityHash,
+                ...(sealed.currencyCode && sealed.exchangeRate ? {
+                  currencyCode: normalizeCurrencyCode(sealed.currencyCode).slice(0, 10),
+                  exchangeRate: sealed.exchangeRate,
+                  foreignTotalDebit: roundCurrency(fxLines.reduce((sum, line) => sum + (Number(line.foreignDebit) || 0), 0), 2),
+                  foreignTotalCredit: roundCurrency(fxLines.reduce((sum, line) => sum + (Number(line.foreignCredit) || 0), 0), 2),
+                } : {}),
+                ...(sealed.referenceId ? { referenceId: sealed.referenceId.slice(0, 128) } : {}),
+                lines: fxLines.slice(0, 100),
+                _version: 1,
+                updatedByDevice: deviceId.slice(0, 64),
+                createdAt: serverTimestamp(),
+                updatedAt: serverTimestamp(),
+              });
+              if (!counterSnap.exists()) {
+                tx.set(counterRef, { ownerId: user.uid, lastVoucherNumber: sealed.voucherNumber, lastInvoiceSeq: 102, updatedByDevice: deviceId.slice(0, 64), createdAt: serverTimestamp(), updatedAt: serverTimestamp() });
+              } else {
+                tx.update(counterRef, { lastVoucherNumber: sealed.voucherNumber, updatedByDevice: deviceId.slice(0, 64), updatedAt: serverTimestamp() });
+              }
+            }
+            return { alreadyCancelled: false as const, plan: livePlan };
+          });
+
+          if (committed.alreadyCancelled) {
+            showToast('این فاکتور قبلاً توسط دستگاه دیگری ابطال شده است.');
+            return;
+          }
+          const appliedPlan = committed.plan;
+          setProducts((prev) => prev.map((product) => appliedPlan.updatedProducts.find((next) => next.id === product.id) ?? product));
+          setInvoices((prev) => prev.map((invoice) => invoice.id === invoiceId ? { ...invoice, status: 'cancelled', _version: (invoice._version ?? 1) + 1 } : invoice));
+          setCheques((prev) => prev.map((cheque) => appliedPlan.chequeIdsToCancel.includes(cheque.id) ? { ...cheque, status: 'cancelled', notes: ((cheque.notes || '') + ' (ابطال همراه فاکتور)').slice(0, 300) } : cheque));
+          if (appliedPlan.reversalVoucher) {
+            const original = appliedPlan.reversalVoucher;
+            const fxLines = linkedOriginalVoucher && isForeignCurrency(linkedOriginalVoucher.currencyCode) && linkedOriginalVoucher.exchangeRate
+              ? original.lines.map((line) => ({ ...line, ...(line.foreignCredit !== undefined ? { foreignDebit: line.foreignCredit } : {}), ...(line.foreignDebit !== undefined ? { foreignCredit: line.foreignDebit } : {}) }))
+              : original.lines;
+            const base = { ...original, lines: fxLines };
+            setVouchers((prev) => prev.some((v) => v.id === reversalId) ? prev : [...prev, { ...base, integrityHash: computeVoucherIntegrityHash(base) }]);
+          }
+          showToast('فاکتور ' + inv.invoiceNumber + ' به‌صورت اتمیک ابطال شد؛ موجودی، سند معکوس و چک‌های مرتبط هم‌زمان به‌روزرسانی شدند.', 'success');
+        } catch (err) {
+          const message = err instanceof Error ? err.message : 'تراکنش اتمیک ابطال فاکتور ناموفق بود.';
+          showToast(message, 'error');
+          throw err;
+        }
         return;
       }
 
