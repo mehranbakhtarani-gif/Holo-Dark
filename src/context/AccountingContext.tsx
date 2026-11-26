@@ -2112,8 +2112,13 @@ export const AccountingProvider: React.FC<{ children: React.ReactNode }> = ({ ch
         setProducts((prev) => prev.map((p) => (p.id === productId ? { ...p, ...patch } : p)));
       } else if (user) {
         try {
-          const legacyPayload = { ...payload, updatedAt: serverTimestamp() };
-          await updateDoc(doc(db, 'products', productId), legacyPayload);
+          // Firestore product updates must preserve the original creation timestamp.
+          const { createdAt: _createdAt, ...legacyFields } = payload;
+          void _createdAt;
+          await updateDoc(doc(db, 'products', productId), {
+            ...legacyFields,
+            updatedAt: serverTimestamp(),
+          });
         } catch (err) {
           handleFirestoreError(err, OperationType.UPDATE, `products/${productId}`);
           throw err;
