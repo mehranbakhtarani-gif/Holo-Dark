@@ -280,6 +280,7 @@ export interface WorkspaceVoucherMutationResult {
   status: 'committed' | 'replayed';
   operationId: string;
   version: number;
+  sourceVersion?: number;
   voucherNumber: number;
 }
 export async function mutateWorkspaceVoucher(
