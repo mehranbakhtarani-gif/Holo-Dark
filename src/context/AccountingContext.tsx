@@ -1863,6 +1863,10 @@ export const AccountingProvider: React.FC<{ children: React.ReactNode }> = ({ ch
         showToast('فقط سند قطعی قابل معکوس‌سازی است.', 'error');
         return null;
       }
+      if (vouchers.some((voucher) => voucher.reversalOfVoucherId === orig.id)) {
+        showToast('برای این سند قبلاً سند معکوس ثبت شده است.', 'error');
+        return null;
+      }
       const reversedLines: VoucherLine[] = orig.lines.map((l) => ({
         ...l,
         description: `برگشت/اصلاح سند #${orig.voucherNumber}: ${l.description}`,
