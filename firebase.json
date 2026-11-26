@@ -7,7 +7,8 @@
   "firestore": [
     {
       "database": "ai-studio-remixapex-83053e73-77ed-4f64-8f70-f22da529446b",
-      "rules": "firestore.rules"
+      "rules": "firestore.rules",
+      "indexes": "firestore.indexes.json"
     }
   ],
   "emulators": {
