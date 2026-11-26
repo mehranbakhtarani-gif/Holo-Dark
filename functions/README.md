@@ -43,3 +43,11 @@ The Functions use the supported `@google-cloud/firestore` client with an explici
 ## Workspace emulator integration tests
 
 Install Functions dependencies with `npm install` in this directory. Start the configured Auth, Firestore, and Functions emulators from the repository root using `firebase emulators:start --only auth,firestore,functions`. In a second terminal, run `npm run test:emulator` from `functions/`. The test harness creates isolated verified Auth Emulator users and exercises the callable endpoints against the Functions and Firestore emulators. It uses only emulator endpoints and does not deploy or mutate production resources. The harness expects the project ID and emulator ports declared in the repository Firebase configuration; override `FIREBASE_PROJECT_ID`, `AUTH_EMULATOR_HOST`, or `FUNCTIONS_EMULATOR_HOST` only when running a deliberately separate emulator stack.
+
+## Reversible workspace data staging
+
+The owner can start and advance a staging migration from Settings. The Functions API uses `beginWorkspaceDataMigration`, `migrateWorkspaceDataBatch`, and `verifyWorkspaceDataMigration`. It copies allowlisted owner-scoped root collections in pages of up to 200 records into `workspaces/{workspaceId}/migrationData/{collection}/records/{sourceId}`. Original records are read-only inputs and are not deleted or rewritten. Destination records preserve the complete source payload inside an envelope and include a SHA-256 digest.
+
+The verification phase rereads each current source page and compares its digest with the staged record; it also compares copied and verified record counts per collection. If a source changes during the copy, verification stops rather than claiming a successful migration. Restart/reset is deliberately not automatic.
+
+**Important:** this is a staging copy only. It does not change the app's root-collection reads/writes, enable workspace-member Firestore Rules, or authorize any member to access the staged records. Do not deploy broadened Rules or delete legacy collections based only on a staging status.
