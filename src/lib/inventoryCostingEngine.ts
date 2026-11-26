@@ -127,6 +127,51 @@ export function roundQty(qty: number): number {
   return Math.round((Number(qty) || 0) * QTY_SCALE) / QTY_SCALE;
 }
 
+/**
+ * Selects the next FIFO cost slice to restore for a partial sale return.
+ * Earlier returns consume the tail of the original sale's FIFO allocations first.
+ * Cumulative rounded boundaries keep integer-IRR allocations exactly additive.
+ */
+export function selectUnreturnedSaleAllocations(
+  originalAllocations: ConsumedCostLayerAllocation[],
+  previouslyReturnedQty: number,
+  requestedQty: number
+): ConsumedCostLayerAllocation[] {
+  let skipQty = roundQty(Math.max(0, previouslyReturnedQty));
+  let remainingQty = roundQty(requestedQty);
+  const selectedInReverse: ConsumedCostLayerAllocation[] = [];
+
+  for (let i = originalAllocations.length - 1; i >= 0 && remainingQty > 0.00005; i--) {
+    const allocation = originalAllocations[i];
+    const allocationQty = roundQty(allocation.qty);
+    if (allocationQty <= 0) continue;
+    if (skipQty >= allocationQty - 0.00005) {
+      skipQty = roundQty(Math.max(0, skipQty - allocationQty));
+      continue;
+    }
+
+    const offsetInLayer = skipQty;
+    const availableInLayer = roundQty(allocationQty - offsetInLayer);
+    const takeQty = roundQty(Math.min(availableInLayer, remainingQty));
+    const startCost = Math.round((allocation.totalCostIrr * offsetInLayer) / allocationQty);
+    const endCost = Math.round((allocation.totalCostIrr * (offsetInLayer + takeQty)) / allocationQty);
+    const takeCost = Math.max(0, endCost - startCost);
+    selectedInReverse.push({
+      layerId: allocation.layerId,
+      qty: takeQty,
+      unitCostIrr: takeQty > 0 ? Math.round(takeCost / takeQty) : allocation.unitCostIrr,
+      totalCostIrr: takeCost,
+    });
+    remainingQty = roundQty(Math.max(0, remainingQty - takeQty));
+    skipQty = 0;
+  }
+
+  if (remainingQty > 0.00005) {
+    throw new Error('اطلاعات لایه‌های بهای تمام‌شدهٔ فاکتور فروش برای محاسبهٔ برگشت ناقص است.');
+  }
+  return selectedInReverse.reverse();
+}
+
 function roundQty2(qty: number): number {
   return Math.round((Number(qty) || 0) * 100) / 100;
 }
