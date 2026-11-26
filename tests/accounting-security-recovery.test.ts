@@ -608,6 +608,35 @@ test('Periodic Weighted Average: rejects cumulative linked sales returns beyond 
   );
 });
 
+test('Periodic Weighted Average: rejects cumulative linked purchase returns beyond the original purchase quantity', () => {
+  assert.throws(
+    () => recalculateInventoryLedger({
+      productId: 'prd_periodic_purchase_return_limit',
+      costingMethod: 'periodic_average',
+      movements: [
+        { id: 'purchase_periodic_limit', date: '1405/01/01', kind: 'purchase', productId: 'prd_periodic_purchase_return_limit', qty: 5, totalCostIrr: 5_000 },
+        { id: 'purchase_return_periodic_a', date: '1405/01/02', kind: 'purchase_return', productId: 'prd_periodic_purchase_return_limit', qty: 3, totalCostIrr: 3_000, sourceRefId: 'purchase_periodic_limit' },
+        { id: 'purchase_return_periodic_b', date: '1405/01/03', kind: 'purchase_return', productId: 'prd_periodic_purchase_return_limit', qty: 3, totalCostIrr: 3_000, sourceRefId: 'purchase_periodic_limit' },
+      ],
+    }),
+    /مقدار برگشت از خرید از مقدار خریداری‌شدهٔ باقی‌مانده بیشتر است/
+  );
+});
+
+test('Periodic Weighted Average: rejects linked purchase returns when the original purchase is missing', () => {
+  assert.throws(
+    () => recalculateInventoryLedger({
+      productId: 'prd_periodic_missing_purchase',
+      costingMethod: 'periodic_average',
+      movements: [
+        { id: 'purchase_periodic_missing', date: '1405/01/01', kind: 'purchase', productId: 'prd_periodic_missing_purchase', qty: 5, totalCostIrr: 5_000 },
+        { id: 'return_periodic_missing_purchase', date: '1405/01/02', kind: 'purchase_return', productId: 'prd_periodic_missing_purchase', qty: 1, totalCostIrr: 1_000, sourceRefId: 'missing_periodic_purchase' },
+      ],
+    }),
+    /فاکتور خرید مرجع برای برگشت از خرید یافت نشد/
+  );
+});
+
 test('Periodic Weighted Average: rejects linked sales returns when the original sale is missing', () => {
   assert.throws(
     () => recalculateInventoryLedger({
