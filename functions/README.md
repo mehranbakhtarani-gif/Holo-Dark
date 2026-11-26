@@ -74,3 +74,11 @@ The callable is **not yet wired into AccountingContext**. Do not use it as a pro
 
 ### AccountingContext integration guard
 AccountingContext resolves the authenticated caller's Workspace before cloud hydration. Active invited members are prevented from creating a duplicate personal cloud seed or attaching UID-scoped root listeners. Their ownerId is resolved to the Workspace ID, while current root Rules still require the caller UID, deliberately blocking unsupported member writes. No staged reads are enabled yet because legacy writes can stale the verified snapshot; the next step must implement and test server-backed read/write adapters before member accounting access is opened.
+
+
+### Frozen core read adapter (accounts/products)
+- listWorkspaceCoreRecords exposes only accounts and products and revalidates active membership and role on every page.
+- A verified migration manifest alone is insufficient. The endpoint requires readBarrier.status = frozen, a non-empty generation, and a freeze timestamp; without these fields it fails closed because legacy writes may have made the snapshot stale.
+- The client helper pages through the full collection and returns no partial result if pagination fails or the safety cap is exceeded.
+- AccountingContext fetches accounts and products together for invited members and publishes neither collection until both reads complete. Other collections and all writes remain unavailable through this adapter.
+- No code in this change creates the freeze barrier or stops legacy writes. Until a separately reviewed freeze/reconciliation procedure is implemented, member reads are expected to remain blocked.
