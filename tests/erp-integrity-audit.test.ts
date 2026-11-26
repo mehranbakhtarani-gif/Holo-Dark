@@ -1834,3 +1834,33 @@ test('Warehouse stocktake preserves four-decimal quantities and rejects invalid 
   assert.throws(() => evaluateWarehouseShortageSurplus({ product, warehouse: 'انبار مرکزی', countedQty: Number.NaN }), /متناهی و غیرمنفی/);
   assert.throws(() => evaluateWarehouseShortageSurplus({ product, warehouse: 'انبار مرکزی', countedQty: -0.1 }), /متناهی و غیرمنفی/);
 });
+
+test('Warehouse matrix preserves four-decimal reserved and in-transit quantities', () => {
+  const product: Product = {
+    id: 'prod_matrix_fractional', ownerId: 'owner_test', sku: 'MAT-004',
+    name: 'کالای ماتریس کسری', category: 'آزمایشی', unit: 'کیلوگرم',
+    warehouse: 'انبار مبدأ', buyPrice: 1000, sellPrice: 1500, stock: 1,
+    reorderPoint: 0, vatExempt: true, inventoryValueIrr: 1000,
+    costingMethod: 'fifo',
+    costLayers: [
+      { layerId: 'matrix_source', date: '1405/01/01', sourceRef: 'opening', warehouse: 'انبار مبدأ', originalQty: 0.8766, remainingQty: 0.8766, unitCostIrr: 1000, totalCostIrr: 877 },
+      { layerId: 'matrix_transit', date: '1405/01/02', sourceRef: 'transfer', warehouse: 'در راه → انبار مقصد', originalQty: 0.1234, remainingQty: 0.1234, unitCostIrr: 1000, totalCostIrr: 123 },
+    ],
+  };
+  const transfer: TrackedWarehouseTransfer = {
+    id: 'matrix_transfer', transferNumber: 'MAT-TRF', date: '1405/01/02',
+    productId: product.id, sku: product.sku, productName: product.name,
+    fromWarehouse: 'انبار مبدأ', toWarehouse: 'انبار مقصد', qty: 0.1234,
+    transferredCostIrr: 123, transferredLayers: [], status: 'in_transit',
+  };
+  const matrix = computeMultiWarehouseMatrix({
+    products: [product], transfers: [transfer],
+    reservedInvoiceItems: [{ productId: product.id, warehouse: 'انبار مبدأ', quantity: 0.1234 }],
+    defaultCostingMethod: 'fifo',
+  });
+  const source = matrix.positions.find((position) => position.warehouse === 'انبار مبدأ');
+  const destination = matrix.positions.find((position) => position.warehouse === 'انبار مقصد');
+  assert.equal(source?.reservedQty, 0.1234);
+  assert.equal(source?.availableToSellQty, 0.7532);
+  assert.equal(destination?.inTransitInQty, 0.1234);
+});
