@@ -278,6 +278,7 @@ service cloud.firestore {
         && (!('returnRevision' in data) || (data.returnRevision is int && data.returnRevision >= 0))
         && (!('activeReturnCount' in data) || (data.activeReturnCount is int && data.activeReturnCount >= 0))
         && isOptionalString(data, 'lastReturnMutationId', 128)
+        && (!(data.invoiceType in ['sale_return', 'purchase_return']) || (!('returnRevision' in data) && !('activeReturnCount' in data) && !('lastReturnMutationId' in data)))
         && data.invoiceType in ['sale', 'purchase', 'proforma', 'sale_return', 'purchase_return', 'waste']
         && isNonEmptyString(data.date, 20)
         && isNonEmptyString(data.partyId, 128)
@@ -829,7 +830,15 @@ service cloud.firestore {
               )
             )
           )
-          && (!(existing().invoiceType in ['sale', 'purchase']) || ('activeReturnCount' in existing()) && existing().activeReturnCount is int && existing().activeReturnCount == 0 || incoming().status != 'cancelled')
+          && (
+            !(existing().invoiceType in ['sale', 'purchase'])
+            || (
+              ('activeReturnCount' in existing())
+              && existing().activeReturnCount is int
+              && existing().activeReturnCount == 0
+            )
+            || incoming().status != 'cancelled'
+          )
           && incoming().ownerId == existing().ownerId
           && incoming().createdAt == existing().createdAt
           && incoming().updatedAt == request.time
