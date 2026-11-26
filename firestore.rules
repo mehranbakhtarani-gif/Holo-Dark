@@ -209,7 +209,7 @@ service cloud.firestore {
         && data.createdAt is timestamp
         && data.updatedAt is timestamp;
     }
-    function hasAtomicReturnRevisionBump(sourceInvoiceId, ownerId, partyId, sourceType) {
+    function hasAtomicReturnRevisionBump(sourceInvoiceId, ownerId, partyId, sourceType, countDelta) {
       let sourcePath = /databases/$(database)/documents/invoices/$(sourceInvoiceId);
       let sourceBefore = get(sourcePath).data;
       let sourceAfter = getAfter(sourcePath).data;
@@ -222,7 +222,8 @@ service cloud.firestore {
         && sourceAfter.partyId == sourceBefore.partyId
         && sourceAfter.invoiceType == sourceBefore.invoiceType
         && sourceAfter.status == sourceBefore.status
-        && sourceAfter.returnRevision == (('returnRevision' in sourceBefore) ? sourceBefore.returnRevision : 0) + 1;
+        && sourceAfter.returnRevision == (('returnRevision' in sourceBefore) ? sourceBefore.returnRevision : 0) + 1
+        && sourceAfter.activeReturnCount == (('activeReturnCount' in sourceBefore) ? sourceBefore.activeReturnCount : 0) + countDelta;
     }
 
     function isValidReturnSource(data) {
@@ -249,6 +250,7 @@ service cloud.firestore {
         && isOptionalString(data, 'taxSerial', 64)
         && isOptionalString(data, 'sourceInvoiceId', 128)
         && (!('returnRevision' in data) || (data.returnRevision is int && data.returnRevision >= 0))
+        && (!('activeReturnCount' in data) || (data.activeReturnCount is int && data.activeReturnCount >= 0))
         && data.invoiceType in ['sale', 'purchase', 'proforma', 'sale_return', 'purchase_return', 'waste']
         && isNonEmptyString(data.date, 20)
         && isNonEmptyString(data.partyId, 128)
@@ -760,7 +762,8 @@ service cloud.firestore {
             incoming().sourceInvoiceId,
             incoming().ownerId,
             incoming().partyId,
-            incoming().invoiceType == 'sale_return' ? 'sale' : 'purchase'
+            incoming().invoiceType == 'sale_return' ? 'sale' : 'purchase',
+            1
           )
         )
         && incoming().createdAt == request.time
@@ -769,6 +772,7 @@ service cloud.firestore {
         isAdmin() || (
           existing().ownerId == request.auth.uid
           && existing().status != 'cancelled'
+          && (!(existing().invoiceType in ['sale', 'purchase']) || (('activeReturnCount' in existing()) ? existing().activeReturnCount : 0) == 0 || incoming().status != 'cancelled')
           && incoming().ownerId == existing().ownerId
           && incoming().createdAt == existing().createdAt
           && incoming().updatedAt == request.time
@@ -788,7 +792,8 @@ service cloud.firestore {
                 existing().sourceInvoiceId,
                 existing().ownerId,
                 existing().partyId,
-                existing().invoiceType == 'sale_return' ? 'sale' : 'purchase'
+                existing().invoiceType == 'sale_return' ? 'sale' : 'purchase',
+                -1
               )
             )
             || !(existing().invoiceType in ['sale_return', 'purchase_return'])
@@ -796,8 +801,8 @@ service cloud.firestore {
             || existing().status == 'cancelled'
           )
           && (
-            incoming().diff(existing()).affectedKeys().hasOnly(['status', 'returnRevision', '_version', 'updatedByDevice', 'updatedAt']) ||
-            incoming().diff(existing()).affectedKeys().hasOnly(['paidCash', 'paidBank', 'paidCheque', 'creditAmount', 'status', 'returnRevision', '_version', 'updatedByDevice', 'updatedAt']) ||
+            incoming().diff(existing()).affectedKeys().hasOnly(['status', 'returnRevision', 'activeReturnCount', '_version', 'updatedByDevice', 'updatedAt']) ||
+            incoming().diff(existing()).affectedKeys().hasOnly(['paidCash', 'paidBank', 'paidCheque', 'creditAmount', 'status', 'returnRevision', 'activeReturnCount', '_version', 'updatedByDevice', 'updatedAt']) ||
             (
               existing().invoiceType == 'proforma'
               && incoming().diff(existing()).affectedKeys().hasOnly(['invoiceNumber', 'invoiceType', 'status', 'voucherId', 'items', '_version', 'updatedByDevice', 'updatedAt'])
