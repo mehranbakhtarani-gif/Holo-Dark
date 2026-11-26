@@ -277,6 +277,8 @@ type MeshWireMessage =
       type: 'mesh:hello';
       fromPeerId: MeshDevicePeerId;
       authTag: string;
+      nonce: string;
+      issuedAt: string;
       updatedAt: string;
       payloadHash: string;
       vectorClock: Record<string, number>;
@@ -287,6 +289,8 @@ type MeshWireMessage =
       type: 'mesh:request_state';
       fromPeerId: MeshDevicePeerId;
       authTag: string;
+      nonce: string;
+      issuedAt: string;
     }
   | {
       type: 'mesh:state_payload';
@@ -303,12 +307,58 @@ type MeshWireMessage =
       type: 'mesh:ack';
       fromPeerId: MeshDevicePeerId;
       authTag: string;
+      nonce: string;
+      issuedAt: string;
       receivedOperationIds: string[];
       payloadHash: string;
       syncedAt: string;
     };
 
 type MeshAuthRecord = Record<string, unknown>;
+const MESH_MAX_MESSAGE_AGE_MS = 10 * 60 * 1000;
+const MESH_REPLAY_CACHE_KEY = 'holoo_apex_mesh_replay_nonces_v2';
+
+function createMeshNonce(): string {
+  const bytes = globalThis.crypto.getRandomValues(new Uint8Array(16));
+  return Array.from(bytes, (byte) => byte.toString(16).padStart(2, '0')).join('');
+}
+
+export function isFreshMeshWireMessage(message: MeshAuthRecord, nowMs = Date.now()): boolean {
+  if (typeof message.nonce !== 'string' || !/^[0-9a-f]{32}$/i.test(message.nonce)) return false;
+  if (typeof message.issuedAt !== 'string') return false;
+  const issuedAtMs = Date.parse(message.issuedAt);
+  return Number.isFinite(issuedAtMs) && Math.abs(nowMs - issuedAtMs) <= MESH_MAX_MESSAGE_AGE_MS;
+}
+
+function loadMeshReplayNonces(): Partial<Record<MeshDevicePeerId, string[]>> {
+  try {
+    const parsed: unknown = JSON.parse(localStorage.getItem(MESH_REPLAY_CACHE_KEY) || '{}');
+    if (!parsed || typeof parsed !== 'object' || Array.isArray(parsed)) return {};
+    const result: Partial<Record<MeshDevicePeerId, string[]>> = {};
+    for (const peerId of MESH_DEVICES.map((device) => device.peerId)) {
+      const values = (parsed as Record<string, unknown>)[peerId];
+      if (Array.isArray(values)) {
+        result[peerId] = values.filter((value): value is string =>
+          typeof value === 'string' && /^[0-9a-f]{32}$/i.test(value)
+        ).slice(-256);
+      }
+    }
+    return result;
+  } catch {
+    return {};
+  }
+}
+
+function persistMeshReplayNonce(peerId: MeshDevicePeerId, nonce: string): void {
+  try {
+    const stored = loadMeshReplayNonces();
+    stored[peerId] = [...(stored[peerId] || []).filter((value) => value !== nonce), nonce].slice(-256);
+    localStorage.setItem(MESH_REPLAY_CACHE_KEY, JSON.stringify(stored));
+  } catch {
+    // In-memory replay protection remains active when storage is unavailable.
+  }
+}
+
 
 function stableMeshAuthSerialize(value: unknown): string {
   if (value === null || typeof value !== 'object') return JSON.stringify(value) ?? 'null';
@@ -470,6 +520,7 @@ export class HolooPeerMeshManager {
   private peerLastStateSent = new Map<MeshDevicePeerId, { hash: string; sentAt: number }>();
   private myPeerId: MeshDevicePeerId;
   private authKeyPromise: Promise<CryptoKey> | null;
+  private seenMessageNonces = new Map<MeshDevicePeerId, Set<string>>();
   private callbacks: MeshSyncCallbacks;
   private batchConfig: MeshBatchConfig;
   private batcher: MeshUpdateBatcher;
@@ -487,6 +538,10 @@ export class HolooPeerMeshManager {
   ) {
     this.myPeerId = myPeerId;
     this.authKeyPromise = passphrase.trim().length >= 16 ? deriveMeshAuthKey(passphrase) : null;
+    const replayCache = loadMeshReplayNonces();
+    for (const [peerId, nonces] of Object.entries(replayCache) as Array<[MeshDevicePeerId, string[]]>) {
+      this.seenMessageNonces.set(peerId, new Set(nonces));
+    }
     this.callbacks = callbacks;
     this.batchConfig = { ...DEFAULT_MESH_BATCH_CONFIG, ...(batchConfig || {}) };
     this.batcher = new MeshUpdateBatcher((batch) => {
@@ -773,9 +828,31 @@ export class HolooPeerMeshManager {
     return this.authKeyPromise;
   }
 
-  private async createSignedMessage<T extends Record<string, unknown>>(body: T): Promise<T & { authTag: string }> {
+  private async createSignedMessage<T extends Record<string, unknown>>(
+    body: T
+  ): Promise<T & { authTag: string; nonce: string; issuedAt: string }> {
     const key = await this.getAuthKey();
-    return { ...body, authTag: await signMeshWireMessage(body, key) };
+    const signedBody = {
+      ...body,
+      nonce: createMeshNonce(),
+      issuedAt: new Date().toISOString(),
+    };
+    return { ...signedBody, authTag: await signMeshWireMessage(signedBody, key) };
+  }
+
+  private acceptMessageNonce(peerId: MeshDevicePeerId, nonce: string): boolean {
+    if (!isFreshMeshWireMessage({ nonce, issuedAt: new Date().toISOString() })) return false;
+    const seen = this.seenMessageNonces.get(peerId) || new Set<string>();
+    if (seen.has(nonce)) return false;
+    seen.add(nonce);
+    while (seen.size > 256) {
+      const oldest = seen.values().next().value as string | undefined;
+      if (!oldest) break;
+      seen.delete(oldest);
+    }
+    this.seenMessageNonces.set(peerId, seen);
+    persistMeshReplayNonce(peerId, nonce);
+    return true;
   }
 
   private attachConnection(remotePeerId: MeshDevicePeerId, conn: DataConnection): void {
@@ -969,10 +1046,13 @@ export class HolooPeerMeshManager {
 
     // Verify every wire-message field with HMAC-SHA-256; fail closed on tampering.
     const authKey = await this.getAuthKey().catch(() => null);
+    const authRecord = msg as unknown as MeshAuthRecord;
     const validSignature = authKey
-      ? await verifyMeshWireMessage(msg as unknown as MeshAuthRecord, authKey).catch(() => false)
+      ? await verifyMeshWireMessage(authRecord, authKey).catch(() => false)
       : false;
-    if (!validSignature || msg.fromPeerId !== remotePeerId) {
+    const freshMessage = isFreshMeshWireMessage(authRecord);
+    const unseenNonce = freshMessage && this.acceptMessageNonce(remotePeerId, String(authRecord.nonce));
+    if (!validSignature || !freshMessage || !unseenNonce || msg.fromPeerId !== remotePeerId) {
       this.updatePeerState(remotePeerId, {
         status: 'error',
         lastError: 'کلید امنیتی شبکه ۳ دستگاه مطابقت ندارد',
