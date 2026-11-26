@@ -177,19 +177,85 @@ const STAGED_READ_COLLECTIONS: Record<string, readonly string[]> = {
   owner: ['counters', 'accounts', 'parties', 'products', 'vouchers', 'invoices', 'cheques', 'employees', 'assets', 'costCenters', 'currencies', 'exchangeRates', 'importDossiers', 'salesOrders', 'subcontractJobs', 'rbacOperators', 'auditLogs', 'workspaceExtensions', 'devicePresence', 'cloudBackups'],
   finance_manager: ['counters', 'accounts', 'parties', 'products', 'vouchers', 'invoices', 'cheques', 'employees', 'assets', 'costCenters', 'currencies', 'exchangeRates', 'importDossiers', 'salesOrders', 'subcontractJobs', 'auditLogs'],
   accountant: ['counters', 'accounts', 'parties', 'products', 'vouchers', 'invoices', 'cheques', 'employees', 'assets', 'costCenters', 'currencies', 'exchangeRates', 'auditLogs'],
-  warehouse_keeper: ['products', 'importDossiers', 'salesOrders', 'subcontractJobs'],
-  sales_officer: ['parties', 'products', 'invoices', 'salesOrders'],
+  warehouse_keeper: ['products'],
+  sales_officer: ['products', 'invoices'],
   treasurer: ['counters', 'accounts', 'parties', 'vouchers', 'cheques', 'currencies', 'exchangeRates'],
   auditor_readonly: ['counters', 'accounts', 'parties', 'products', 'vouchers', 'invoices', 'cheques', 'employees', 'assets', 'costCenters', 'currencies', 'exchangeRates', 'importDossiers', 'salesOrders', 'subcontractJobs', 'auditLogs'],
 };
 
+const CORE_WRITE_FIELDS: Record<string, { required: string[]; allowed: string[] }> = {
+  accounts: {
+    required: ['ownerId', 'code', 'title', 'level', 'category', 'nature', 'isSystem', 'createdAt', 'updatedAt'],
+    allowed: ['ownerId', 'code', 'title', 'level', 'parentCode', 'category', 'nature', 'isSystem', 'createdAt', 'updatedAt'],
+  },
+  products: {
+    required: ['ownerId', 'sku', 'name', 'category', 'warehouse', 'unit', 'buyPrice', 'sellPrice', 'stock', 'reorderPoint', 'vatExempt', 'createdAt', 'updatedAt'],
+    allowed: ['ownerId', 'sku', 'name', 'category', 'warehouse', 'unit', 'secondaryUnit', 'kgPerCarton', 'bobbinUnit', 'bobbinsPerCarton', 'yarnCount', 'lotNumber', 'originCountry', 'buyPrice', 'sellPrice', 'stock', 'reorderPoint', 'vatExempt', 'costingMethod', 'costLayers', 'inventoryValueIrr', '_version', 'updatedByDevice', 'createdAt', 'updatedAt'],
+  },
+  vouchers: {
+    required: ['ownerId', 'voucherNumber', 'date', 'description', 'voucherType', 'status', 'totalDebit', 'totalCredit', 'lines', 'createdAt', 'updatedAt'],
+    allowed: ['ownerId', 'voucherNumber', 'date', 'description', 'voucherType', 'status', 'totalDebit', 'totalCredit', 'currencyCode', 'exchangeRate', 'foreignTotalDebit', 'foreignTotalCredit', 'referenceId', 'reversalOfVoucherId', 'fiscalYear', 'integrityHash', 'lines', '_version', 'updatedByDevice', 'createdAt', 'updatedAt'],
+  },
+  invoices: {
+    required: ['ownerId', 'invoiceNumber', 'invoiceType', 'date', 'partyId', 'partyName', 'warehouse', 'subtotal', 'discount', 'vatAmount', 'grandTotal', 'paidCash', 'paidBank', 'paidCheque', 'creditAmount', 'status', 'items', 'createdAt', 'updatedAt'],
+    allowed: ['ownerId', 'invoiceNumber', 'taxSerial', 'invoiceType', 'date', 'partyId', 'partyName', 'intermediaryId', 'intermediaryName', 'warehouse', 'costCenterId', 'currencyCode', 'exchangeRate', 'foreignSubtotal', 'foreignDiscount', 'foreignVatAmount', 'foreignGrandTotal', 'subtotal', 'discount', 'vatAmount', 'grandTotal', 'paidCash', 'paidBank', 'paidCheque', 'creditAmount', 'status', 'voucherId', 'items', '_version', 'updatedByDevice', 'createdAt', 'updatedAt'],
+  },
+};
+
+function validateCoreWorkspacePayload(collectionName: string, value: unknown, workspaceId: string) {
+  const schema = CORE_WRITE_FIELDS[collectionName];
+  if (!schema || !value || typeof value !== 'object' || Array.isArray(value)) {
+    throw new HttpsError('invalid-argument', 'این مجموعه هنوز در درگاه نوشتن workspace پشتیبانی نمی‌شود.');
+  }
+  const data = value as Record<string, unknown>;
+  const keys = Object.keys(data);
+  if (data.ownerId !== workspaceId || schema.required.some((key) => !(key in data))
+      || keys.some((key) => !schema.allowed.includes(key))) {
+    throw new HttpsError('invalid-argument', 'ساختار رکورد با قرارداد داده مجموعه سازگار نیست.');
+  }
+  if (collectionName === 'accounts') {
+    if (typeof data.code !== 'string' || !/^\\d+$/.test(data.code)
+        || typeof data.title !== 'string' || !['group', 'kol', 'moein', 'tafsili'].includes(String(data.level))
+        || !['asset', 'liability', 'equity', 'revenue', 'cogs', 'expense', 'memo'].includes(String(data.category))
+        || !['debit', 'credit', 'both'].includes(String(data.nature)) || typeof data.isSystem !== 'boolean') {
+      throw new HttpsError('invalid-argument', 'ساختار حساب معتبر نیست.');
+    }
+  } else if (collectionName === 'products') {
+    if (typeof data.sku !== 'string' || typeof data.name !== 'string'
+        || typeof data.stock !== 'number' || !Number.isFinite(data.stock)
+        || typeof data.buyPrice !== 'number' || data.buyPrice < 0
+        || typeof data.sellPrice !== 'number' || data.sellPrice < 0
+        || typeof data.reorderPoint !== 'number' || data.reorderPoint < 0
+        || typeof data.vatExempt !== 'boolean'
+        || (data.costingMethod !== undefined && !['fifo', 'moving_average', 'periodic_average'].includes(String(data.costingMethod)))
+        || (data.costLayers !== undefined && (!Array.isArray(data.costLayers) || data.costLayers.length > 200))) {
+      throw new HttpsError('invalid-argument', 'ساختار کالا یا لایه‌های بهای تمام‌شده معتبر نیست.');
+    }
+  } else if (collectionName === 'vouchers') {
+    if (typeof data.voucherNumber !== 'number' || data.voucherNumber < 1
+        || typeof data.totalDebit !== 'number' || data.totalDebit !== data.totalCredit
+        || !Array.isArray(data.lines) || data.lines.length < 2 || data.lines.length > 100
+        || !['draft', 'permanent'].includes(String(data.status))
+        || (data.status === 'permanent' && (typeof data.integrityHash !== 'string' || !/^vseal_[0-9a-f]{16}$/.test(data.integrityHash)))) {
+      throw new HttpsError('invalid-argument', 'ساختار سند حسابداری یا تراز آن معتبر نیست.');
+    }
+  } else if (collectionName === 'invoices') {
+    const amounts = ['subtotal', 'discount', 'vatAmount', 'grandTotal', 'paidCash', 'paidBank', 'paidCheque', 'creditAmount'];
+    if (amounts.some((key) => typeof data[key] !== 'number' || !Number.isFinite(data[key] as number) || (data[key] as number) < 0)
+        || !Array.isArray(data.items) || data.items.length < 1 || data.items.length > 100
+        || !['issued', 'settled', 'cancelled'].includes(String(data.status))) {
+      throw new HttpsError('invalid-argument', 'ساختار فاکتور یا مبالغ آن معتبر نیست.');
+    }
+  }
+}
+
 const WORKSPACE_WRITE_COLLECTIONS: Record<string, readonly string[]> = {
   owner: WORKSPACE_MIGRATION_COLLECTIONS,
-  finance_manager: ['accounts', 'parties', 'products', 'vouchers', 'invoices', 'cheques', 'employees', 'assets', 'costCenters', 'currencies', 'exchangeRates', 'importDossiers', 'salesOrders', 'subcontractJobs'],
-  accountant: ['accounts', 'parties', 'products', 'vouchers', 'invoices', 'cheques', 'employees', 'assets', 'costCenters', 'currencies', 'exchangeRates'],
+  finance_manager: ['accounts', 'products', 'vouchers', 'invoices'],
+  accountant: ['accounts', 'products', 'vouchers', 'invoices'],
   warehouse_keeper: ['products', 'importDossiers', 'salesOrders', 'subcontractJobs'],
   sales_officer: ['parties', 'products', 'invoices', 'salesOrders'],
-  treasurer: ['accounts', 'parties', 'vouchers', 'cheques', 'currencies', 'exchangeRates'],
+  treasurer: ['accounts', 'vouchers'],
   auditor_readonly: [],
 };
 
@@ -223,10 +289,7 @@ export const writeWorkspaceRecord = onCall({ region: REGION, timeoutSeconds: 60 
   const operationRef = db.collection('workspaceWriteOperations').doc(`${workspaceId}_${operationId}`);
   const rawData = request.data?.data;
   if (operation !== 'delete') {
-    if (!rawData || typeof rawData !== 'object' || Array.isArray(rawData)
-        || (rawData as Record<string, unknown>).ownerId !== workspaceId) {
-      throw new HttpsError('invalid-argument', 'داده باید متعلق به همین فضای کاری باشد.');
-    }
+    validateCoreWorkspacePayload(collectionName, rawData, workspaceId);
     const encoded = JSON.stringify(stableMigrationValue(rawData));
     if (Buffer.byteLength(encoded, 'utf8') > 850_000) {
       throw new HttpsError('resource-exhausted', 'اندازه رکورد برای همگام‌سازی بیش از حد مجاز است.');
