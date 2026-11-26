@@ -211,9 +211,10 @@ service cloud.firestore {
     }
     function isPairedReturnMutation(sourceInvoiceId, returnInvoiceId, sourceBefore, sourceAfter, countDelta) {
       let returnPath = /databases/$(database)/documents/invoices/$(returnInvoiceId);
-      let returnBefore = get(returnPath);
+      let returnBefore = get(returnPath).data;
       let returnAfter = getAfter(returnPath).data;
-      return returnAfter.sourceInvoiceId == sourceInvoiceId
+      return existsAfter(returnPath)
+        && returnAfter.sourceInvoiceId == sourceInvoiceId
         && returnAfter.ownerId == sourceBefore.ownerId
         && returnAfter.partyId == sourceBefore.partyId
         && (
@@ -221,8 +222,8 @@ service cloud.firestore {
           || (sourceBefore.invoiceType == 'purchase' && returnAfter.invoiceType == 'purchase_return')
         )
         && (
-          (countDelta == 1 && !returnBefore.exists && returnAfter.status != 'cancelled')
-          || (countDelta == -1 && returnBefore.exists && returnBefore.data.status != 'cancelled' && returnAfter.status == 'cancelled')
+          (countDelta == 1 && !exists(returnPath) && returnAfter.status != 'cancelled')
+          || (countDelta == -1 && exists(returnPath) && returnBefore.status != 'cancelled' && returnAfter.status == 'cancelled')
         );
     }
 
@@ -251,7 +252,7 @@ service cloud.firestore {
       let source = sourceSnapshot.data;
       return ('sourceInvoiceId' in data)
         && isNonEmptyString(data.sourceInvoiceId, 128)
-        && sourceSnapshot.exists()
+        && exists(sourcePath)
         && source.ownerId == data.ownerId
         && source.status != 'cancelled'
         && source.activeReturnCount is int
@@ -272,7 +273,8 @@ service cloud.firestore {
       let sourcePath = /databases/$(database)/documents/invoices/$(sourceInvoiceId);
       let sourceBefore = get(sourcePath);
       let sourceAfter = getAfter(sourcePath).data;
-      return sourceBefore.exists()
+      return exists(sourcePath)
+        && existsAfter(sourcePath)
         && sourceBefore.data.activeReturnCount is int
         && sourceBefore.data.returnRevision is int
         && sourceAfter.activeReturnCount == sourceBefore.data.activeReturnCount + countDelta
