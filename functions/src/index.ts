@@ -296,6 +296,9 @@ export const writeWorkspaceRecord = onCall({ region: REGION, timeoutSeconds: 60 
   if (!manifest.exists || manifest.get('status') !== 'verified') {
     throw new HttpsError('failed-precondition', 'پیش از فعال‌سازی همگام‌سازی، مهاجرت باید تأیید شود.');
   }
+  if (manifest.get('coreWritesFrozen') === true && (collectionName === 'accounts' || collectionName === 'products')) {
+    throw new HttpsError('failed-precondition', 'نوشتن حساب‌ها و کالاها در دوره توقف مهاجرت مسدود است.');
+  }
   const rootRef = db.collection(collectionName).doc(documentId);
   const stagedRef = migrationDestination(workspaceId, collectionName).doc(documentId);
   const operationRef = db.collection('workspaceWriteOperations').doc(`${workspaceId}_${operationId}`);
@@ -452,6 +455,85 @@ export const listWorkspaceCoreRecords = onCall({ region: REGION, timeoutSeconds:
     workspaceId, collection: collectionName, generation: barrier.generation, role, items,
     nextCursor: snapshot.size === requestedLimit ? snapshot.docs[snapshot.docs.length - 1].id : null,
   };
+});
+
+/** Atomically closes legacy client writes for accounts/products through Firestore Rules. */
+export const freezeWorkspaceCoreWrites = onCall({ region: REGION }, async (request) => {
+  const auth = request.auth as CallableAuth | undefined;
+  requireVerifiedAuth(auth);
+  const workspaceId = await requireWorkspaceOwner(auth);
+  const ref = db.collection('workspaceMigrations').doc(workspaceId);
+  const generation = randomBytes(16).toString('hex');
+  const result = await db.runTransaction(async (tx) => {
+    const snap = await tx.get(ref);
+    if (!snap.exists || snap.get('status') !== 'verified') {
+      throw new HttpsError('failed-precondition', 'ابتدا باید مهاجرت اولیه تأیید شده باشد.');
+    }
+    if (snap.get('coreWritesFrozen') === true) {
+      return { status: 'already_frozen', generation: String(snap.get('readBarrier')?.generation || '') };
+    }
+    tx.update(ref, {
+      coreWritesFrozen: true,
+      readBarrier: { status: 'reconciling', generation, requestedAt: FieldValue.serverTimestamp() },
+      updatedAt: FieldValue.serverTimestamp(),
+    });
+    return { status: 'frozen_pending_reconciliation', generation };
+  });
+  return { workspaceId, ...result };
+});
+
+/** Reconciles both complete core collections after Rules have blocked legacy writes. */
+export const reconcileWorkspaceCoreSnapshot = onCall({ region: REGION, timeoutSeconds: 120 }, async (request) => {
+  const auth = request.auth as CallableAuth | undefined;
+  requireVerifiedAuth(auth);
+  const workspaceId = await requireWorkspaceOwner(auth);
+  const manifestRef = db.collection('workspaceMigrations').doc(workspaceId);
+  const manifest = await manifestRef.get();
+  const barrier = manifest.get('readBarrier');
+  if (!manifest.exists || manifest.get('status') !== 'verified' || manifest.get('coreWritesFrozen') !== true
+      || !barrier || barrier.status !== 'reconciling' || typeof barrier.generation !== 'string') {
+    throw new HttpsError('failed-precondition', 'توقف نوشتن‌های قدیمی و وضعیت reconciliation معتبر نیست.');
+  }
+  const results: Record<string, { sourceCount: number; stagedCount: number }> = {};
+  for (const collectionName of ['accounts', 'products'] as const) {
+    const source = db.collection(collectionName).where('ownerId', '==', workspaceId).orderBy(FieldPath.documentId());
+    const staged = migrationDestination(workspaceId, collectionName).orderBy(FieldPath.documentId());
+    const sourceCountSnap = await source.count().get();
+    const stagedCountSnap = await staged.count().get();
+    const sourceCount = sourceCountSnap.data().count;
+    const stagedCount = stagedCountSnap.data().count;
+    if (sourceCount !== stagedCount) {
+      throw new HttpsError('data-loss', `تعداد رکوردهای مبدأ و مقصد در ${collectionName} برابر نیست؛ read barrier بسته می‌ماند.`);
+    }
+    let cursor: string | undefined;
+    let checked = 0;
+    for (let pageIndex = 0; pageIndex < 101; pageIndex += 1) {
+      let query = source.limit(MIGRATION_PAGE_SIZE);
+      if (cursor) query = query.startAfter(cursor);
+      const page = await query.get();
+      if (page.empty) break;
+      const refs = page.docs.map((doc) => staged.doc(doc.id));
+      const targets = await db.getAll(...refs);
+      for (let i = 0; i < page.docs.length; i += 1) {
+        const payload = page.docs[i].data() as Record<string, unknown>;
+        if (!targets[i].exists || targets[i].get('workspaceId') !== workspaceId
+            || targets[i].get('sourceHash') !== workspaceMigrationHash(payload)) {
+          throw new HttpsError('data-loss', `مغایرت داده در ${collectionName}/${page.docs[i].id}؛ read barrier بسته می‌ماند.`);
+        }
+      }
+      checked += page.size;
+      cursor = page.docs[page.docs.length - 1].id;
+      if (page.size < MIGRATION_PAGE_SIZE) break;
+      if (pageIndex === 100) throw new HttpsError('resource-exhausted', 'تعداد رکوردها از سقف reconciliation تک‌درخواستی بیشتر است.');
+    }
+    if (checked !== sourceCount) throw new HttpsError('data-loss', `تعداد رکوردهای بررسی‌شده در ${collectionName} با شمارش کل برابر نیست.`);
+    results[collectionName] = { sourceCount, stagedCount };
+  }
+  await manifestRef.update({
+    readBarrier: { status: 'frozen', generation: barrier.generation, frozenAt: FieldValue.serverTimestamp(), reconciledCounts: results },
+    updatedAt: FieldValue.serverTimestamp(),
+  });
+  return { status: 'frozen', workspaceId, generation: barrier.generation, collections: results };
 });
 
 /** Creates a short-lived, email-bound invitation. The raw token is returned only once. */
