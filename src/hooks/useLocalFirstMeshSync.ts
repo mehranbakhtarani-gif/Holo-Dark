@@ -978,7 +978,7 @@ export function useLocalFirstMeshSync() {
 
       isRemoteUpdateRef.current = true;
       try {
-        const imported = latestImportRef.current(merged.mergedSnapshotJson);
+        const imported = await latestDurableImportRef.current(merged.mergedSnapshotJson);
         if (!imported) {
           playErrorTone();
           showToast('ساختار فایل داخل پوشه انتخابی برای بازیابی معتبر نیست.');
@@ -1232,7 +1232,7 @@ export function useLocalFirstMeshSync() {
         if (choice === 'restore_remote') {
           isRemoteUpdateRef.current = true;
           try {
-            const ok = latestImportRef.current(pendingMeshConflict.remoteSnapshotJson);
+            const ok = await latestDurableImportRef.current(pendingMeshConflict.remoteSnapshotJson);
             if (!ok) {
               playErrorTone();
               showToast('بازگردانی نسخه همتا ناموفق بود.');
