@@ -383,6 +383,7 @@ export function useLocalFirstMeshSync() {
             Array.isArray(batchedOperationIds) ? batchedOperationIds : []
           );
           const otherPeers = getOtherMeshPeerIds(selectedPeerId);
+          const relayOutboxItems: MeshSyncOutboxItem[] = [];
           for (const env of relayEnvelopes) {
             if (!env?.operationId) continue;
             ackedOpIdSet.add(env.operationId);
@@ -407,7 +408,7 @@ export function useLocalFirstMeshSync() {
               (p) => p !== selectedPeerId && !deliveredSet.has(p)
             );
             if (stillNeededForOthers.length > 0) {
-              await enqueueDexieOutboxItem({
+              relayOutboxItems.push({
                 operationId: env.operationId,
                 target: 'p2p_mesh',
                 originDeviceId: env.originDeviceId || fromPeerId,
@@ -432,6 +433,7 @@ export function useLocalFirstMeshSync() {
 
           // Respect interactive or saved-default conflict resolution when concurrent edits collide
           let autoConflictNote: string | null = null;
+          let keepLocalByPolicy = false;
           if (totalConflicts > 0) {
             const savedMode = loadSyncConflictDefaultMode();
             const decision = resolveConflictDecision(savedMode);
@@ -477,6 +479,7 @@ export function useLocalFirstMeshSync() {
             }
 
             if (decision.autoResolved && decision.choice === 'keep_local') {
+              keepLocalByPolicy = true;
               anyChanged = false;
               autoConflictNote = `تداخل با «${peerLabel}» به‌صورت خودکار حل شد (پیش‌فرض ذخیره‌شده: حفظ آخرین تغییر محلی).`;
               logActivity('همگام‌سازی P2P (Mesh)', 'حل خودکار تداخل (حفظ محلی)', autoConflictNote);
@@ -566,6 +569,34 @@ export function useLocalFirstMeshSync() {
               window.setTimeout(() => {
                 isRemoteUpdateRef.current = false;
               }, 1600);
+            }
+          }
+
+          // Relay only after the merged snapshot has been durably committed locally.
+          // If policy explicitly kept our local version, forward that winning version
+          // instead of forwarding the rejected incoming relay envelopes.
+          if (keepLocalByPolicy) {
+            const opId = `p2p_keep_local_relay_${Date.now()}_${localBuilt.payloadHash.slice(0, 8)}`;
+            await enqueueDexieOutboxItem({
+              operationId: opId,
+              target: 'p2p_mesh',
+              originDeviceId: selectedPeerId,
+              summary: `رله نسخه محلی برنده پس از حل تعارض با ${peerLabel}`,
+              payloadHash: localBuilt.payloadHash,
+              snapshotJson: localBuilt.snapshotJson,
+              deliveredToPeers: [fromPeerId],
+              requiredPeers: otherPeers,
+              status: 'pending',
+              retryCount: 0,
+              errorMessage: null,
+              voucherCount: latestCountsRef.current.vouchers,
+              invoiceCount: latestCountsRef.current.invoices,
+              productCount: latestCountsRef.current.products,
+            });
+            connectorRef.current?.queueLocalUpdate(opId);
+          } else {
+            for (const relayItem of relayOutboxItems) {
+              await enqueueDexieOutboxItem(relayItem);
             }
           }
 
