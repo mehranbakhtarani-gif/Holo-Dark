@@ -814,14 +814,18 @@ service cloud.firestore {
         )
         && incoming().createdAt == request.time
         && incoming().updatedAt == request.time;
-      allow update: if isValidId(invoiceId) && isVerified() && isValidInvoice(incoming()) && (
+      allow update: if isValidId(invoiceId) && isVerified() && (
         (
           existing().ownerId == request.auth.uid
           && existing().status != 'cancelled'
+          && incoming().ownerId == existing().ownerId
+          && incoming().createdAt == existing().createdAt
+          && incoming().updatedAt == request.time
           && (
             !incoming().diff(existing()).affectedKeys().hasAny(['returnRevision', 'activeReturnCount', 'lastReturnMutationId'])
             || (
               existing().invoiceType == 'proforma'
+              && isValidInvoice(incoming())
               && incoming().invoiceType == 'sale'
               && incoming().returnRevision == 0
               && incoming().activeReturnCount == 0
@@ -857,9 +861,6 @@ service cloud.firestore {
             )
             || incoming().status != 'cancelled'
           )
-          && incoming().ownerId == existing().ownerId
-          && incoming().createdAt == existing().createdAt
-          && incoming().updatedAt == request.time
           && (
             !incoming().diff(existing()).affectedKeys().hasAny(['returnRevision'])
             || (
@@ -895,9 +896,16 @@ service cloud.firestore {
             incoming().diff(existing()).affectedKeys().hasOnly(['paidCash', 'paidBank', 'paidCheque', 'creditAmount', 'status', 'returnRevision', 'activeReturnCount', 'lastReturnMutationId', '_version', 'updatedByDevice', 'updatedAt']) ||
             (
               existing().invoiceType == 'proforma'
+              && isValidInvoice(incoming())
+              && incoming().invoiceType == 'sale'
               && incoming().diff(existing()).affectedKeys().hasOnly(['invoiceNumber', 'invoiceType', 'status', 'voucherId', 'items', 'returnRevision', 'activeReturnCount', '_version', 'updatedByDevice', 'updatedAt'])
             )
           )
+          && incoming().status in ['issued', 'settled', 'cancelled']
+          && incoming().paidCash is number && incoming().paidCash >= 0
+          && incoming().paidBank is number && incoming().paidBank >= 0
+          && incoming().paidCheque is number && incoming().paidCheque >= 0
+          && incoming().creditAmount is number && incoming().creditAmount >= 0
         ) || isAdmin()
       );
       allow delete: if isValidId(invoiceId) && isVerified() && (isAdmin() || (existing().ownerId == request.auth.uid && existing().invoiceType == 'proforma'));
