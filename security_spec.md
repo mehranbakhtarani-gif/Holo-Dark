@@ -43,3 +43,30 @@
 
 ### Rollout blocker
 This repository currently has no trusted server provisioning path. Enforcing custom-claim-only access immediately would lock out existing workspaces; retaining owner-only fallback would leave local operator RBAC bypassable. The migration and server provisioning layer must be implemented and tested before claiming server-enforced multi-user RBAC.
+
+
+## 4. Phase 2 — Trusted Firebase Workspace Provisioning (Implemented Scaffold)
+
+### Added server-side callable functions
+- `bootstrapWorkspace`: verified Firebase account creates (or safely reopens provisioning for) its owner workspace. Workspace ID equals the existing Firebase UID to preserve the current ownerId data model during this first stage.
+- `createWorkspaceInvitation`: owner-only, email-bound invitation with a cryptographically random one-time token. Only the SHA-256 digest is stored; expiry is seven days.
+- `acceptWorkspaceInvitation`: requires a verified matching email, validates invitation status/expiry, creates a membership transactionally and issues workspace custom claims.
+- `setWorkspaceMemberRole`: owner-only role changes through the Admin SDK.
+- `revokeWorkspaceMember`: marks membership inactive and removes workspace claims. Future authorization rules must check the membership document to defeat stale ID tokens.
+
+### New server-owned collections
+- `workspaces/{workspaceId}` — workspace owner and lifecycle.
+- `workspaceMemberships/{workspaceId}_{uid}` — authoritative active membership, email and role.
+- `workspaceInvitations/{sha256(token)}` — email-bound invitation metadata; raw token is returned once and is not stored.
+
+### Deployment/configuration
+- Added `firebase.json` for the existing named Firestore database, Functions source and local Auth/Firestore/Functions emulators.
+- Added isolated Node.js 22 Functions package and strict TypeScript configuration under `functions/`.
+- Added deployment and rollout notes in `functions/README.md`.
+
+### Explicit limitations / not yet enabled
+- Existing accounting records still use `ownerId == request.auth.uid`; invited members cannot yet access another user's records.
+- React operator administration remains local and is not yet connected to the callable functions.
+- No email delivery provider is configured; invitation tokens require secure manual delivery.
+- Firestore rules have intentionally NOT been broadened to workspace members. This avoids accidentally opening every accounting collection before migration and emulator verification.
+- Functions have not been installed, compiled, emulator-tested or deployed. The source is a provisioning foundation, not a completed multi-user authorization rollout.
