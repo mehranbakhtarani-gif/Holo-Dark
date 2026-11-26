@@ -198,7 +198,7 @@ const STAGED_READ_COLLECTIONS: Record<string, readonly string[]> = {
 const CORE_WRITE_FIELDS: Record<string, { required: string[]; allowed: string[] }> = {
   accounts: {
     required: ['ownerId', 'code', 'title', 'level', 'category', 'nature', 'isSystem', 'createdAt', 'updatedAt'],
-    allowed: ['ownerId', 'code', 'title', 'level', 'parentCode', 'category', 'nature', 'isSystem', 'createdAt', 'updatedAt'],
+    allowed: ['ownerId', 'code', 'title', 'level', 'parentCode', 'category', 'nature', 'isSystem', 'active', 'requiresParty', 'createdAt', 'updatedAt'],
   },
   products: {
     required: ['ownerId', 'sku', 'name', 'category', 'warehouse', 'unit', 'buyPrice', 'sellPrice', 'stock', 'reorderPoint', 'vatExempt', 'createdAt', 'updatedAt'],
@@ -229,7 +229,9 @@ function validateCoreWorkspacePayload(collectionName: string, value: unknown, wo
     if (typeof data.code !== 'string' || !/^\\d+$/.test(data.code)
         || typeof data.title !== 'string' || !['group', 'kol', 'moein', 'tafsili'].includes(String(data.level))
         || !['asset', 'liability', 'equity', 'revenue', 'cogs', 'expense', 'memo'].includes(String(data.category))
-        || !['debit', 'credit', 'both'].includes(String(data.nature)) || typeof data.isSystem !== 'boolean') {
+        || !['debit', 'credit', 'both'].includes(String(data.nature)) || typeof data.isSystem !== 'boolean'
+        || (data.active !== undefined && typeof data.active !== 'boolean')
+        || (data.requiresParty !== undefined && typeof data.requiresParty !== 'boolean')) {
       throw new HttpsError('invalid-argument', 'ساختار حساب معتبر نیست.');
     }
   } else if (collectionName === 'products') {
