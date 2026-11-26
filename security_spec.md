@@ -200,3 +200,8 @@ This is a deliberately partial migration: reversals, voucher-backed inventory, i
 ### Atomic voucher draft mutation controls
 
 Workspace-native voucher draft edits and deletes are performed only through `mutateWorkspaceVoucher`. The server validates the draft payload, active membership and finance-role allowlist, migration manifest and frozen read barrier, and enforces optimistic concurrency with the staged envelope version. Idempotency is scoped to the workspace and operation ID with a request hash. Draft edits preserve the allocated voucher number and creation timestamp; draft deletion writes a versioned tombstone. Permanent vouchers remain immutable and must be offset through a separate reversing voucher. No legacy-root write fallback is permitted.
+
+
+### Atomic workspace voucher reversal
+
+Reversal of a permanent Workspace voucher is server-derived and transactional. The callable checks active membership and finance role, source envelope version, source integrity seal, and existing reversal links; it derives the opposite debit/credit lines server-side, creates one reversal draft, advances the fiscal counter, and writes a source-side reversal marker with a version increment in the same transaction. The request is idempotent over the full reversal payload. Reversal drafts require the normal finalize flow before becoming permanent. Legacy-root writes are prohibited.
