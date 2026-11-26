@@ -166,6 +166,33 @@ test('workspace provisioning, invitation, owner-only RBAC and revocation', async
   assert.equal(stagedForeignAccount.exists, false);
   assert.equal((await firestore.collection('accounts').doc(ownerAccountId).get()).exists, true);
 
+  // Atomic dual-write bridge updates the root and staging copies with an idempotent operation key.
+  await call('setWorkspaceMemberRole', owner.token, { uid: invitee.uid, role: 'accountant' });
+  const dualWriteOperationId = randomUUID().replace(/-/g, '');
+  const updatedAccount = {
+    ownerId: owner.uid, code: '99101', title: 'Updated owner account',
+    level: 'kol', category: 'asset', nature: 'debit', isSystem: false,
+    createdAt, updatedAt: Timestamp.now(),
+  };
+  const dualWrite = await call('writeWorkspaceRecord', invitee.token, {
+    collection: 'accounts', documentId: ownerAccountId, operation: 'update',
+    operationId: dualWriteOperationId, data: updatedAccount,
+  });
+  assert.equal(dualWrite.status, 'committed');
+  const replay = await call('writeWorkspaceRecord', invitee.token, {
+    collection: 'accounts', documentId: ownerAccountId, operation: 'update',
+    operationId: dualWriteOperationId, data: updatedAccount,
+  });
+  assert.equal(replay.status, 'replayed');
+  assert.equal((await firestore.collection('accounts').doc(ownerAccountId).get()).get('title'), 'Updated owner account');
+  const dualStaged = await firestore.collection('workspaces').doc(owner.uid)
+    .collection('migrationData').doc('accounts').collection('records').doc(ownerAccountId).get();
+  assert.equal(dualStaged.get('payload').title, 'Updated owner account');
+  await expectCallableError(call('writeWorkspaceRecord', invitee.token, {
+    collection: 'accounts', documentId: ownerAccountId, operation: 'update',
+    operationId: dualWriteOperationId, data: { ...updatedAccount, title: 'Different payload' },
+  }), 'ALREADY_EXISTS');
+
   // Role authorization is read from the active membership document, not stale custom claims.
   await expectCallableError(
     call('listWorkspaceStagedRecords', invitee.token, { collection: 'accounts' }),
