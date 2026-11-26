@@ -716,6 +716,89 @@ function workspaceVoucherIntegrityHash(voucher: Record<string, unknown>): string
   return `vseal_${workspaceFnv1aHex(payload, 0x811c9dc5)}${workspaceFnv1aHex(payload.split('').reverse().join(''), 0x9e3779b9)}`;
 }
 
+/** Atomically receives an in-transit warehouse transfer and moves its FIFO layers. */
+export const receiveTrackedWarehouseTransfer = onCall({ region: REGION, timeoutSeconds: 60 }, async (request) => {
+  const auth = request.auth as CallableAuth | undefined;
+  requireVerifiedAuth(auth);
+  const { workspaceId, role } = await requireActiveWorkspaceMember(auth);
+  if (!(WORKSPACE_WRITE_COLLECTIONS[role] || []).includes('products')) {
+    throw new HttpsError('permission-denied', 'نقش فعلی اجازه دریافت انتقال انبار را ندارد.');
+  }
+  const productId = request.data?.productId;
+  const transferId = request.data?.transferId;
+  const receivedDate = request.data?.receivedDate;
+  if (typeof productId !== 'string' || !/^[A-Za-z0-9_-]{1,128}$/.test(productId)
+      || typeof transferId !== 'string' || !/^[A-Za-z0-9_-]{1,128}$/.test(transferId)
+      || typeof receivedDate !== 'string' || !receivedDate.trim() || receivedDate.length > 32) {
+    throw new HttpsError('invalid-argument', 'شناسه کالا، انتقال یا تاریخ دریافت معتبر نیست.');
+  }
+  const manifestRef = db.collection('workspaceMigrations').doc(workspaceId);
+  const extensionRef = db.collection('workspaceExtensions').doc(workspaceId);
+  return db.runTransaction(async (tx) => {
+    const manifestSnap = await tx.get(manifestRef);
+    const nativeMode = manifestSnap.exists && manifestSnap.get('coreWriteMode') === 'workspace_native';
+    const productRef = nativeMode ? migrationDestination(workspaceId, 'products').doc(productId) : db.collection('products').doc(productId);
+    const [productSnap, extensionSnap] = await Promise.all([tx.get(productRef), tx.get(extensionRef)]);
+    if (!productSnap.exists || !extensionSnap.exists) throw new HttpsError('failed-precondition', 'کالا یا سند همگام‌سازی انتقال‌ها در فضای کاری موجود نیست.');
+    let productData: Record<string, unknown>;
+    let productVersion = 0;
+    if (nativeMode) {
+      if (productSnap.get('workspaceId') !== workspaceId || productSnap.get('sourceCollection') !== 'products' || productSnap.get('deleted') === true) throw new HttpsError('not-found', 'کالای فعال در فضای کاری یافت نشد.');
+      productData = productSnap.get('payload') as Record<string, unknown>;
+      productVersion = Number(productSnap.get('version') || 1);
+    } else productData = productSnap.data() as Record<string, unknown>;
+    if (!productData || productData.ownerId !== workspaceId) throw new HttpsError('permission-denied', 'کالا متعلق به این فضای کاری نیست.');
+    const extensionData = extensionSnap.data() as Record<string, unknown>;
+    if (extensionData.ownerId !== workspaceId) throw new HttpsError('permission-denied', 'اطلاعات انتقال متعلق به این فضای کاری نیست.');
+    const transfers = Array.isArray(extensionData.trackedWarehouseTransfers) ? extensionData.trackedWarehouseTransfers as Record<string, unknown>[] : [];
+    const transferIndex = transfers.findIndex((item) => item && item.id === transferId);
+    if (transferIndex < 0) throw new HttpsError('not-found', 'سند انتقال در فضای کاری یافت نشد.');
+    const transfer = transfers[transferIndex];
+    if (transfer.productId !== productId) throw new HttpsError('failed-precondition', 'انتقال به کالای دیگری تعلق دارد.');
+    if (transfer.status === 'received') {
+      if (transfer.receivedDate === receivedDate) return { status: 'replayed', productVersion };
+      throw new HttpsError('failed-precondition', 'این انتقال قبلاً با تاریخ دیگری دریافت شده است.');
+    }
+    if (transfer.status !== 'in_transit') throw new HttpsError('failed-precondition', 'فقط انتقال در راه قابل دریافت است.');
+    const expectedLayers = Array.isArray(transfer.transferredLayers) ? transfer.transferredLayers as Record<string, unknown>[] : [];
+    const currentLayers = Array.isArray(productData.costLayers) ? productData.costLayers as Record<string, unknown>[] : [];
+    if (!expectedLayers.length || !currentLayers.length || !Number.isFinite(Number(transfer.qty)) || Number(transfer.qty) <= 0 || !Number.isFinite(Number(transfer.transferredCostIrr)) || Number(transfer.transferredCostIrr) < 0 || typeof transfer.toWarehouse !== 'string' || !transfer.toWarehouse) throw new HttpsError('failed-precondition', 'اطلاعات لایه‌ها یا مقادیر انتقال معتبر نیست.');
+    const expectedById = new Map<string, Record<string, unknown>>();
+    for (const layer of expectedLayers) {
+      if (typeof layer.layerId !== 'string' || !layer.layerId || expectedById.has(layer.layerId)) throw new HttpsError('failed-precondition', 'شناسه لایه انتقال نامعتبر یا تکراری است.');
+      expectedById.set(layer.layerId, layer);
+    }
+    const found = new Set<string>();
+    let actualQty = 0;
+    let actualValue = 0;
+    const transitWarehouse = 'در راه → ' + String(transfer.toWarehouse);
+    const nextLayers = currentLayers.map((layer) => {
+      const layerId = layer.layerId;
+      if (typeof layerId !== 'string' || !expectedById.has(layerId)) return layer;
+      if (found.has(layerId)) throw new HttpsError('failed-precondition', 'شناسه لایه انتقال در موجودی تکراری است.');
+      found.add(layerId);
+      const expected = expectedById.get(layerId)!;
+      const qty = Number(layer.remainingQty);
+      const cost = Number(layer.totalCostIrr);
+      if (layer.warehouse !== transitWarehouse || layer.sourceRef !== expected.sourceRef || !Number.isFinite(qty) || Math.abs(qty - Number(expected.remainingQty)) > 0.00005 || !Number.isFinite(cost) || cost !== Number(expected.totalCostIrr)) throw new HttpsError('failed-precondition', 'اطلاعات لایه انتقال با موجودی کالا مغایرت دارد.');
+      actualQty += qty; actualValue += cost;
+      return { ...layer, warehouse: transfer.toWarehouse };
+    });
+    if (found.size !== expectedById.size || Math.abs(actualQty - Number(transfer.qty)) > 0.0001 || actualValue !== Number(transfer.transferredCostIrr)) throw new HttpsError('failed-precondition', 'مقدار یا ارزش لایه‌های انتقال با سند انتقال مطابقت ندارد.');
+    const nextTransfers = transfers.slice();
+    nextTransfers[transferIndex] = { ...transfer, status: 'received', receivedDate };
+    const now = FieldValue.serverTimestamp();
+    if (nativeMode) {
+      const nextPayload = { ...productData, costLayers: nextLayers };
+      validateCoreWorkspacePayload('products', nextPayload, workspaceId);
+      productVersion += 1;
+      tx.update(productRef, { payload: nextPayload, sourceHash: workspaceMigrationHash(nextPayload), version: productVersion, updatedAt: now });
+    } else tx.update(productRef, { costLayers: nextLayers, updatedAt: now });
+    tx.update(extensionRef, { trackedWarehouseTransfers: nextTransfers.slice(0, 100), _version: Math.max(0, Number(extensionData._version) || 0) + 1, updatedAt: now });
+    return { status: 'committed', productVersion, transferId };
+  });
+});
+
 /** Workspace-native voucher create/finalize. Voucher and fiscal counter commit together. */
 export const mutateWorkspaceVoucher = onCall({ region: REGION, timeoutSeconds: 60 }, async (request) => {
   const auth = request.auth as CallableAuth | undefined;
