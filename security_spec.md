@@ -92,7 +92,7 @@ The Functions access the existing named database through `@google-cloud/firestor
 - Invitees must enter the token manually; it is not placed in a URL or browser storage. After acceptance, the client forces an ID-token refresh.
 - The legacy local operator matrix is explicitly labelled as local-only and is not presented as Firebase identity or server authorization.
 - Added owner-only `listWorkspaceMembers` callable. Bootstrap now checks existing active membership records so a stale pre-invitation ID token cannot create a second workspace after an invitation has been accepted.
-- Added a Node.js built-in test harness at `functions/test/workspace.emulator.test.cjs` and `npm run test:emulator`. The scenarios cover owner bootstrap/idempotency, invitation email mismatch and invalid token, stale-token bootstrap prevention, member listing, non-owner access denial, invalid/self role escalation, role change, and revocation.
+- Added a Node.js built-in test harness at `functions/test/workspace.emulator.test.cjs` and `npm run test:emulator`. The scenarios cover owner bootstrap/idempotency, verified-email enforcement, invitation email mismatch and invalid token, concurrent invitation acceptance, stale-token bootstrap prevention, member listing, non-owner denial, invalid/self role escalation, role change, and revocation.
 
 ### Deliberate security boundaries
 - Firestore Rules remain owner-only. No workspace member access to accounting documents is enabled.
