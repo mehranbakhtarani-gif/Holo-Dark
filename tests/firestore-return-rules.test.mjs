@@ -127,6 +127,27 @@ test('return counter ACL requires exact atomic return creation and cancellation 
   }));
 });
 
+test('proforma conversion initializes source return counters', async () => {
+  await testEnv.clearFirestore();
+  const uid = 'rules_owner_proforma';
+  const db = testEnv.authenticatedContext(uid, { email_verified: true }).firestore();
+  const proformaRef = doc(db, 'invoices', 'proforma_to_sale_1');
+
+  await assertSucceeds(setDoc(proformaRef, invoiceBase(uid, 'proforma')));
+  await assertSucceeds(updateDoc(proformaRef, {
+    invoiceNumber: 'SALE-001',
+    invoiceType: 'sale',
+    status: 'issued',
+    voucherId: 'voucher_proforma_conversion',
+    items: [{ productId: 'product_1', quantity: 1 }],
+    returnRevision: 0,
+    activeReturnCount: 0,
+    _version: 2,
+    updatedByDevice: 'rules-test',
+    updatedAt: serverTimestamp(),
+  }));
+});
+
 test('return ACL rejects mismatched mutation IDs and fails closed for legacy sources', async () => {
   await testEnv.clearFirestore();
   const uid = 'rules_owner_legacy';
