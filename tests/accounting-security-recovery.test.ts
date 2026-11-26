@@ -1802,6 +1802,36 @@ test('Inventory normalization: Rejects non-finite persisted FIFO layer quantitie
   assert.ok(Number.isFinite(normalized.layers[0].unitCostIrr));
 });
 
+test('Inventory normalization: Rebuilds valuation when persisted layer costs are non-finite and snapshot value is absent', () => {
+  const seed = createHolooSeedData('test_owner');
+  const base = seed.products[0];
+  const corrupted: Product = {
+    ...base,
+    stock: 10,
+    buyPrice: 100,
+    inventoryValueIrr: undefined,
+    costLayers: [
+      {
+        layerId: 'lyr_non_finite_value',
+        date: '1405/01/01',
+        sourceRef: 'purchase_corrupt_value',
+        warehouse: base.warehouse,
+        originalQty: 10,
+        remainingQty: 10,
+        unitCostIrr: Number.POSITIVE_INFINITY,
+        totalCostIrr: Number.POSITIVE_INFINITY,
+      },
+    ],
+  };
+
+  const normalized = normalizeProductCostState(corrupted, 'fifo');
+  assert.equal(normalized.stockQty, 10);
+  assert.equal(normalized.totalValueIrr, 1_000);
+  assert.equal(normalized.layers.length, 1);
+  assert.equal(normalized.layers[0].sourceRef, 'opening_balance');
+  assert.equal(normalized.layers[0].totalCostIrr, 1_000);
+});
+
 test('Inventory normalization: Retains persisted FIFO layers when quantity and value both reconcile', () => {
   const seed = createHolooSeedData('test_owner');
   const base = seed.products[0];
