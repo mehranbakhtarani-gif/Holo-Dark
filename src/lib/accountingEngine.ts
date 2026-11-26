@@ -2028,9 +2028,9 @@ export function planAtomicInvoiceCommit(input: AtomicInvoicePlanInput): AtomicIn
       ) {
         throw new Error(\`مقادیر مالی یا تعداد ردیف «\${item.productName}» نامعتبر است.\`);
       }
-      const gross = Math.round(qty * unitPrice);
-      if (discount > gross + 1 || Math.abs(lineTotal - (Math.max(0, gross - discount) + vat)) > 1) {
-        throw new Error(\`محاسبات مبلغ، تخفیف و مالیات ردیف «\${item.productName}» با هم سازگار نیست.\`);
+      const gross = Math.round(lineTotal - vat + discount);
+      if (gross < 0 || discount > gross + 1) {
+        throw new Error(`محاسبات مبلغ و تخفیف ردیف «${item.productName}» نامعتبر است.`);
       }
       totals.subtotal += gross;
       totals.discount += discount;
