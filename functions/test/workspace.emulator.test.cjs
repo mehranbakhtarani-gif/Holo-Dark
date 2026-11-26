@@ -1,10 +1,14 @@
 const { test } = require('node:test');
 const assert = require('node:assert/strict');
 const { randomUUID } = require('node:crypto');
+const { Firestore, Timestamp } = require('@google-cloud/firestore');
 
 const PROJECT_ID = process.env.FIREBASE_PROJECT_ID || 'elaborate-hash-368613';
 const AUTH_EMULATOR = process.env.AUTH_EMULATOR_HOST || '127.0.0.1:9099';
 const FUNCTIONS_EMULATOR = process.env.FUNCTIONS_EMULATOR_HOST || '127.0.0.1:5001';
+const FIRESTORE_EMULATOR = process.env.FIRESTORE_EMULATOR_HOST || '127.0.0.1:8080';
+const DATABASE_ID = 'ai-studio-remixapex-83053e73-77ed-4f64-8f70-f22da529446b';
+const firestore = new Firestore({ projectId: PROJECT_ID, databaseId: DATABASE_ID, host: FIRESTORE_EMULATOR, ssl: false });
 const API_KEY = 'fake-api-key';
 const base = `http://${FUNCTIONS_EMULATOR}/${PROJECT_ID}/us-central1`;
 
@@ -100,6 +104,20 @@ test('workspace provisioning, invitation, owner-only RBAC and revocation', async
   const changed = await call('listWorkspaceMembers', owner.token);
   assert.equal(changed.members.find((member) => member.uid === invitee.uid).role, 'warehouse_keeper');
 
+  const ownerAccountId = `migration-owner-${owner.uid}`;
+  const foreignAccountId = `migration-foreign-${wrongEmail.uid}`;
+  const createdAt = Timestamp.now();
+  await firestore.collection('accounts').doc(ownerAccountId).set({
+    ownerId: owner.uid, code: '99101', title: 'Migration fixture owner account',
+    level: 'kol', category: 'asset', nature: 'debit', isSystem: false,
+    createdAt, updatedAt: createdAt,
+  });
+  await firestore.collection('accounts').doc(foreignAccountId).set({
+    ownerId: wrongEmail.uid, code: '99102', title: 'Foreign tenant fixture',
+    level: 'kol', category: 'asset', nature: 'debit', isSystem: false,
+    createdAt, updatedAt: createdAt,
+  });
+
   const migration = await call('beginWorkspaceDataMigration', owner.token);
   assert.equal(migration.status, 'copying');
   let migrationStatus = migration.status;
@@ -117,6 +135,17 @@ test('workspace provisioning, invitation, owner-only RBAC and revocation', async
     verifySteps += 1;
   }
   assert.equal(migrationStatus, 'verified');
+  const stagedOwnerAccount = await firestore
+    .collection('workspaces').doc(owner.uid)
+    .collection('migrationData').doc('accounts')
+    .collection('records').doc(ownerAccountId).get();
+  const stagedForeignAccount = await firestore
+    .collection('workspaces').doc(owner.uid)
+    .collection('migrationData').doc('accounts')
+    .collection('records').doc(foreignAccountId).get();
+  assert.equal(stagedOwnerAccount.exists, true);
+  assert.equal(stagedOwnerAccount.get('payload').ownerId, owner.uid);
+  assert.equal(stagedForeignAccount.exists, false);
 
   await call('revokeWorkspaceMember', owner.token, { uid: invitee.uid });
   const revoked = await call('listWorkspaceMembers', owner.token);
