@@ -125,10 +125,15 @@ export const sequenceSyncedWarehouseTransferEvents = onDocumentWritten(
       if (!transfers.length) return;
 
       const nextTransfers = transfers.map((transfer) => ({ ...transfer }));
+      // A numeric sequence without recognized provenance is incomplete metadata:
+      // reassign it at server acceptance rather than treating it as authoritative.
+      const hasValidSequence = (sequence: unknown, source: unknown) =>
+        Number.isSafeInteger(sequence) && (source === 'online' || source === 'sync');
       const hasPendingSequence = nextTransfers.some((transfer) =>
         transfer && typeof transfer.id === 'string' && (
-          !Number.isSafeInteger(transfer.eventSequence) ||
-          (transfer.status === 'received' && !Number.isSafeInteger(transfer.receivedEventSequence))
+          !hasValidSequence(transfer.eventSequence, transfer.eventSequenceSource) ||
+          (transfer.status === 'received' &&
+            !hasValidSequence(transfer.receivedEventSequence, transfer.receivedEventSequenceSource))
         )
       );
       if (!hasPendingSequence) return;
@@ -154,10 +159,10 @@ export const sequenceSyncedWarehouseTransferEvents = onDocumentWritten(
           ? Date.parse(transfer.updatedAt)
           : Number.NaN;
         const timestamp = Number.isFinite(parsedTimestamp) ? parsedTimestamp : 0;
-        if (!Number.isSafeInteger(transfer.eventSequence)) {
+        if (!hasValidSequence(transfer.eventSequence, transfer.eventSequenceSource)) {
           pendingEvents.push({ transfer, kind: 'dispatch', timestamp, id: transfer.id });
         }
-        if (transfer.status === 'received' && !Number.isSafeInteger(transfer.receivedEventSequence)) {
+        if (transfer.status === 'received' && !hasValidSequence(transfer.receivedEventSequence, transfer.receivedEventSequenceSource)) {
           pendingEvents.push({ transfer, kind: 'receipt', timestamp, id: transfer.id });
         }
       }
@@ -175,12 +180,12 @@ export const sequenceSyncedWarehouseTransferEvents = onDocumentWritten(
         transfer.updatedAt = new Date(nextTimestamp).toISOString();
       };
       for (const pending of pendingEvents) {
-        if (pending.kind === 'dispatch' && !Number.isSafeInteger(pending.transfer.eventSequence)) {
+        if (pending.kind === 'dispatch' && !hasValidSequence(pending.transfer.eventSequence, pending.transfer.eventSequenceSource)) {
           nextSequence += 1;
           pending.transfer.eventSequence = nextSequence;
           pending.transfer.eventSequenceSource = 'sync';
           touchTransfer(pending.transfer);
-        } else if (pending.kind === 'receipt' && !Number.isSafeInteger(pending.transfer.receivedEventSequence)) {
+        } else if (pending.kind === 'receipt' && !hasValidSequence(pending.transfer.receivedEventSequence, pending.transfer.receivedEventSequenceSource)) {
           nextSequence += 1;
           pending.transfer.receivedEventSequence = nextSequence;
           pending.transfer.receivedEventSequenceSource = 'sync';
