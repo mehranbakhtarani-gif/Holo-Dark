@@ -485,6 +485,7 @@ test('workspace voucher create, numbering, finalize and replay are atomic', asyn
   const draft = {
     ownerId: owner.uid, date: '1405/08/05', fiscalYear: '1405',
     description: 'Atomic workspace voucher', voucherType: 'general', status: 'draft',
+    referenceId: 'invoice-reference-1',
     totalDebit: 1250, totalCredit: 1250,
     lines: [
       { accountCode: '101', debit: 1250, credit: 0, description: 'Debit' },
@@ -525,6 +526,10 @@ test('workspace voucher create, numbering, finalize and replay are atomic', asyn
   assert.equal(created.status, 'committed');
   assert.equal(created.version, 1);
   assert.equal(created.voucherNumber, 1);
+  await expectCallableError(call('mutateWorkspaceVoucher', owner.token, {
+    operation: 'create', documentId: `voucher-duplicate-reference-${owner.uid}`,
+    operationId: randomUUID().replace(/-/g, ''), data: draft,
+  }), 'ALREADY_EXISTS');
   const replay = await call('mutateWorkspaceVoucher', owner.token, {
     operation: 'create', documentId: voucherId, operationId, data: draft,
   });
@@ -541,7 +546,8 @@ test('workspace voucher create, numbering, finalize and replay are atomic', asyn
 
   const secondId = `voucher-second-${owner.uid}`;
   const second = await call('mutateWorkspaceVoucher', owner.token, {
-    operation: 'create', documentId: secondId, operationId: randomUUID().replace(/-/g, ''), data: draft,
+    operation: 'create', documentId: secondId, operationId: randomUUID().replace(/-/g, ''),
+    data: { ...draft, referenceId: 'invoice-reference-2' },
   });
   assert.equal(second.voucherNumber, 2);
   const stagedVoucherRead = await call('listWorkspaceCoreRecords', owner.token, { collection: 'vouchers' });
