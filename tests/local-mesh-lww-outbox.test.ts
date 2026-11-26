@@ -57,6 +57,12 @@ runTest('1. tagSnapshotWithSyncMetadata stamps uuid, deviceId, updatedAt, isDele
 
 runTest('2. tracked warehouse transfers are included in mesh sync and receipt updates converge by LWW', () => {
   assert.equal(SYNCABLE_WORKSPACE_COLLECTIONS.includes('trackedWarehouseTransfers'), true);
+  const legacyTagged = JSON.parse(tagSnapshotWithSyncMetadata(
+    JSON.stringify({ trackedWarehouseTransfers: [{ id: 'tr_legacy', date: '1405/09/05', status: 'in_transit' }] }),
+    'holoo-mesh-mehran-laptop',
+    '2026-11-26T10:00:00.000Z'
+  ));
+  assert.equal(legacyTagged.trackedWarehouseTransfers[0].updatedAt, '1970-01-01T00:00:00.000Z');
 
   const dispatch = {
     id: 'tr_mesh_001',
