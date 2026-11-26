@@ -50,10 +50,10 @@ import { computeFinancialForecast } from '../lib/financialForecastEngine';
 import { formatMoney, formatNumber, toPersianDigits } from '../lib/format';
 import {
   computeMultiWarehouseMatrix,
-  receiveTrackedWarehouseTransfer,
   TrackedWarehouseTransfer,
 } from '../lib/multiWarehouseEngine';
 import { useWorkspaceExtensions } from '../context/WorkspaceExtensionsContext';
+import { receiveTrackedWarehouseTransferAtomic } from '../lib/firebase';
 
 export type EnterpriseControlTab =
   | 'independent_audit'
@@ -122,10 +122,9 @@ export const EnterpriseControlPanels: React.FC<{ activeTab: EnterpriseControlTab
     runYearEndClosing,
     reopenFiscalYear,
     commitHolo203Migration,
-    updateProduct,
     showToast,
   } = useAccounting();
-  const { reservedInvoices, trackedWarehouseTransfers, updateExtensions } = useWorkspaceExtensions();
+  const { reservedInvoices, trackedWarehouseTransfers } = useWorkspaceExtensions();
 
   const unit = profile.currencyUnit;
 
@@ -424,24 +423,11 @@ export const EnterpriseControlPanels: React.FC<{ activeTab: EnterpriseControlTab
     }
     setReceivingTransferId(transfer.id);
     try {
-      const result = receiveTrackedWarehouseTransfer({
-        product,
-        transfer,
+      await receiveTrackedWarehouseTransferAtomic({
+        productId: product.id,
+        transferId: transfer.id,
         receivedDate: transferReceivedDate,
       });
-      const productUpdated = await updateProduct(product.id, {
-        costLayers: result.updatedProduct.costLayers,
-      });
-      if (!productUpdated) {
-        throw new Error('به‌روزرسانی موجودی کالا انجام نشد؛ وضعیت انتقال تغییر نکرد.');
-      }
-      const nextTransfers = trackedTransfers.map((item) =>
-        item.id === transfer.id ? result.updatedTransfer : item
-      );
-      updateExtensions((prev) => ({
-        ...prev,
-        trackedWarehouseTransfers: nextTransfers.slice(0, 100),
-      }));
       showToast(
         `انتقال ${transfer.transferNumber} دریافت شد؛ موجودی کل و ارزش ریالی بدون تغییر ماند.`,
         'success'
