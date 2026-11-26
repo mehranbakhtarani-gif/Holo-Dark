@@ -146,14 +146,20 @@ export function normalizeProductCostState(
 
   if (Array.isArray(product.costLayers) && product.costLayers.length > 0) {
     const cleanLayers = product.costLayers
-      .filter((l) => roundQty(l.remainingQty) > 0)
-      .map((l) => ({
-        ...l,
-        originalQty: roundQty(l.originalQty),
-        remainingQty: roundQty(l.remainingQty),
-        unitCostIrr: Math.max(0, Math.round(Number(l.unitCostIrr) || 0)),
-        totalCostIrr: Math.max(0, Math.round(Number(l.totalCostIrr) || 0)),
-      }));
+      .filter((l) => Number.isFinite(l.remainingQty) && roundQty(l.remainingQty) > 0)
+      .map((l) => {
+        const originalQty = Number.isFinite(l.originalQty) ? roundQty(l.originalQty) : 0;
+        const remainingQty = roundQty(l.remainingQty);
+        const unitCost = Number(l.unitCostIrr);
+        const totalCost = Number(l.totalCostIrr);
+        return {
+          ...l,
+          originalQty: Math.max(remainingQty, originalQty),
+          remainingQty,
+          unitCostIrr: Number.isFinite(unitCost) ? Math.max(0, Math.round(unitCost)) : 0,
+          totalCostIrr: Number.isFinite(totalCost) ? Math.max(0, Math.round(totalCost)) : 0,
+        };
+      });
     const layerQty = roundQty(cleanLayers.reduce((s, l) => s + l.remainingQty, 0));
     const layerVal = cleanLayers.reduce((s, l) => s + l.totalCostIrr, 0);
     // Trust persisted layers only when both quantity and valuation reconcile with
