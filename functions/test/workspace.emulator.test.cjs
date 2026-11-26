@@ -510,7 +510,14 @@ test('workspace voucher create, numbering, finalize and replay are atomic', asyn
     operation: 'create', documentId: `voucher-invalid-date-${owner.uid}`,
     operationId: randomUUID().replace(/-/g, ''),
     data: { ...draft, date: '1405/13/01' },
+  }), 'INVALID_ARGUMENT');
+
+  await firestore.collection('users').doc(owner.uid).set({ closedFiscalYears: ['1405'] }, { merge: true });
+  await expectCallableError(call('mutateWorkspaceVoucher', owner.token, {
+    operation: 'create', documentId: `voucher-closed-year-${owner.uid}`,
+    operationId: randomUUID().replace(/-/g, ''), data: draft,
   }), 'FAILED_PRECONDITION');
+  await firestore.collection('users').doc(owner.uid).set({ closedFiscalYears: [] }, { merge: true });
 
   const created = await call('mutateWorkspaceVoucher', owner.token, {
     operation: 'create', documentId: voucherId, operationId, data: draft,
