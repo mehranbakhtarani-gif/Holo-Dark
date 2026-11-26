@@ -2010,6 +2010,66 @@ export function planAtomicInvoiceCommit(input: AtomicInvoicePlanInput): AtomicIn
     throw new Error('برای این فاکتور قبلاً سند حسابداری صادر شده است.');
   }
 
+  // Linked returns are capped by the original invoice's unreturned quantity.
+  // The transaction layer serializes concurrent returns by touching the source invoice.
+  if (payload.invoiceType === 'sale_return' || payload.invoiceType === 'purchase_return') {
+    if (payload.sourceInvoiceId) {
+      const expectedOriginalType = payload.invoiceType === 'sale_return' ? 'sale' : 'purchase';
+      if (
+        !originalInvoice ||
+        originalInvoice.id !== payload.sourceInvoiceId ||
+        originalInvoice.invoiceType !== expectedOriginalType ||
+        originalInvoice.status === 'cancelled'
+      ) {
+        throw new Error('فاکتور مرجع برگشت معتبر نیست یا ابطال شده است.');
+      }
+      if (originalInvoice.partyId !== payload.partyId) {
+        throw new Error('طرف حساب فاکتور برگشت باید با فاکتور اصلی یکسان باشد.');
+      }
+
+      const originalQtyByProduct = new Map<string, number>();
+      for (const item of originalInvoice.items) {
+        originalQtyByProduct.set(
+          item.productId,
+          roundQty((originalQtyByProduct.get(item.productId) ?? 0) + Number(item.quantity || 0))
+        );
+      }
+      const alreadyReturnedByProduct = new Map<string, number>();
+      for (const existing of existingInvoices) {
+        if (
+          existing.id !== invoiceId &&
+          existing.status !== 'cancelled' &&
+          existing.invoiceType === payload.invoiceType &&
+          existing.sourceInvoiceId === originalInvoice.id
+        ) {
+          for (const item of existing.items) {
+            alreadyReturnedByProduct.set(
+              item.productId,
+              roundQty((alreadyReturnedByProduct.get(item.productId) ?? 0) + Number(item.quantity || 0))
+            );
+          }
+        }
+      }
+      const requestedByProduct = new Map<string, number>();
+      for (const item of payload.items) {
+        requestedByProduct.set(
+          item.productId,
+          roundQty((requestedByProduct.get(item.productId) ?? 0) + Number(item.quantity || 0))
+        );
+      }
+      for (const [productId, requestedQty] of requestedByProduct) {
+        const originalQty = originalQtyByProduct.get(productId) ?? 0;
+        const alreadyReturned = alreadyReturnedByProduct.get(productId) ?? 0;
+        if (originalQty <= 0 || alreadyReturned + requestedQty > originalQty + 0.0001) {
+          const productName = payload.items.find((item) => item.productId === productId)?.productName ?? productId;
+          throw new Error(
+            `مقدار برگشت «${productName}» از مقدار فاکتور اصلی بیشتر است (اصل: ${originalQty}، برگشت قبلی: ${alreadyReturned}، درخواست جدید: ${requestedQty}).`
+          );
+        }
+      }
+    }
+  }
+
   // 1. Validate each invoice line and reconcile line-level totals to the header.
   // Values are stored in IRR even when the invoice also carries foreign-currency display totals.
   const lineTotals = payload.items.reduce(
