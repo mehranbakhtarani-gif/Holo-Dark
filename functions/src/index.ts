@@ -166,15 +166,18 @@ export const sequenceSyncedWarehouseTransferEvents = onDocumentWritten(
       pendingEvents.sort((a, b) =>
         a.timestamp - b.timestamp || a.id.localeCompare(b.id) || a.kind.localeCompare(b.kind)
       );
+      const synchronizedAt = new Date().toISOString();
       for (const pending of pendingEvents) {
         if (pending.kind === 'dispatch' && !Number.isSafeInteger(pending.transfer.eventSequence)) {
           nextSequence += 1;
           pending.transfer.eventSequence = nextSequence;
           pending.transfer.eventSequenceSource = 'sync';
+          pending.transfer.updatedAt = synchronizedAt;
         } else if (pending.kind === 'receipt' && !Number.isSafeInteger(pending.transfer.receivedEventSequence)) {
           nextSequence += 1;
           pending.transfer.receivedEventSequence = nextSequence;
           pending.transfer.receivedEventSequenceSource = 'sync';
+          pending.transfer.updatedAt = synchronizedAt;
         }
       }
 
