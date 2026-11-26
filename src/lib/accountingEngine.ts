@@ -3977,7 +3977,7 @@ export function planInvoiceCancellation(input: {
         date: cancellationDate,
         kind: 'sale_return',
         productId: prod.id,
-        warehouse: prod.warehouse,
+        warehouse: invoice.warehouse || prod.warehouse,
         qty: agg.qty,
         totalCostIrr: agg.recordedCostIrr,
         unitCostIrr: agg.weightedUnitCostIrr || prod.buyPrice,
@@ -4008,7 +4008,13 @@ export function planInvoiceCancellation(input: {
       const matchingLayers = nextLayers.filter(isInvoiceLayer);
       const matchingQty = roundQty(matchingLayers.reduce((s, l) => s + l.remainingQty, 0));
 
-      if (matchingQty + 0.001 >= agg.qty) {
+      if (matchingQty + 0.001 < agg.qty) {
+        throw new Error(
+          `ابطال فاکتور ${invoice.invoiceNumber} متوقف شد؛ لایه‌های بهای تمام‌شدهٔ همان فاکتور برای مقدار کامل در انبار قابل تطبیق نیستند. برای جلوگیری از حذف موجودی انبار دیگر، ابتدا کاردکس و لایه‌های کالا را تطبیق دهید.`
+        );
+      }
+
+      {
         let toRemove = agg.qty;
         const rebuilt: InventoryCostLayer[] = [];
         for (const layer of nextLayers) {
@@ -4049,26 +4055,6 @@ export function planInvoiceCancellation(input: {
         }
         nextWeightedAvg =
           nextQty > 0 ? Math.round(nextTotalValueIrr / nextQty) : currentState.weightedAvgUnitCostIrr;
-      } else {
-        nextQty = roundQty(currentState.stockQty - agg.qty);
-        nextTotalValueIrr = Math.max(0, currentState.totalValueIrr - targetRemovalCostIrr);
-        nextWeightedAvg =
-          nextQty > 0 ? Math.round(nextTotalValueIrr / nextQty) : currentState.weightedAvgUnitCostIrr;
-        nextLayers =
-          nextQty > 0
-            ? [
-                {
-                  layerId: `lyr_cancel_${invoice.id}_${pid}`,
-                  date: cancellationDate,
-                  sourceRef: `cancel_${invoice.id}`,
-                  warehouse: prod.warehouse,
-                  originalQty: nextQty,
-                  remainingQty: nextQty,
-                  unitCostIrr: nextWeightedAvg,
-                  totalCostIrr: nextTotalValueIrr,
-                },
-              ]
-            : [];
       }
     } else if (invoice.invoiceType === 'purchase_return') {
       const restoreCost = agg.hasRecordedCost ? agg.recordedCostIrr : agg.netPurchaseCostIrr;
@@ -4077,7 +4063,7 @@ export function planInvoiceCancellation(input: {
         date: cancellationDate,
         kind: 'surplus',
         productId: prod.id,
-        warehouse: prod.warehouse,
+        warehouse: invoice.warehouse || prod.warehouse,
         qty: agg.qty,
         totalCostIrr: restoreCost,
         unitCostIrr: agg.qty > 0 ? Math.round(restoreCost / agg.qty) : prod.buyPrice,
