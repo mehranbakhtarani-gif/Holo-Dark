@@ -25,7 +25,7 @@ import {
   roundQty,
   WarehouseTransferPlan,
 } from './inventoryCostingEngine';
-import { addIrr, mulQtyByIrr, roundQtyFixed, sumIrr, toExactIrr } from './moneyMath';
+import { addIrr, mulQtyByIrr, roundQtyFixed, subIrr, sumIrr, toExactIrr } from './moneyMath';
 
 export type WarehouseTransferStatus = 'in_transit' | 'received' | 'cancelled';
 
