@@ -614,6 +614,36 @@ test('Stage 10 [Scenarios 6 & 7]: Sales Return (10 units historical cost recover
   assert.equal(res.conservationDeltaIrr, 0, 'Exact inventory conservation after both returns');
 });
 
+test('Inventory ledger rejects cumulative sales returns beyond the original sale quantity', () => {
+  assert.throws(
+    () => recalculateInventoryLedger({
+      productId: 'prd_return_limit',
+      costingMethod: 'fifo',
+      movements: [
+        { id: 'buy_return_limit', date: '1405/01/01', kind: 'purchase', productId: 'prd_return_limit', qty: 10, totalCostIrr: 10_000 },
+        { id: 'sale_return_limit', date: '1405/01/02', kind: 'sale', productId: 'prd_return_limit', qty: 5 },
+        { id: 'return_a', date: '1405/01/03', kind: 'sale_return', productId: 'prd_return_limit', qty: 3, sourceRefId: 'sale_return_limit' },
+        { id: 'return_b', date: '1405/01/04', kind: 'sale_return', productId: 'prd_return_limit', qty: 3, sourceRefId: 'sale_return_limit' },
+      ],
+    }),
+    /مقدار برگشت از فروش از مقدار فروش‌رفتهٔ باقی‌مانده بیشتر است/
+  );
+});
+
+test('Inventory ledger rejects a linked sales return when its original sale is missing', () => {
+  assert.throws(
+    () => recalculateInventoryLedger({
+      productId: 'prd_missing_sale_ref',
+      costingMethod: 'fifo',
+      movements: [
+        { id: 'buy_missing_sale_ref', date: '1405/01/01', kind: 'purchase', productId: 'prd_missing_sale_ref', qty: 10, totalCostIrr: 10_000 },
+        { id: 'return_missing_sale_ref', date: '1405/01/02', kind: 'sale_return', productId: 'prd_missing_sale_ref', qty: 1, sourceRefId: 'missing_sale' },
+      ],
+    }),
+    /فاکتور فروش مرجع برای برگشت از فروش یافت نشد/
+  );
+});
+
 test('Invoice cancellation: cancelling a FIFO sales return removes only its restored layer and preserves original FIFO layers', () => {
   const seed = createHolooSeedData('test_owner');
   const product: Product = {
