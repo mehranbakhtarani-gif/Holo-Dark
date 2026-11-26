@@ -645,7 +645,7 @@ export const mutateWorkspaceVoucher = onCall({ region: REGION, timeoutSeconds: 6
           'foreignTotalDebit', 'foreignTotalCredit', 'referenceId', 'reversalOfVoucherId',
           'lines', 'updatedByDevice',
         ].includes(key))
-        || !/^\\d{4}\\/\\d{2}\\/\\d{2}$/.test(input.date)
+        || !/^\d{4}\/\d{2}\/\d{2}$/.test(input.date)
         || input.lines.some((line) => !line || typeof line !== 'object'
           || Object.keys(line as Record<string, unknown>).some((key) => ![
             'accountCode', 'accountTitle', 'partyId', 'partyName', 'costCenterId',
