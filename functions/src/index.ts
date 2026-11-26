@@ -183,6 +183,101 @@ const STAGED_READ_COLLECTIONS: Record<string, readonly string[]> = {
   auditor_readonly: ['counters', 'accounts', 'parties', 'products', 'vouchers', 'invoices', 'cheques', 'employees', 'assets', 'costCenters', 'currencies', 'exchangeRates', 'importDossiers', 'salesOrders', 'subcontractJobs', 'auditLogs'],
 };
 
+const WORKSPACE_WRITE_COLLECTIONS: Record<string, readonly string[]> = {
+  owner: WORKSPACE_MIGRATION_COLLECTIONS,
+  finance_manager: ['accounts', 'parties', 'products', 'vouchers', 'invoices', 'cheques', 'employees', 'assets', 'costCenters', 'currencies', 'exchangeRates', 'importDossiers', 'salesOrders', 'subcontractJobs'],
+  accountant: ['accounts', 'parties', 'products', 'vouchers', 'invoices', 'cheques', 'employees', 'assets', 'costCenters', 'currencies', 'exchangeRates'],
+  warehouse_keeper: ['products', 'importDossiers', 'salesOrders', 'subcontractJobs'],
+  sales_officer: ['parties', 'products', 'invoices', 'salesOrders'],
+  treasurer: ['accounts', 'parties', 'vouchers', 'cheques', 'currencies', 'exchangeRates'],
+  auditor_readonly: [],
+};
+
+/**
+ * Atomic legacy-root + workspace-staging mutation in the same Firestore database.
+ * The operation ledger makes retries idempotent. This endpoint is a migration
+ * bridge; the React accounting context must be explicitly routed to it before
+ * it can be considered the application's active dual-write path.
+ */
+export const writeWorkspaceRecord = onCall({ region: REGION, timeoutSeconds: 60 }, async (request) => {
+  const auth = request.auth as CallableAuth | undefined;
+  requireVerifiedAuth(auth);
+  const { workspaceId, role } = await requireActiveWorkspaceMember(auth);
+  const collectionName = request.data?.collection;
+  const documentId = request.data?.documentId;
+  const operation = request.data?.operation;
+  const operationId = request.data?.operationId;
+  const allowed = WORKSPACE_WRITE_COLLECTIONS[role] || [];
+  if (typeof collectionName !== 'string' || !allowed.includes(collectionName)
+      || typeof documentId !== 'string' || !/^[A-Za-z0-9_\-]{1,128}$/.test(documentId)
+      || !['create', 'update', 'delete'].includes(operation)
+      || typeof operationId !== 'string' || !/^[A-Za-z0-9_\-]{16,128}$/.test(operationId)) {
+    throw new HttpsError('invalid-argument', 'پارامترهای عملیات همگام‌سازی معتبر نیستند.');
+  }
+  const manifest = await db.collection('workspaceMigrations').doc(workspaceId).get();
+  if (!manifest.exists || manifest.get('status') !== 'verified') {
+    throw new HttpsError('failed-precondition', 'پیش از فعال‌سازی همگام‌سازی، مهاجرت باید تأیید شود.');
+  }
+  const rootRef = db.collection(collectionName).doc(documentId);
+  const stagedRef = migrationDestination(workspaceId, collectionName).doc(documentId);
+  const operationRef = db.collection('workspaceWriteOperations').doc(`${workspaceId}_${operationId}`);
+  const rawData = request.data?.data;
+  if (operation !== 'delete') {
+    if (!rawData || typeof rawData !== 'object' || Array.isArray(rawData)
+        || (rawData as Record<string, unknown>).ownerId !== workspaceId) {
+      throw new HttpsError('invalid-argument', 'داده باید متعلق به همین فضای کاری باشد.');
+    }
+    const encoded = JSON.stringify(stableMigrationValue(rawData));
+    if (Buffer.byteLength(encoded, 'utf8') > 850_000) {
+      throw new HttpsError('resource-exhausted', 'اندازه رکورد برای همگام‌سازی بیش از حد مجاز است.');
+    }
+  }
+  const requestHash = createHash('sha256').update(JSON.stringify({
+    collectionName, documentId, operation, data: operation === 'delete' ? null : stableMigrationValue(rawData),
+  })).digest('hex');
+  return db.runTransaction(async (tx) => {
+    const [operationSnap, rootSnap, stagedSnap] = await Promise.all([
+      tx.get(operationRef), tx.get(rootRef), tx.get(stagedRef),
+    ]);
+    if (operationSnap.exists) {
+      if (operationSnap.get('requestHash') !== requestHash) {
+        throw new HttpsError('already-exists', 'شناسه عملیات قبلاً برای محتوای متفاوت استفاده شده است.');
+      }
+      return { status: 'replayed', operationId };
+    }
+    if (operation === 'create' && (rootSnap.exists || stagedSnap.exists)) {
+      throw new HttpsError('already-exists', 'رکورد از قبل وجود دارد؛ ایجاد تکراری مجاز نیست.');
+    }
+    if (operation !== 'create' && (!rootSnap.exists || !stagedSnap.exists)) {
+      throw new HttpsError('failed-precondition', 'رکورد legacy و نسخه workspace باید هر دو موجود باشند.');
+    }
+    if (rootSnap.exists && rootSnap.get('ownerId') !== workspaceId) {
+      throw new HttpsError('permission-denied', 'رکورد متعلق به این فضای کاری نیست.');
+    }
+    if (stagedSnap.exists && stagedSnap.get('workspaceId') !== workspaceId) {
+      throw new HttpsError('permission-denied', 'رکورد staging متعلق به این فضای کاری نیست.');
+    }
+    if (operation === 'delete') {
+      tx.delete(rootRef);
+      tx.delete(stagedRef);
+    } else {
+      const payload = rawData as Record<string, unknown>;
+      const now = FieldValue.serverTimestamp();
+      tx.set(rootRef, payload);
+      tx.set(stagedRef, {
+        workspaceId, sourceCollection: collectionName, sourceId: documentId,
+        sourceHash: workspaceMigrationHash(payload), schemaVersion: 1,
+        payload, copiedAt: now, updatedAt: now,
+      });
+    }
+    tx.create(operationRef, {
+      workspaceId, uid: auth.uid, collection: collectionName, documentId,
+      operation, requestHash, createdAt: FieldValue.serverTimestamp(),
+    });
+    return { status: 'committed', operationId };
+  });
+});
+
 /**
  * Read-only, role-scoped access to a fully verified staging snapshot.
  * Membership document and workspace status are checked on every request;
