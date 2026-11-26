@@ -1415,6 +1415,8 @@ export const adjustWorkspaceProductStockWithVoucher = onCall({ region: REGION, t
       || !Number.isInteger(expectedVersion) || expectedVersion < 1
       || typeof countedStock !== 'number' || !Number.isFinite(countedStock) || countedStock < 0 || countedStock > 1e12
       || typeof date !== 'string' || !/^\d{4}\/\d{2}\/\d{2}$/.test(date)
+      || Number(date.slice(5, 7)) < 1 || Number(date.slice(5, 7)) > 12
+      || Number(date.slice(8, 10)) < 1 || Number(date.slice(8, 10)) > (Number(date.slice(5, 7)) <= 6 ? 31 : Number(date.slice(5, 7)) <= 11 ? 30 : 29)
       || typeof reason !== 'string' || reason.length > 300
       || (deviceId !== undefined && (typeof deviceId !== 'string' || deviceId.length > 64))) {
     throw new HttpsError('invalid-argument', 'پارامترهای تعدیل موجودی معتبر نیستند.');
@@ -1610,10 +1612,12 @@ export const adjustWorkspaceProductStockWithVoucher = onCall({ region: REGION, t
     let voucherNumber: number | null = null;
     let voucherPayload: Record<string, unknown> | null = null;
     if (adjustmentCostIrr > 0) {
-      const accountsByCode = new Map(accountSnaps.docs.map((snapshot) => {
-        const payload = snapshot.get('payload') as Record<string, unknown> | undefined;
-        return [String(payload?.code || ''), payload || {}] as [string, Record<string, unknown>];
-      }));
+      const accountsByCode = new Map(accountSnaps.docs
+        .filter((snapshot) => snapshot.get('deleted') !== true)
+        .map((snapshot) => {
+          const payload = snapshot.get('payload') as Record<string, unknown> | undefined;
+          return [String(payload?.code || ''), payload || {}] as [string, Record<string, unknown>];
+        }));
       const inventoryAccount = accountsByCode.get('10501');
       const offsetAccount = accountsByCode.get(diffQty > 0 ? '60301' : '80401');
       if (!inventoryAccount || inventoryAccount.active === false || !offsetAccount || offsetAccount.active === false) {
