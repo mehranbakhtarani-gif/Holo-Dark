@@ -49,7 +49,7 @@ function requireVerifiedAuth(auth: CallableAuth | undefined): asserts auth is Ca
  * after synchronization, not the original wall-clock order on an offline device.
  */
 export const sequenceOfflineInventoryInvoice = onDocumentCreated(
-  { document: 'invoices/{invoiceId}', region: REGION, retry: true },
+  { document: 'invoices/{invoiceId}', database: 'ai-studio-remixapex-83053e73-77ed-4f64-8f70-f22da529446b', region: REGION, retry: true },
   async (event) => {
     const invoiceRef = event.data?.ref;
     if (!invoiceRef) return;
@@ -76,6 +76,7 @@ export const sequenceOfflineInventoryInvoice = onDocumentCreated(
       const now = FieldValue.serverTimestamp();
       tx.update(invoiceRef, {
         eventSequence: nextSequence,
+        eventSequenceSource: 'sync',
         updatedAt: now,
       });
       tx.set(counterRef, {
@@ -868,6 +869,7 @@ export const createTrackedWarehouseTransfer = onCall({ region: REGION, timeoutSe
     const transfer = {
       id: transferId, transferNumber: transferNumber.trim(), date, productId,
       eventSequence,
+      eventSequenceSource: 'online',
       sku: String(productData.sku || ''), productName: String(productData.name || ''),
       fromWarehouse: fromWarehouse.trim(), toWarehouse: toWarehouse.trim(),
       qty: roundQty(qty), transferredCostIrr: movedCost,
@@ -984,6 +986,7 @@ export const receiveTrackedWarehouseTransfer = onCall({ region: REGION, timeoutS
     const nextTransfers = transfers.slice();
     nextTransfers[transferIndex] = {
       ...transfer, status: 'received', receivedDate, receivedEventSequence: eventSequence,
+      receivedEventSequenceSource: 'online',
     };
     const now = FieldValue.serverTimestamp();
     if (nativeMode) {
