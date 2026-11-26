@@ -262,7 +262,8 @@ export interface Invoice {
   sourceInvoiceId?: string; // Original sale/purchase invoice ID referenced by a return invoice
   returnRevision?: number; // Optimistic concurrency token for linked return operations
   activeReturnCount?: number; // Number of active linked returns; initialized on new source invoices
-  eventSequence?: number; // Server-allocated workspace-wide inventory event order for same-day Kardex movements
+  eventSequence?: number; // Server-assigned sequence for same-day Kardex movements
+  eventSequenceSource?: 'online' | 'sync'; // 'sync' means trigger arrival order; original offline-device chronology is not guaranteed
   lastReturnMutationId?: string; // Exact return invoice paired with the latest counter mutation
   currencyCode?: string; // Undefined or 'IRR' for base currency
   exchangeRate?: number; // Parity rate in IRR per 1 foreign currency unit
