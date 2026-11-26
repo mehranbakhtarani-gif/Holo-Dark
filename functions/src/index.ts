@@ -4,6 +4,7 @@ import { initializeApp } from 'firebase-admin/app';
 import { getAuth } from 'firebase-admin/auth';
 import { FieldPath, FieldValue, Firestore, QueryDocumentSnapshot } from '@google-cloud/firestore';
 import { HttpsError, onCall } from 'firebase-functions/v2/https';
+import { onDocumentCreated } from 'firebase-functions/v2/firestore';
 
 const app = initializeApp();
 const db = new Firestore({
@@ -38,6 +39,56 @@ function requireVerifiedAuth(auth: CallableAuth | undefined): asserts auth is Ca
     throw new HttpsError('permission-denied', 'حساب کاربری باید ایمیل تأییدشده داشته باشد.');
   }
 }
+
+/**
+ * Assigns a shared inventory event sequence to invoices that reached Firestore
+ * without one (the normal offline writeBatch path cannot reserve a server counter).
+ * Online transactions already carry a sequence and are intentionally left untouched.
+ *
+ * For offline invoices, the sequence represents server-side sequencing/acceptance
+ * after synchronization, not the original wall-clock order on an offline device.
+ */
+export const sequenceOfflineInventoryInvoice = onDocumentCreated(
+  { document: 'invoices/{invoiceId}', region: REGION, retry: true },
+  async (event) => {
+    const invoiceRef = event.data?.ref;
+    if (!invoiceRef) return;
+    const initialData = event.data?.data();
+    const ownerId = typeof initialData?.ownerId === 'string' ? initialData.ownerId : '';
+    if (!ownerId || initialData?.invoiceType === 'proforma'
+        || Number.isSafeInteger(initialData?.eventSequence)) return;
+
+    const counterRef = db.collection('counters').doc(ownerId);
+    await db.runTransaction(async (tx) => {
+      const [invoiceSnap, counterSnap] = await Promise.all([
+        tx.get(invoiceRef),
+        tx.get(counterRef),
+      ]);
+      if (!invoiceSnap.exists) return;
+      const invoice = invoiceSnap.data() || {};
+      if (invoice.ownerId !== ownerId || invoice.invoiceType === 'proforma'
+          || Number.isSafeInteger(invoice.eventSequence)) return;
+
+      const nextSequence = Math.max(
+        0,
+        Number(counterSnap.data()?.lastInventorySequence) || 0,
+      ) + 1;
+      const now = FieldValue.serverTimestamp();
+      tx.update(invoiceRef, {
+        eventSequence: nextSequence,
+        updatedAt: now,
+      });
+      tx.set(counterRef, {
+        ownerId,
+        lastVoucherNumber: Math.max(0, Number(counterSnap.data()?.lastVoucherNumber) || 0),
+        lastInvoiceSeq: Math.max(0, Number(counterSnap.data()?.lastInvoiceSeq) || 102),
+        lastInventorySequence: nextSequence,
+        updatedAt: now,
+        ...(!counterSnap.exists ? { createdAt: now } : {}),
+      }, { merge: true });
+    });
+  },
+);
 
 /**
  * Backfills return counters on legacy sale/purchase invoices.
