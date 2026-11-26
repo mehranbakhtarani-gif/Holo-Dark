@@ -637,6 +637,22 @@ test('FIFO partial sales returns restore successive original consumed layers wit
   assert.equal(result.conservationDeltaIrr, 0);
 });
 
+test('FIFO linked purchase return cannot consume stock from a different purchase layer', () => {
+  assert.throws(
+    () => recalculateInventoryLedger({
+      productId: 'prd_purchase_return_source_guard',
+      costingMethod: 'fifo',
+      movements: [
+        { id: 'purchase_original', date: '1405/01/01', sequence: 1, kind: 'purchase', productId: 'prd_purchase_return_source_guard', qty: 5, totalCostIrr: 500, sourceRefId: 'purchase_original' },
+        { id: 'purchase_other', date: '1405/01/02', sequence: 2, kind: 'purchase', productId: 'prd_purchase_return_source_guard', qty: 5, totalCostIrr: 2_000, sourceRefId: 'purchase_other' },
+        { id: 'sale_original_stock', date: '1405/01/03', sequence: 3, kind: 'sale', productId: 'prd_purchase_return_source_guard', qty: 5 },
+        { id: 'return_original_purchase', date: '1405/01/04', sequence: 4, kind: 'purchase_return', productId: 'prd_purchase_return_source_guard', qty: 1, totalCostIrr: 100, sourceRefId: 'purchase_original' },
+      ],
+    }),
+    /موجودی باقی‌مانده از خرید مرجع برای برگشت کافی نیست/
+  );
+});
+
 test('Inventory ledger rejects cumulative sales returns beyond the original sale quantity', () => {
   assert.throws(
     () => recalculateInventoryLedger({
