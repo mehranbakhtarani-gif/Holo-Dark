@@ -473,7 +473,7 @@ export function useLocalFirstMeshSync() {
                 summary: `تداخل در ${toPersianDigits(conflictSummary.totalConflictingDocs)} سند با «${peerLabel}» شناسایی شد و در انتظار تصمیم کاربر قرار گرفت.`,
               });
               await refreshOutboxAndLogs();
-              return [];
+              return null;
             }
 
             if (decision.autoResolved && decision.choice === 'keep_local') {
