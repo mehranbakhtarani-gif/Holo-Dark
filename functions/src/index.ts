@@ -450,7 +450,9 @@ export const listWorkspaceCoreRecords = onCall({ region: REGION, timeoutSeconds:
   let query = records.orderBy(FieldPath.documentId()).limit(requestedLimit);
   if (typeof cursor === 'string' && cursor) query = query.startAfter(cursor);
   const snapshot = await query.get();
-  const items = snapshot.docs.map((record) => ({ id: record.id, payload: record.get('payload') }));
+  const items = snapshot.docs
+    .filter((record) => record.get('deleted') !== true && record.get('payload') !== undefined)
+    .map((record) => ({ id: record.id, payload: record.get('payload'), version: Number(record.get('version') || 1) }));
   const responseBytes = Buffer.byteLength(JSON.stringify(items), 'utf8');
   if (responseBytes > 7 * 1024 * 1024) {
     throw new HttpsError('resource-exhausted', 'حجم صفحه از حد مجاز پاسخ بیشتر است.');
@@ -459,6 +461,122 @@ export const listWorkspaceCoreRecords = onCall({ region: REGION, timeoutSeconds:
     workspaceId, collection: collectionName, generation: barrier.generation, role, items,
     nextCursor: snapshot.size === requestedLimit ? snapshot.docs[snapshot.docs.length - 1].id : null,
   };
+});
+
+/** Owner-only transition after the exact frozen snapshot has been reconciled.
+ * Legacy root writes remain closed; subsequent core mutations are workspace-native only.
+ */
+export const activateWorkspaceCoreWrites = onCall({ region: REGION }, async (request) => {
+  const auth = request.auth as CallableAuth | undefined;
+  requireVerifiedAuth(auth);
+  const workspaceId = await requireWorkspaceOwner(auth);
+  const ref = db.collection('workspaceMigrations').doc(workspaceId);
+  return db.runTransaction(async (tx) => {
+    const snap = await tx.get(ref);
+    const barrier = snap.get('readBarrier');
+    if (!snap.exists || snap.get('status') !== 'verified' || snap.get('coreWritesFrozen') !== true
+        || !barrier || barrier.status !== 'frozen' || typeof barrier.generation !== 'string'
+        || !barrier.frozenAt || !barrier.reconciledCounts?.accounts || !barrier.reconciledCounts?.products) {
+      throw new HttpsError('failed-precondition', 'فعال‌سازی نوشتن workspace فقط پس از تطبیق کامل snapshot مجاز است.');
+    }
+    if (snap.get('coreWriteMode') === 'workspace_native') {
+      return { status: 'already_active', workspaceId, generation: barrier.generation };
+    }
+    tx.update(ref, {
+      coreWriteMode: 'workspace_native',
+      coreWritesActivatedAt: FieldValue.serverTimestamp(),
+      coreWritesActivatedBy: auth.uid,
+      updatedAt: FieldValue.serverTimestamp(),
+    });
+    return { status: 'active', workspaceId, generation: barrier.generation };
+  });
+});
+
+/** Workspace-native CRUD. Never touches legacy root collections; versions and operation
+ * ledger provide optimistic concurrency and retry idempotency. Deletes are tombstones.
+ */
+export const mutateWorkspaceCoreRecord = onCall({ region: REGION, timeoutSeconds: 60 }, async (request) => {
+  const auth = request.auth as CallableAuth | undefined;
+  requireVerifiedAuth(auth);
+  const { workspaceId, role } = await requireActiveWorkspaceMember(auth);
+  const collectionName = request.data?.collection;
+  const documentId = request.data?.documentId;
+  const operation = request.data?.operation;
+  const operationId = request.data?.operationId;
+  const expectedVersion = request.data?.expectedVersion;
+  if ((collectionName !== 'accounts' && collectionName !== 'products')
+      || !(WORKSPACE_WRITE_COLLECTIONS[role] || []).includes(collectionName)
+      || typeof documentId !== 'string' || !/^[A-Za-z0-9_\\-]{1,128}$/.test(documentId)
+      || !['create', 'update', 'delete'].includes(operation)
+      || typeof operationId !== 'string' || !/^[A-Za-z0-9_\\-]{16,128}$/.test(operationId)
+      || !Number.isInteger(expectedVersion) || expectedVersion < 0) {
+    throw new HttpsError('invalid-argument', 'پارامترهای تغییر رکورد workspace معتبر نیستند.');
+  }
+  const manifestRef = db.collection('workspaceMigrations').doc(workspaceId);
+  const recordRef = migrationDestination(workspaceId, collectionName).doc(documentId);
+  const operationRef = db.collection('workspaceWriteOperations').doc(`${workspaceId}_native_${operationId}`);
+  const rawData = request.data?.data;
+  if (operation !== 'delete') {
+    validateCoreWorkspacePayload(collectionName, rawData, workspaceId);
+    if (Buffer.byteLength(JSON.stringify(stableMigrationValue(rawData)), 'utf8') > 850_000) {
+      throw new HttpsError('resource-exhausted', 'اندازه رکورد بیش از حد مجاز است.');
+    }
+  }
+  const requestHash = createHash('sha256').update(JSON.stringify({
+    collectionName, documentId, operation, expectedVersion,
+    data: operation === 'delete' ? null : stableMigrationValue(rawData),
+  })).digest('hex');
+  return db.runTransaction(async (tx) => {
+    const [manifest, operationSnap, record] = await Promise.all([
+      tx.get(manifestRef), tx.get(operationRef), tx.get(recordRef),
+    ]);
+    if (!manifest.exists || manifest.get('status') !== 'verified'
+        || manifest.get('coreWritesFrozen') !== true || manifest.get('coreWriteMode') !== 'workspace_native'
+        || manifest.get('readBarrier.status') !== 'frozen') {
+      throw new HttpsError('failed-precondition', 'نوشتن بومی workspace هنوز فعال نشده است.');
+    }
+    if (operationSnap.exists) {
+      if (operationSnap.get('requestHash') !== requestHash) {
+        throw new HttpsError('already-exists', 'شناسه عملیات برای محتوای متفاوت استفاده شده است.');
+      }
+      return { status: 'replayed', operationId, version: operationSnap.get('resultVersion') };
+    }
+    const currentVersion = record.exists ? Number(record.get('version') || 1) : 0;
+    if (currentVersion !== expectedVersion) {
+      throw new HttpsError('aborted', 'نسخه رکورد تغییر کرده است؛ داده را تازه‌سازی و دوباره اعمال کنید.', {
+        expectedVersion, currentVersion,
+      });
+    }
+    if (operation === 'create' && record.exists) {
+      throw new HttpsError('already-exists', 'رکورد از قبل وجود دارد.');
+    }
+    if (operation !== 'create' && (!record.exists || record.get('deleted') === true)) {
+      throw new HttpsError('not-found', 'رکورد فعال یافت نشد.');
+    }
+    const nextVersion = currentVersion + 1;
+    const now = FieldValue.serverTimestamp();
+    if (operation === 'delete') {
+      tx.set(recordRef, {
+        workspaceId, sourceCollection: collectionName, sourceId: documentId,
+        schemaVersion: 1, version: nextVersion, deleted: true,
+        deletedAt: now, updatedAt: now,
+      });
+    } else {
+      const payload = rawData as Record<string, unknown>;
+      tx.set(recordRef, {
+        workspaceId, sourceCollection: collectionName, sourceId: documentId,
+        sourceHash: workspaceMigrationHash(payload), schemaVersion: 1,
+        version: nextVersion, deleted: false, payload,
+        ...(record.exists && record.get('createdAt') ? { createdAt: record.get('createdAt') } : { createdAt: now }),
+        updatedAt: now,
+      });
+    }
+    tx.create(operationRef, {
+      workspaceId, uid: auth.uid, collection: collectionName, documentId,
+      operation, requestHash, resultVersion: nextVersion, createdAt: now,
+    });
+    return { status: 'committed', operationId, version: nextVersion };
+  });
 });
 
 /** Atomically closes legacy client writes for accounts/products through Firestore Rules. */
