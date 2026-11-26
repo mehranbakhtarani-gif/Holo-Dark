@@ -1937,29 +1937,38 @@ export const AccountingProvider: React.FC<{ children: React.ReactNode }> = ({ ch
   const adjustProductStock = useCallback(
     async (productId: string, newStock: number) => {
       if (!requirePermission('canEditInventory', 'تعدیل مستقیم موجودی')) return;
-
-      if (user) {
+      const product = products.find((item) => item.id === productId);
+      if (!product || !Number.isFinite(newStock) || newStock < 0) return;
+      if (user && workspaceContext) {
+        const version = workspaceCoreVersionsRef.current.get(`products:${productId}`);
+        if (!version) throw new Error('نسخه معتبر کالا در فضای کاری موجود نیست؛ ابتدا داده‌ها را تازه‌سازی کنید.');
+        const payload: Record<string, unknown> = { ...product, ownerId: workspaceContext.workspaceId, stock: Number(newStock), updatedAt: new Date() };
+        delete payload.id;
+        await mutateWorkspaceCoreRecord({ collection: 'products', documentId: productId, operation: 'update', operationId: generateSafeId('op'), expectedVersion: version, data: payload });
+        workspaceCoreVersionsRef.current.set(`products:${productId}`, version + 1);
+        setProducts((prev) => prev.map((item) => item.id === productId ? { ...item, stock: Number(newStock) } : item));
+      } else if (user) {
         try {
-          await updateDoc(doc(db, 'products', productId), {
-            stock: Number(newStock),
-            updatedAt: serverTimestamp(),
-          });
+          await updateDoc(doc(db, 'products', productId), { stock: Number(newStock), updatedAt: serverTimestamp() });
         } catch (err) {
           handleFirestoreError(err, OperationType.UPDATE, `products/${productId}`);
+          throw err;
         }
       } else {
-        setProducts((prev) =>
-          prev.map((p) => (p.id === productId ? { ...p, stock: Number(newStock) } : p))
-        );
+        setProducts((prev) => prev.map((item) => item.id === productId ? { ...item, stock: Number(newStock) } : item));
       }
     },
-    [user, requirePermission]
+    [products, user, workspaceContext, requirePermission]
+  );
 
   const adjustProductStockWithVoucher = useCallback(
     async (productId: string, countedStock: number, reason: string) => {
       if (!requirePermission('canCreateVoucher', 'ثبت سند تعدیل موجودی')) return;
-
       if (!requirePermission('canEditInventory', 'انبارگردانی و تعدیل موجودی')) return;
+      if (user && workspaceContext) {
+        showToast('عملیات اتمیک تعدیل موجودی و سند حسابداری هنوز در مرحله انتقال تراکنش‌های چندسندی است؛ هیچ تغییری اعمال نشد.', 'error');
+        return;
+      }
 
       const prod = products.find((p) => p.id === productId);
       if (!prod) return;
@@ -2092,6 +2101,10 @@ export const AccountingProvider: React.FC<{ children: React.ReactNode }> = ({ ch
     async (items: { productId: string; countedStock: number }[], reason: string) => {
       if (!requirePermission('canEditInventory', 'انبارگردانی گروهی')) return;
       if (!requirePermission('canCreateVoucher', 'ثبت اسناد انبارگردانی')) return;
+      if (user && workspaceContext) {
+        showToast('انبارگردانی گروهی تا انتقال تراکنش‌های چندسندی به Workspace غیرفعال است؛ هیچ تغییری اعمال نشد.', 'error');
+        return;
+      }
 
       const today = getTodayShamsi();
       const batchRefId = generateSafeId('stk_bulk');
@@ -2272,27 +2285,30 @@ export const AccountingProvider: React.FC<{ children: React.ReactNode }> = ({ ch
   const transferProductWarehouse = useCallback(
     async (productId: string, targetWarehouse: string) => {
       if (!requirePermission('canEditInventory', 'انتقال بین انبارها')) return;
-
       const prod = products.find((p) => p.id === productId);
       if (!prod || !targetWarehouse.trim()) return;
       const cleanWh = targetWarehouse.trim().slice(0, 80);
-      if (user) {
+      if (user && workspaceContext) {
+        const version = workspaceCoreVersionsRef.current.get(`products:${productId}`);
+        if (!version) throw new Error('نسخه معتبر کالا در فضای کاری موجود نیست؛ ابتدا داده‌ها را تازه‌سازی کنید.');
+        const payload: Record<string, unknown> = { ...prod, ownerId: workspaceContext.workspaceId, warehouse: cleanWh, updatedAt: new Date() };
+        delete payload.id;
+        await mutateWorkspaceCoreRecord({ collection: 'products', documentId: productId, operation: 'update', operationId: generateSafeId('op'), expectedVersion: version, data: payload });
+        workspaceCoreVersionsRef.current.set(`products:${productId}`, version + 1);
+        setProducts((prev) => prev.map((p) => p.id === productId ? { ...p, warehouse: cleanWh } : p));
+      } else if (user) {
         try {
-          await updateDoc(doc(db, 'products', productId), {
-            warehouse: cleanWh,
-            updatedAt: serverTimestamp(),
-          });
+          await updateDoc(doc(db, 'products', productId), { warehouse: cleanWh, updatedAt: serverTimestamp() });
         } catch (err) {
           handleFirestoreError(err, OperationType.UPDATE, `products/${productId}`);
+          throw err;
         }
       } else {
-        setProducts((prev) =>
-          prev.map((p) => (p.id === productId ? { ...p, warehouse: cleanWh } : p))
-        );
+        setProducts((prev) => prev.map((p) => p.id === productId ? { ...p, warehouse: cleanWh } : p));
       }
       showToast(`حواله انتقال کالای «${prod.name}» به «${cleanWh}» ثبت شد.`);
     },
-    [products, user, showToast, requirePermission]
+    [products, user, workspaceContext, showToast, requirePermission]
   );
 
   // ---------------- CHEQUES & TREASURY ----------------
@@ -2592,6 +2608,7 @@ export const AccountingProvider: React.FC<{ children: React.ReactNode }> = ({ ch
   const createInvoice = useCallback(
     async (payload: Omit<Invoice, 'id' | 'ownerId' | 'voucherId'>): Promise<Invoice> => {
       if (!requirePermission('canIssueInvoice', 'صدور فاکتور')) throw new Error('مجوز صدور فاکتور وجود ندارد.');
+      if (user && workspaceContext) throw new Error('صدور فاکتور تا انتقال اتمیک موجودی، سند حسابداری و شماره‌گذاری به Workspace موقتاً متوقف است؛ هیچ تغییری اعمال نشد.');
 
       const id = generateSafeId('inv');
       const plannedVoucherId = generateSafeId('vch');
@@ -3007,6 +3024,10 @@ export const AccountingProvider: React.FC<{ children: React.ReactNode }> = ({ ch
   const cancelInvoice = useCallback(
     async (invoiceId: string) => {
       if (!requirePermission('canIssueInvoice', 'ابطال فاکتور')) return;
+      if (user && workspaceContext) {
+        showToast('ابطال فاکتور تا انتقال اتمیک موجودی، سند معکوس و چک‌ها به Workspace موقتاً متوقف است؛ هیچ تغییری اعمال نشد.', 'error');
+        return;
+      }
 
       const inv = invoices.find((i) => i.id === invoiceId);
       if (!inv || inv.status === 'cancelled') return;
