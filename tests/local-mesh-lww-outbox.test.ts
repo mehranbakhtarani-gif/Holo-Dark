@@ -15,6 +15,7 @@ import {
   deriveMeshAuthKey,
   signMeshWireMessage,
   verifyMeshWireMessage,
+  isFreshMeshWireMessage,
   evaluateVectorExchangeDecision,
   getAcknowledgableMeshOperationIds,
   getOtherMeshPeerIds,
@@ -327,10 +328,18 @@ await runAsyncTest('5b. P2P wire messages use HMAC-SHA-256 and reject tampering 
     payloadHash: 'hash-1',
     syncedAt: '2026-11-26T12:00:00.000Z',
   };
-  const authTag = await signMeshWireMessage(body, key);
-  const signed = { ...body, authTag };
+  const signedBody = {
+    ...body,
+    nonce: '0123456789abcdef0123456789abcdef',
+    issuedAt: new Date().toISOString(),
+  };
+  const authTag = await signMeshWireMessage(signedBody, key);
+  const signed = { ...signedBody, authTag };
   assert.equal(authTag.length, 64);
   assert.equal(await verifyMeshWireMessage(signed, key), true);
+  assert.equal(isFreshMeshWireMessage(signed), true);
+  assert.equal(isFreshMeshWireMessage({ ...signed, issuedAt: '2020-01-01T00:00:00.000Z' }), false);
+  assert.equal(isFreshMeshWireMessage({ ...signed, nonce: 'bad' }), false);
   assert.equal(await verifyMeshWireMessage({ ...signed, payloadHash: 'tampered' }, key), false);
   const otherKey = await deriveMeshAuthKey('another-secure-mesh-passphrase');
   assert.equal(await verifyMeshWireMessage(signed, otherKey), false);
