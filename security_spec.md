@@ -104,3 +104,26 @@ The Functions access the existing named database through `@google-cloud/firestor
 - Emulator test source and command are committed, but the tests have **not** been executed in this environment.
 - Functions dependency installation, TypeScript compilation, Vite build, and Firebase Auth/Firestore/Functions Emulator execution remain pending.
 - No production Functions deployment, Firestore Rules deployment, data migration, or PR merge was performed.
+
+## 6. Phase 4 — Reversible Workspace Data Staging Migration
+
+### Implemented migration service
+- Added owner-only callable endpoints: `beginWorkspaceDataMigration`, `migrateWorkspaceDataBatch`, and `verifyWorkspaceDataMigration`.
+- Migration source collections are explicitly allowlisted: counters, accounting master/transaction data, payroll/assets/cost centers, currencies/rates, operational dossiers/orders/jobs, legacy operator records, audit logs, workspace extensions, device presence, and cloud backups.
+- Each source record is copied in pages of at most 200 documents to:
+  `workspaces/{workspaceId}/migrationData/{collection}/records/{sourceId}`.
+- The destination stores an envelope containing the original payload, source path/id, workspace ID, schema version, copy timestamp, and SHA-256 source digest. The original root document is never modified or deleted.
+- Copy-page writes and cursor advancement are committed in one Firestore transaction. Stable destination IDs make retries idempotent.
+- Verification rereads the current legacy source in bounded pages, recomputes SHA-256, compares each staged payload, and checks per-collection source/staged counts. Changes or missing destination documents stop verification with a data-loss error.
+- Added an owner-only Settings panel. The owner explicitly starts the staging copy and advances one bounded page at a time; verification is also advanced page by page.
+
+### Explicitly not a cutover
+- This phase does **not** change application reads/writes from root collections to workspace subcollections.
+- Firestore Rules remain owner-only and default-deny for the new staging namespace. No member receives accounting access.
+- Source collections remain authoritative. The staging copy is not yet a live workspace data store.
+- User profile documents under `users/{uid}` are not included in the accounting/operational collection allowlist; they require a separate profile migration decision.
+- A verified staging copy is a prerequisite for the later dual-write/cutover phase, not permission to delete legacy data.
+
+### Verification status
+- Added emulator test coverage for a real owner-scoped source fixture, exclusion of a foreign owner's record, and preservation of the legacy source after staging.
+- The emulator tests, Functions TypeScript build, and application build have **not** been executed in this environment. No data migration has been run against the live Firebase project, and no Rules or Functions deployment has occurred.
