@@ -1,4 +1,5 @@
 import assert from 'node:assert/strict';
+import { resolveVerifiedFirebaseIdentity } from '../server/authPolicy';
 import crypto from 'node:crypto';
 import { createHolooSeedData } from '../src/data/holooSeed';
 import {
@@ -47,6 +48,26 @@ const tests: TestCase[] = [];
 function test(name: string, fn: () => void | Promise<void>) {
   tests.push({ name, fn });
 }
+
+test('Server auth policy rejects Firebase accounts without verified email', () => {
+  assert.deepEqual(
+    resolveVerifiedFirebaseIdentity({
+      users: [{ localId: 'verified_uid', email: 'verified@example.com', emailVerified: true }],
+    }),
+    { uid: 'verified_uid', email: 'verified@example.com' }
+  );
+  assert.equal(
+    resolveVerifiedFirebaseIdentity({
+      users: [{ localId: 'unverified_uid', email: 'unverified@example.com', emailVerified: false }],
+    }),
+    null
+  );
+  assert.equal(
+    resolveVerifiedFirebaseIdentity({ users: [{ localId: 'missing_flag_uid', email: 'user@example.com' }] }),
+    null
+  );
+  assert.equal(resolveVerifiedFirebaseIdentity({ users: [] }), null);
+});
 
 // ============================================================================
 // 1. ACCOUNTING ENGINE TESTS
