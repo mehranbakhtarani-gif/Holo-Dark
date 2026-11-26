@@ -828,7 +828,7 @@ export const AccountingProvider: React.FC<{ children: React.ReactNode }> = ({ ch
       }
       if (cancelled) return;
       setWorkspaceContext(resolvedWorkspace);
-      if (resolvedWorkspace && resolvedWorkspace.workspaceId !== user.uid) {
+      if (resolvedWorkspace && (resolvedWorkspace.workspaceId !== user.uid || resolvedWorkspace.coreWritesFrozen)) {
         if (!resolvedWorkspace.stagedReadsEnabled) {
           workspaceCoreVersionsRef.current.clear();
           setAccounts([]);
@@ -1074,7 +1074,7 @@ export const AccountingProvider: React.FC<{ children: React.ReactNode }> = ({ ch
     async (acc: Omit<Account, 'id' | 'ownerId'>) => {
       const id = generateSafeId('acc');
       const full: Account = { ...acc, id, ownerId };
-      if (user && workspaceContext) {
+      if (user && workspaceContext && (workspaceContext.workspaceId !== user.uid || workspaceContext.coreWritesFrozen || workspaceContext.coreWriteMode === 'workspace_native')) {
         const payload = {
           ownerId: workspaceContext.workspaceId,
           code: acc.code.replace(/\\D/g, '').slice(0, 24),
@@ -1129,7 +1129,7 @@ export const AccountingProvider: React.FC<{ children: React.ReactNode }> = ({ ch
       if (patch.category !== undefined) updatePayload.category = patch.category;
       if (patch.nature !== undefined) updatePayload.nature = patch.nature;
 
-      if (user && workspaceContext) {
+      if (user && workspaceContext && (workspaceContext.workspaceId !== user.uid || workspaceContext.coreWritesFrozen || workspaceContext.coreWriteMode === 'workspace_native')) {
         const version = workspaceCoreVersionsRef.current.get(`accounts:${accountId}`);
         if (!version) throw new Error('نسخه معتبر حساب در فضای کاری موجود نیست؛ ابتدا داده‌ها را تازه‌سازی کنید.');
         const payload = { ...existing, ...updatePayload, ownerId: workspaceContext.workspaceId, createdAt: new Date(), updatedAt: new Date() };
@@ -1165,7 +1165,7 @@ export const AccountingProvider: React.FC<{ children: React.ReactNode }> = ({ ch
         showToast('این حساب دارای گردش در اسناد حسابداری است و طبق اصول حسابرسی قابل حذف نیست.');
         return false;
       }
-      if (user && workspaceContext) {
+      if (user && workspaceContext && (workspaceContext.workspaceId !== user.uid || workspaceContext.coreWritesFrozen || workspaceContext.coreWriteMode === 'workspace_native')) {
         const version = workspaceCoreVersionsRef.current.get(`accounts:${accountId}`);
         if (!version) throw new Error('نسخه معتبر حساب در فضای کاری موجود نیست؛ ابتدا داده‌ها را تازه‌سازی کنید.');
         await mutateWorkspaceCoreRecord({ collection: 'accounts', documentId: accountId, operation: 'delete', operationId: generateSafeId('op'), expectedVersion: version });
@@ -1829,7 +1829,7 @@ export const AccountingProvider: React.FC<{ children: React.ReactNode }> = ({ ch
         createdAt: new Date(),
         updatedAt: new Date(),
       };
-      if (user && workspaceContext) {
+      if (user && workspaceContext && (workspaceContext.workspaceId !== user.uid || workspaceContext.coreWritesFrozen || workspaceContext.coreWriteMode === 'workspace_native')) {
         await mutateWorkspaceCoreRecord({ collection: 'products', documentId: id, operation: 'create', operationId: generateSafeId('op'), expectedVersion: 0, data: payload });
         workspaceCoreVersionsRef.current.set(`products:${id}`, 1);
         setProducts((prev) => [ { ...payload, id } as Product, ...prev ]);
@@ -1879,7 +1879,7 @@ export const AccountingProvider: React.FC<{ children: React.ReactNode }> = ({ ch
         ...(Array.isArray(next.costLayers) ? { costLayers: next.costLayers } : {}),
         ...(typeof next.inventoryValueIrr === 'number' && Number.isFinite(next.inventoryValueIrr) ? { inventoryValueIrr: Math.max(0, Math.round(next.inventoryValueIrr)) } : {}),
       };
-      if (user && workspaceContext) {
+      if (user && workspaceContext && (workspaceContext.workspaceId !== user.uid || workspaceContext.coreWritesFrozen || workspaceContext.coreWriteMode === 'workspace_native')) {
         const version = workspaceCoreVersionsRef.current.get(`products:${productId}`);
         if (!version) throw new Error('نسخه معتبر کالا در فضای کاری موجود نیست؛ ابتدا داده‌ها را تازه‌سازی کنید.');
         await mutateWorkspaceCoreRecord({ collection: 'products', documentId: productId, operation: 'update', operationId: generateSafeId('op'), expectedVersion: version, data: payload });
@@ -1912,7 +1912,7 @@ export const AccountingProvider: React.FC<{ children: React.ReactNode }> = ({ ch
         showToast('این کالا دارای گردش در فاکتورها است و قابل حذف نیست.');
         return false;
       }
-      if (user && workspaceContext) {
+      if (user && workspaceContext && (workspaceContext.workspaceId !== user.uid || workspaceContext.coreWritesFrozen || workspaceContext.coreWriteMode === 'workspace_native')) {
         const version = workspaceCoreVersionsRef.current.get(`products:${productId}`);
         if (!version) throw new Error('نسخه معتبر کالا در فضای کاری موجود نیست؛ ابتدا داده‌ها را تازه‌سازی کنید.');
         await mutateWorkspaceCoreRecord({ collection: 'products', documentId: productId, operation: 'delete', operationId: generateSafeId('op'), expectedVersion: version });
@@ -1939,7 +1939,7 @@ export const AccountingProvider: React.FC<{ children: React.ReactNode }> = ({ ch
       if (!requirePermission('canEditInventory', 'تعدیل مستقیم موجودی')) return;
       const product = products.find((item) => item.id === productId);
       if (!product || !Number.isFinite(newStock) || newStock < 0) return;
-      if (user && workspaceContext) {
+      if (user && workspaceContext && (workspaceContext.workspaceId !== user.uid || workspaceContext.coreWritesFrozen || workspaceContext.coreWriteMode === 'workspace_native')) {
         const version = workspaceCoreVersionsRef.current.get(`products:${productId}`);
         if (!version) throw new Error('نسخه معتبر کالا در فضای کاری موجود نیست؛ ابتدا داده‌ها را تازه‌سازی کنید.');
         const payload: Record<string, unknown> = { ...product, ownerId: workspaceContext.workspaceId, createdAt: new Date(), stock: Number(newStock), updatedAt: new Date() };
@@ -1965,7 +1965,7 @@ export const AccountingProvider: React.FC<{ children: React.ReactNode }> = ({ ch
     async (productId: string, countedStock: number, reason: string) => {
       if (!requirePermission('canCreateVoucher', 'ثبت سند تعدیل موجودی')) return;
       if (!requirePermission('canEditInventory', 'انبارگردانی و تعدیل موجودی')) return;
-      if (user && workspaceContext) {
+      if (user && workspaceContext && (workspaceContext.workspaceId !== user.uid || workspaceContext.coreWritesFrozen || workspaceContext.coreWriteMode === 'workspace_native')) {
         showToast('عملیات اتمیک تعدیل موجودی و سند حسابداری هنوز در مرحله انتقال تراکنش‌های چندسندی است؛ هیچ تغییری اعمال نشد.', 'error');
         return;
       }
@@ -2101,7 +2101,7 @@ export const AccountingProvider: React.FC<{ children: React.ReactNode }> = ({ ch
     async (items: { productId: string; countedStock: number }[], reason: string) => {
       if (!requirePermission('canEditInventory', 'انبارگردانی گروهی')) return;
       if (!requirePermission('canCreateVoucher', 'ثبت اسناد انبارگردانی')) return;
-      if (user && workspaceContext) {
+      if (user && workspaceContext && (workspaceContext.workspaceId !== user.uid || workspaceContext.coreWritesFrozen || workspaceContext.coreWriteMode === 'workspace_native')) {
         showToast('انبارگردانی گروهی تا انتقال تراکنش‌های چندسندی به Workspace غیرفعال است؛ هیچ تغییری اعمال نشد.', 'error');
         return;
       }
@@ -2288,7 +2288,7 @@ export const AccountingProvider: React.FC<{ children: React.ReactNode }> = ({ ch
       const prod = products.find((p) => p.id === productId);
       if (!prod || !targetWarehouse.trim()) return;
       const cleanWh = targetWarehouse.trim().slice(0, 80);
-      if (user && workspaceContext) {
+      if (user && workspaceContext && (workspaceContext.workspaceId !== user.uid || workspaceContext.coreWritesFrozen || workspaceContext.coreWriteMode === 'workspace_native')) {
         const version = workspaceCoreVersionsRef.current.get(`products:${productId}`);
         if (!version) throw new Error('نسخه معتبر کالا در فضای کاری موجود نیست؛ ابتدا داده‌ها را تازه‌سازی کنید.');
         const payload: Record<string, unknown> = { ...prod, ownerId: workspaceContext.workspaceId, createdAt: new Date(), warehouse: cleanWh, updatedAt: new Date() };
@@ -2608,7 +2608,7 @@ export const AccountingProvider: React.FC<{ children: React.ReactNode }> = ({ ch
   const createInvoice = useCallback(
     async (payload: Omit<Invoice, 'id' | 'ownerId' | 'voucherId'>): Promise<Invoice> => {
       if (!requirePermission('canIssueInvoice', 'صدور فاکتور')) throw new Error('مجوز صدور فاکتور وجود ندارد.');
-      if (user && workspaceContext) throw new Error('صدور فاکتور تا انتقال اتمیک موجودی، سند حسابداری و شماره‌گذاری به Workspace موقتاً متوقف است؛ هیچ تغییری اعمال نشد.');
+      if (user && workspaceContext && (workspaceContext.workspaceId !== user.uid || workspaceContext.coreWritesFrozen || workspaceContext.coreWriteMode === 'workspace_native')) throw new Error('صدور فاکتور تا انتقال اتمیک موجودی، سند حسابداری و شماره‌گذاری به Workspace موقتاً متوقف است؛ هیچ تغییری اعمال نشد.');
 
       const id = generateSafeId('inv');
       const plannedVoucherId = generateSafeId('vch');
@@ -3024,7 +3024,7 @@ export const AccountingProvider: React.FC<{ children: React.ReactNode }> = ({ ch
   const cancelInvoice = useCallback(
     async (invoiceId: string) => {
       if (!requirePermission('canIssueInvoice', 'ابطال فاکتور')) return;
-      if (user && workspaceContext) {
+      if (user && workspaceContext && (workspaceContext.workspaceId !== user.uid || workspaceContext.coreWritesFrozen || workspaceContext.coreWriteMode === 'workspace_native')) {
         showToast('ابطال فاکتور تا انتقال اتمیک موجودی، سند معکوس و چک‌ها به Workspace موقتاً متوقف است؛ هیچ تغییری اعمال نشد.', 'error');
         return;
       }
