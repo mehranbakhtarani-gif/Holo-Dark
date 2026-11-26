@@ -676,6 +676,7 @@ export const AccountingProvider: React.FC<{ children: React.ReactNode }> = ({ ch
   useEffect(() => {
     if (!authReady) return;
     if (!user) {
+      workspaceCoreVersionsRef.current.clear();
       setWorkspaceContext(null);
       let cancelledLocal = false;
 
