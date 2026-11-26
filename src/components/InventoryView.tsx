@@ -393,7 +393,7 @@ export const InventoryView: React.FC<{ initialIntent?: string; clearIntent?: () 
           number: `TR-${requestStamp}`,
         };
       }
-      const transferRequest = transferRequestRef.current;
+      const transferRequest = transferRequestRef.current!;
       const transferNumber = transferRequest.number;
       const planned = executeTrackedWarehouseTransfer({
         product: selectedProduct,
