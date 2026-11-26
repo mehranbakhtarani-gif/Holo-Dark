@@ -967,7 +967,8 @@ export const reconcileWorkspaceCoreSnapshot = onCall({ region: REGION, timeoutSe
   const results: Record<string, { sourceCount: number; stagedCount: number }> = {};
   for (const collectionName of ['accounts', 'products'] as const) {
     const source = db.collection(collectionName).where('ownerId', '==', workspaceId).orderBy(FieldPath.documentId());
-    const staged = migrationDestination(workspaceId, collectionName).orderBy(FieldPath.documentId());
+    const stagedCollection = migrationDestination(workspaceId, collectionName);
+    const staged = stagedCollection.orderBy(FieldPath.documentId());
     const sourceCountSnap = await source.count().get();
     const stagedCountSnap = await staged.count().get();
     const sourceCount = sourceCountSnap.data().count;
@@ -982,7 +983,7 @@ export const reconcileWorkspaceCoreSnapshot = onCall({ region: REGION, timeoutSe
       if (cursor) query = query.startAfter(cursor);
       const page = await query.get();
       if (page.empty) break;
-      const refs = page.docs.map((doc) => staged.doc(doc.id));
+      const refs = page.docs.map((doc) => stagedCollection.doc(doc.id));
       const targets = await db.getAll(...refs);
       for (let i = 0; i < page.docs.length; i += 1) {
         const payload = page.docs[i].data() as Record<string, unknown>;
