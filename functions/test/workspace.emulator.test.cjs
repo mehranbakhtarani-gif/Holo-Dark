@@ -871,3 +871,124 @@ test('warehouse transfer receipt commits FIFO layers and transfer status atomica
     productId, transferId, receivedDate: '1405/08/06',
   }), 'FAILED_PRECONDITION');
 });
+
+
+test('workspace-native stock adjustment commits FIFO product, voucher, counter and idempotency atomically', async () => {
+  const owner = await createVerifiedUser('inventory-adjustment-native-owner');
+  await call('bootstrapWorkspace', owner.token);
+  await refreshUserToken(owner);
+  const now = Timestamp.now();
+  const manifestRef = firestore.collection('workspaceMigrations').doc(owner.uid);
+  await manifestRef.set({
+    workspaceId: owner.uid, status: 'verified', coreWritesFrozen: true,
+    coreWriteMode: 'workspace_native',
+    readBarrier: { status: 'frozen', generation: 'inventory-adjustment-generation-1', frozenAt: now },
+  });
+  await firestore.collection('users').doc(owner.uid).set({ closedFiscalYears: [] }, { merge: true });
+
+  const productId = 'stock-adjustment-product-' + owner.uid;
+  const voucherId = 'stock-adjustment-voucher-' + owner.uid;
+  const productRef = firestore.collection('workspaces').doc(owner.uid)
+    .collection('migrationData').doc('products').collection('records').doc(productId);
+  const productPayload = {
+    ownerId: owner.uid, sku: 'STK-ADJ-01', name: 'FIFO adjustment fixture',
+    category: 'raw', warehouse: 'انبار مرکزی', unit: 'kg',
+    buyPrice: 1167, sellPrice: 1500, stock: 3, reorderPoint: 0,
+    vatExempt: false, costingMethod: 'fifo', inventoryValueIrr: 3500,
+    costLayers: [
+      { layerId: 'fifo-layer-1', sourceRef: 'purchase-1', date: '1405/01/01', originalQty: 2, remainingQty: 2, unitCostIrr: 1000, totalCostIrr: 2000, warehouse: 'انبار مرکزی' },
+      { layerId: 'fifo-layer-2', sourceRef: 'purchase-2', date: '1405/01/02', originalQty: 1, remainingQty: 1, unitCostIrr: 1500, totalCostIrr: 1500, warehouse: 'انبار مرکزی' },
+    ],
+    createdAt: now, updatedAt: now, _version: 1,
+  };
+  await productRef.set({
+    workspaceId: owner.uid, sourceCollection: 'products', sourceId: productId,
+    sourceHash: 'seed-hash', schemaVersion: 1, version: 1, deleted: false,
+    payload: productPayload, createdAt: now, updatedAt: now,
+  });
+  const accounts = [
+    { code: '10501', title: 'موجودی کالا' },
+    { code: '60301', title: 'سود اضافی انبار' },
+    { code: '80401', title: 'کسری انبار' },
+  ];
+  for (const account of accounts) {
+    await firestore.collection('workspaces').doc(owner.uid)
+      .collection('migrationData').doc('accounts').collection('records').doc('account-' + account.code)
+      .set({
+        workspaceId: owner.uid, sourceCollection: 'accounts', sourceId: 'account-' + account.code,
+        version: 1, deleted: false,
+        payload: {
+          ownerId: owner.uid, code: account.code, title: account.title, active: true,
+          level: 'moein', category: 'asset', nature: 'debit', isSystem: true,
+        },
+      });
+  }
+  const counterRef = firestore.collection('workspaces').doc(owner.uid)
+    .collection('migrationData').doc('counters').collection('records').doc(owner.uid);
+  await counterRef.set({
+    workspaceId: owner.uid, sourceCollection: 'counters', sourceId: owner.uid,
+    version: 1, deleted: false,
+    payload: { ownerId: owner.uid, lastVoucherNumber: 3 },
+  });
+
+  const operationId = randomUUID().replace(/-/g, '');
+  const request = {
+    productId, voucherId, operationId, expectedVersion: 1,
+    countedStock: 5, date: '1405/08/05', reason: 'شمارش موجودی',
+    deviceId: 'emulator-device',
+  };
+  const committed = await call('adjustWorkspaceProductStockWithVoucher', owner.token, request);
+  assert.equal(committed.status, 'committed');
+  assert.equal(committed.version, 2);
+  assert.equal(committed.voucherNumber, 4);
+  assert.equal(committed.adjustmentCostIrr, 2334);
+  assert.equal(committed.product.stock, 5);
+  assert.equal(committed.product.inventoryValueIrr, 5834);
+
+  const savedProduct = await productRef.get();
+  assert.equal(savedProduct.get('version'), 2);
+  assert.equal(savedProduct.get('payload.stock'), 5);
+  assert.equal(savedProduct.get('payload.inventoryValueIrr'), 5834);
+  assert.equal(savedProduct.get('payload.costLayers').length, 3);
+  const savedVoucherRef = firestore.collection('workspaces').doc(owner.uid)
+    .collection('migrationData').doc('vouchers').collection('records').doc(voucherId);
+  const savedVoucher = await savedVoucherRef.get();
+  assert.equal(savedVoucher.get('payload.voucherNumber'), 4);
+  assert.equal(savedVoucher.get('payload.status'), 'permanent');
+  assert.equal(savedVoucher.get('payload.totalDebit'), 2334);
+  assert.equal(savedVoucher.get('payload.totalCredit'), 2334);
+  assert.equal((await counterRef.get()).get('payload.lastVoucherNumber'), 4);
+  assert.equal((await firestore.collection('products').doc(productId).get()).exists, false);
+  assert.equal((await firestore.collection('vouchers').doc(voucherId).get()).exists, false);
+
+  const replay = await call('adjustWorkspaceProductStockWithVoucher', owner.token, request);
+  assert.equal(replay.status, 'replayed');
+  assert.equal(replay.version, 2);
+  assert.equal((await productRef.get()).get('version'), 2);
+  await expectCallableError(call('adjustWorkspaceProductStockWithVoucher', owner.token, {
+    ...request, countedStock: 4,
+  }), 'ALREADY_EXISTS');
+  await expectCallableError(call('adjustWorkspaceProductStockWithVoucher', owner.token, {
+    ...request, operationId: randomUUID().replace(/-/g, ''), voucherId: 'stale-version-voucher-' + owner.uid,
+  }), 'ABORTED');
+
+  const shortageOperationId = randomUUID().replace(/-/g, '');
+  const shortageVoucherId = 'stock-shortage-voucher-' + owner.uid;
+  const shortage = await call('adjustWorkspaceProductStockWithVoucher', owner.token, {
+    ...request, operationId: shortageOperationId, voucherId: shortageVoucherId,
+    expectedVersion: 2, countedStock: 2.5, reason: 'کسری شمارش‌شده',
+  });
+  assert.equal(shortage.status, 'committed');
+  assert.equal(shortage.adjustmentCostIrr, 2750);
+  assert.equal(shortage.product.stock, 2.5);
+  assert.equal(shortage.product.inventoryValueIrr, 3084);
+  const afterShortage = await productRef.get();
+  const remainingLayers = afterShortage.get('payload.costLayers');
+  assert.equal(remainingLayers.reduce((sum, layer) => sum + layer.remainingQty, 0), 2.5);
+  assert.equal(remainingLayers.reduce((sum, layer) => sum + layer.totalCostIrr, 0), 3084);
+  const shortageVoucher = await firestore.collection('workspaces').doc(owner.uid)
+    .collection('migrationData').doc('vouchers').collection('records').doc(shortageVoucherId).get();
+  assert.equal(shortageVoucher.get('payload.voucherNumber'), 5);
+  assert.equal(shortageVoucher.get('payload.lines')[0].accountCode, '80401');
+  assert.equal((await counterRef.get()).get('payload.lastVoucherNumber'), 5);
+});
