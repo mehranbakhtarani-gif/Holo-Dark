@@ -53,6 +53,7 @@ import {
   saveReservedInvoices,
 } from '../lib/smartIntelligence';
 import { ActiveModule } from '../types/accounting';
+import { loadTrackedWarehouseTransfers, TrackedWarehouseTransfer } from '../lib/multiWarehouseEngine';
 
 const LOCAL_EXT_STORAGE_KEY = 'holoo_apex96_workspace_extensions_v2';
 
@@ -71,6 +72,7 @@ export interface WorkspaceExtensionsState {
   volumeDiscountRules: VolumeDiscountRule[];
   moadianLinks: Record<string, MoadianInvoiceMeta>;
   fiscalArchives: FiscalYearArchive[];
+  trackedWarehouseTransfers: TrackedWarehouseTransfer[];
 }
 
 function stripUndefinedDeep<T>(value: T): T {
@@ -136,6 +138,9 @@ function loadInitialExtensions(): WorkspaceExtensionsState {
     moadianLinks:
       saved.moadianLinks && typeof saved.moadianLinks === 'object' ? saved.moadianLinks : {},
     fiscalArchives: Array.isArray(saved.fiscalArchives) ? saved.fiscalArchives : [],
+    trackedWarehouseTransfers: Array.isArray(saved.trackedWarehouseTransfers)
+      ? saved.trackedWarehouseTransfers.slice(0, 100)
+      : loadTrackedWarehouseTransfers().slice(0, 100),
   };
 }
 
@@ -239,6 +244,7 @@ export const WorkspaceExtensionsProvider: React.FC<{ children: React.ReactNode }
         volumeDiscountRules: next.volumeDiscountRules.slice(0, 50),
         moadianLinks: Object.fromEntries(Object.entries(next.moadianLinks).slice(0, 500)),
         fiscalArchives: next.fiscalArchives.slice(0, 25),
+        trackedWarehouseTransfers: next.trackedWarehouseTransfers.slice(0, 100),
         _version: versionRef.current + 1,
         updatedByDevice: deviceLabel.slice(0, 120),
       });
@@ -342,6 +348,9 @@ export const WorkspaceExtensionsProvider: React.FC<{ children: React.ReactNode }
             fiscalArchives: Array.isArray(data.fiscalArchives)
               ? data.fiscalArchives
               : prev.fiscalArchives,
+            trackedWarehouseTransfers: Array.isArray(data.trackedWarehouseTransfers)
+              ? data.trackedWarehouseTransfers.slice(0, 100) as TrackedWarehouseTransfer[]
+              : prev.trackedWarehouseTransfers,
           };
           persistLocalMirror(merged);
           return merged;

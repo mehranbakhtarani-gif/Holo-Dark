@@ -1,5 +1,6 @@
 import React from 'react';
 import { AlertTriangle, RefreshCw } from 'lucide-react';
+import { getSafeRuntimeErrorMessage } from '../lib/uiRuntimeSafety';
 
 interface State {
   hasError: boolean;
@@ -15,8 +16,13 @@ export class ErrorBoundary extends React.Component<{ children: React.ReactNode }
   static getDerivedStateFromError(error: Error): State {
     return {
       hasError: true,
-      message: error?.message || 'خطای غیرمنتظره در اجرای سامانه رخ داد.',
+      message: getSafeRuntimeErrorMessage(error),
     };
+  }
+
+  componentDidCatch(error: Error, info: React.ErrorInfo) {
+    // Keep diagnostics available to developers without rendering them to end users.
+    if (import.meta.env?.DEV) console.error('UI runtime error:', error, info.componentStack);
   }
 
   render() {
@@ -24,15 +30,7 @@ export class ErrorBoundary extends React.Component<{ children: React.ReactNode }
       return this.props.children;
     }
 
-    let readable = this.state.message;
-    try {
-      const parsed = JSON.parse(this.state.message);
-      if (parsed?.error) {
-        readable = `خطای ارتباط با پایگاه‌داده ابری (${parsed.operationType} در ${parsed.path || '-'}): ${parsed.error}`;
-      }
-    } catch {
-      // plain string error
-    }
+    const readable = this.state.message;
 
     return (
       <div className="min-h-screen flex items-center justify-center bg-slate-50 dark:bg-slate-950 p-6">

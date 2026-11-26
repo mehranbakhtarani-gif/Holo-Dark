@@ -132,6 +132,16 @@ export const CorporateView: React.FC<CorporateViewProps> = ({ initialIntent, cle
     [employees, profile.fiscalYear, profile.statutoryParamsByYear]
   );
 
+  const payrollStatutoryErrors = useMemo(() => {
+    const errors = validateStatutoryParams(activeStatutory);
+    if (activeStatutory.requiresUserVerification && !activeStatutory.verifiedByUser) {
+      errors.unshift(
+        activeStatutory.verificationNote || 'پارامترهای قانونی این سال مالی هنوز تأیید نشده‌اند.'
+      );
+    }
+    return errors;
+  }, [activeStatutory]);
+
   const payrollTotals = useMemo(
     () => ({
       gross: payrollCalcs.reduce((s, c) => s + c.grossPay, 0),
@@ -205,7 +215,9 @@ export const CorporateView: React.FC<CorporateViewProps> = ({ initialIntent, cle
             <div className="flex flex-wrap items-center gap-2">
               <button
                 onClick={() => postMonthlyPayrollVoucher(payrollMonth)}
-                className="inline-flex items-center gap-2 px-4 py-2 text-xs font-semibold text-white bg-teal-700 hover:bg-teal-800 rounded-lg whitespace-nowrap"
+                disabled={payrollStatutoryErrors.length > 0}
+                title={payrollStatutoryErrors[0] || 'صدور سند حقوق'}
+                className="inline-flex items-center gap-2 px-4 py-2 text-xs font-semibold text-white bg-teal-700 hover:bg-teal-800 rounded-lg whitespace-nowrap disabled:opacity-50 disabled:cursor-not-allowed"
               >
                 <CheckCircle2 className="w-4 h-4" />
                 <span>صدور سند حقوق {payrollMonth}</span>
@@ -227,6 +239,11 @@ export const CorporateView: React.FC<CorporateViewProps> = ({ initialIntent, cle
             </div>
           </div>
 
+          {payrollStatutoryErrors.length > 0 && (
+            <div role="alert" className="rounded-xl border border-rose-300 bg-rose-50 dark:bg-rose-950/30 p-3 text-xs text-rose-800 dark:text-rose-200">
+              صدور سند حقوق تا رفع خطای پارامترهای قانونی متوقف است: {payrollStatutoryErrors[0]}
+            </div>
+          )}
           <div className="bg-amber-50/70 dark:bg-amber-950/20 border border-amber-200/80 dark:border-amber-900/60 rounded-xl p-3.5 text-xs space-y-1.5">
             <div className="flex flex-wrap items-center justify-between gap-2">
               <span className="font-semibold text-slate-800 dark:text-slate-100">

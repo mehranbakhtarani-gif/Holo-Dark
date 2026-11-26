@@ -27,10 +27,22 @@ import {
   formatMoney,
   formatNumber,
   formatWeight,
+  getTodayShamsi,
   toPersianDigits,
 } from '../lib/format';
 import { fuzzyFilterAndRank } from '../lib/fuzzySearch';
 import { mulQtyByIrr } from '../lib/moneyMath';
+import {
+  createTrackedWarehouseTransferAtomic,
+  receiveTrackedWarehouseTransferAtomic,
+  restoreTrackedWarehouseTransfersAtomic,
+  listTrackedWarehouseTransferHistoryAtomic,
+} from '../lib/firebase';
+import {
+  executeTrackedWarehouseTransfer,
+  receiveTrackedWarehouseTransfer,
+  TrackedWarehouseTransfer,
+} from '../lib/multiWarehouseEngine';
 import { useDebouncedValue } from '../hooks/useDebouncedValue';
 import {
   BulkParsedProductRow,
@@ -88,6 +100,8 @@ export const InventoryView: React.FC<{ initialIntent?: string; clearIntent?: () 
   const {
     products,
     invoices,
+    user,
+    isCloudMode,
     importDossiers,
     subcontractJobs,
     vouchers,
@@ -98,10 +112,27 @@ export const InventoryView: React.FC<{ initialIntent?: string; clearIntent?: () 
     adjustProductStockWithVoucher,
     bulkStocktakingWithVoucher,
     bulkUpdateProductPrices,
-    transferProductWarehouse,
     showToast,
   } = useAccounting();
   const unit = profile.currencyUnit;
+
+  const transferRecoveryAttemptedRef = useRef(false);
+
+  // On cloud entry, reconcile the client-writable transfer list against the
+  // server-only event ledger. The callable is idempotent and restores deleted rows.
+  useEffect(() => {
+    if (!isCloudMode || !user?.uid || transferRecoveryAttemptedRef.current) return;
+    transferRecoveryAttemptedRef.current = true;
+    void restoreTrackedWarehouseTransfersAtomic()
+      .then((result) => {
+        if (result.restoredCount > 0) {
+          showToast(`${result.restoredCount} حواله حذف‌شده از دفتر مرجع سرور بازیابی شد.`);
+        }
+      })
+      .catch(() => {
+        // Recovery can be retried the next time InventoryView is opened.
+      });
+  }, [isCloudMode, user?.uid, showToast]);
 
   const [warehouseFilter, setWarehouseFilter] = useState('all');
   const [search, setSearch] = useState('');
@@ -112,7 +143,14 @@ export const InventoryView: React.FC<{ initialIntent?: string; clearIntent?: () 
   const [stockInputMode, setStockInputMode] = useState<'kg' | 'carton'>('kg');
   const [stockReason, setStockReason] = useState('');
   const [targetWarehouse, setTargetWarehouse] = useState('');
+  const [transferQty, setTransferQty] = useState('');
+  const transferRequestRef = useRef<{ key: string; id: string; number: string } | null>(null);
   const [panelTab, setPanelTab] = useState<'kardex' | 'stocktake' | 'transfer'>('stocktake');
+  const [transferHistory, setTransferHistory] = useState<TrackedWarehouseTransfer[]>([]);
+  const [transferHistoryCursor, setTransferHistoryCursor] = useState<string | null>(null);
+  const [transferHistoryHasMore, setTransferHistoryHasMore] = useState(false);
+  const [transferHistoryLoading, setTransferHistoryLoading] = useState(false);
+  const [transferHistoryError, setTransferHistoryError] = useState('');
   const stockInputRef = useRef<HTMLInputElement | null>(null);
 
   // Bulk Stocktaking & Bulk Price Update states (Holoo Sherkati Apex)
@@ -125,7 +163,12 @@ export const InventoryView: React.FC<{ initialIntent?: string; clearIntent?: () 
   const [pricePercent, setPricePercent] = useState(0);
 
   // Holoo Apex 9.6 Cloud-Synced Extension Meta (barcode, multi-tier prices, maxStock, binLocation)
-  const { productMetaMap: apexMetaMap, upsertProductMetaSynced } = useWorkspaceExtensions();
+  const {
+    productMetaMap: apexMetaMap,
+    upsertProductMetaSynced,
+    trackedWarehouseTransfers,
+    updateExtensions,
+  } = useWorkspaceExtensions();
   const [formTab, setFormTab] = useState<'main' | 'units' | 'pricing' | 'stock'>('main');
   const [barcode, setBarcode] = useState('');
   const [binLocation, setBinLocation] = useState('');
@@ -345,6 +388,176 @@ export const InventoryView: React.FC<{ initialIntent?: string; clearIntent?: () 
   }, [products]);
 
   const selectedProduct = products.find((p) => p.id === selectedProductId) ?? products[0];
+  const pendingTransfersForProduct = trackedWarehouseTransfers.filter(
+    (transfer) => transfer.productId === selectedProduct?.id && transfer.status === 'in_transit'
+  );
+
+  const dispatchTrackedTransfer = async () => {
+    if (!selectedProduct) return;
+    const destination = targetWarehouse.trim();
+    const quantity = Number(transferQty);
+    if (!destination || destination.length > 80) {
+      showToast('نام انبار مقصد را به‌درستی وارد کنید.', 'error');
+      return;
+    }
+    if (destination === selectedProduct.warehouse) {
+      showToast('انبار مقصد باید با انبار مبدأ متفاوت باشد.', 'error');
+      return;
+    }
+    if (!Number.isFinite(quantity) || quantity <= 0) {
+      showToast('مقدار انتقال باید عددی بزرگ‌تر از صفر باشد.', 'error');
+      return;
+    }
+    try {
+      const date = getTodayShamsi();
+      const requestKey = `${selectedProduct.id}|${destination}|${quantity}|${date}`;
+      if (!transferRequestRef.current || transferRequestRef.current.key !== requestKey) {
+        const requestStamp = Date.now();
+        transferRequestRef.current = {
+          key: requestKey,
+          id: `trf_${requestStamp}_${Math.random().toString(36).slice(2, 10)}`,
+          number: `TR-${requestStamp}`,
+        };
+      }
+      const transferRequest = transferRequestRef.current!;
+      const transferNumber = transferRequest.number;
+      const planned = executeTrackedWarehouseTransfer({
+        product: selectedProduct,
+        fromWarehouse: selectedProduct.warehouse,
+        toWarehouse: destination,
+        qty: quantity,
+        date,
+        transferNumber,
+        transferId: transferRequest.id,
+        mode: 'in_transit',
+        defaultCostingMethod: profile.defaultCostingMethod || 'moving_average',
+      });
+      let transferRecord: TrackedWarehouseTransfer;
+      if (user && typeof navigator !== 'undefined' && navigator.onLine) {
+        const committed = await createTrackedWarehouseTransferAtomic({
+          productId: selectedProduct.id,
+          transferId: planned.transferRecord.id,
+          transferNumber,
+          fromWarehouse: selectedProduct.warehouse,
+          toWarehouse: destination,
+          qty: quantity,
+          date,
+        });
+        transferRecord = {
+          ...(committed.transfer as unknown as TrackedWarehouseTransfer),
+          updatedAt: new Date().toISOString(),
+        };
+      } else {
+        const saved = await updateProduct(selectedProduct.id, {
+          stock: planned.updatedProduct.stock,
+          warehouse: planned.updatedProduct.warehouse,
+          costLayers: planned.updatedProduct.costLayers,
+          inventoryValueIrr: planned.updatedProduct.inventoryValueIrr,
+        });
+        if (!saved) return;
+        transferRecord = {
+          ...planned.transferRecord,
+          updatedAt: new Date().toISOString(),
+        };
+        updateExtensions((prev) => ({
+          ...prev,
+          trackedWarehouseTransfers: [
+            transferRecord,
+            ...prev.trackedWarehouseTransfers.filter((item) => item.id !== transferRecord.id),
+          ].slice(0, 100),
+        }));
+      }
+      transferRequestRef.current = null;
+      setTransferQty('');
+      showToast(`حواله ${transferRecord.transferNumber} ثبت شد؛ ${quantity} ${selectedProduct.unit} در وضعیت «در راه» قرار گرفت.`);
+    } catch (error) {
+      showToast(error instanceof Error ? error.message : 'ثبت انتقال انجام نشد.', 'error');
+    }
+  };
+
+
+  const loadTransferHistory = async (reset = false) => {
+    if (!isCloudMode || transferHistoryLoading) return;
+    setTransferHistoryLoading(true);
+    setTransferHistoryError('');
+    try {
+      const page = await listTrackedWarehouseTransferHistoryAtomic(
+        reset ? null : transferHistoryCursor
+      );
+      setTransferHistory((current) => {
+        const combined = reset ? [] : current;
+        const byId = new Map(combined.map((item) => [item.id, item]));
+        for (const item of page.transfers) byId.set(item.id, item);
+        return Array.from(byId.values()).sort(
+          (a, b) => Number(b.eventSequence || 0) - Number(a.eventSequence || 0)
+        );
+      });
+      setTransferHistoryCursor(page.nextCursor);
+      setTransferHistoryHasMore(page.hasMore);
+    } catch (error) {
+      setTransferHistoryError(error instanceof Error ? error.message : 'بارگذاری تاریخچه حواله‌ها ناموفق بود.');
+    } finally {
+      setTransferHistoryLoading(false);
+    }
+  };
+
+  const receiveTrackedTransfer = async (transferId: string) => {
+    if (!selectedProduct) return;
+    const transfer = trackedWarehouseTransfers.find(
+      (item) => item.id === transferId && item.productId === selectedProduct.id
+    );
+    if (!transfer) {
+      showToast('سند انتقال برای این کالا پیدا نشد.', 'error');
+      return;
+    }
+    try {
+      const receivedDate = getTodayShamsi();
+      let updatedTransfer: TrackedWarehouseTransfer;
+      if (user && typeof navigator !== 'undefined' && navigator.onLine) {
+        const committed = await receiveTrackedWarehouseTransferAtomic({
+          productId: selectedProduct.id,
+          transferId,
+          receivedDate,
+        });
+        updatedTransfer = {
+          ...transfer,
+          status: 'received',
+          receivedDate,
+          updatedAt: new Date().toISOString(),
+          ...(committed.receivedEventSequence ? {
+            receivedEventSequence: committed.receivedEventSequence,
+            receivedEventSequenceSource: 'online' as const,
+          } : {}),
+        };
+      } else {
+        const result = receiveTrackedWarehouseTransfer({
+          product: selectedProduct,
+          transfer,
+          receivedDate,
+        });
+        const saved = await updateProduct(selectedProduct.id, {
+          stock: result.updatedProduct.stock,
+          warehouse: result.updatedProduct.warehouse,
+          costLayers: result.updatedProduct.costLayers,
+          inventoryValueIrr: result.updatedProduct.inventoryValueIrr,
+        });
+        if (!saved) return;
+        updatedTransfer = {
+          ...result.updatedTransfer,
+          updatedAt: new Date().toISOString(),
+        };
+        updateExtensions((prev) => ({
+          ...prev,
+          trackedWarehouseTransfers: prev.trackedWarehouseTransfers.map((item) =>
+            item.id === transferId ? updatedTransfer : item
+          ),
+        }));
+      }
+      showToast(`دریافت حواله ${transfer.transferNumber} در ${transfer.toWarehouse} ثبت شد.`);
+    } catch (error) {
+      showToast(error instanceof Error ? error.message : 'ثبت دریافت انتقال انجام نشد.', 'error');
+    }
+  };
 
   const kardexRows = useMemo(() => {
     if (!selectedProduct) return [];
@@ -1715,12 +1928,101 @@ export const InventoryView: React.FC<{ initialIntent?: string; clearIntent?: () 
                       className="w-full px-3 py-1.5 rounded-lg border border-slate-200 dark:border-slate-700 bg-white dark:bg-slate-900"
                     />
                   </div>
+                  <div>
+                    <label className="block text-[11px] text-slate-500 mb-1">مقدار انتقال ({selectedProduct.unit})</label>
+                    <input
+                      type="number"
+                      min="0.0001"
+                      step="0.01"
+                      value={transferQty}
+                      onChange={(e) => setTransferQty(e.target.value)}
+                      placeholder="مقدار قابل انتقال"
+                      className="w-full px-3 py-1.5 rounded-lg border border-slate-200 dark:border-slate-700 bg-white dark:bg-slate-900"
+                    />
+                  </div>
                   <button
-                    onClick={() => transferProductWarehouse(selectedProduct.id, targetWarehouse)}
+                    onClick={dispatchTrackedTransfer}
                     className="w-full py-2 text-xs font-semibold text-white bg-teal-700 hover:bg-teal-800 rounded-lg"
                   >
-                    ثبت حواله انتقال به انبار مقصد
+                    ثبت حواله خروج و انتقال کالا به وضعیت «در راه»
                   </button>
+                  {pendingTransfersForProduct.length > 0 && (
+                    <div className="pt-2 border-t border-slate-200 dark:border-slate-800 space-y-2">
+                      <div className="font-semibold text-slate-700 dark:text-slate-200">
+                        حواله‌های در راه و آماده دریافت
+                      </div>
+                      {pendingTransfersForProduct.map((transfer) => (
+                        <div key={transfer.id} className="rounded-md border border-amber-200 dark:border-amber-900 p-2 space-y-1.5">
+                          <div className="flex items-center justify-between gap-2">
+                            <strong>{transfer.transferNumber}</strong>
+                            <span>{formatWeight(transfer.qty)} {selectedProduct.unit}</span>
+                          </div>
+                          <div className="text-[11px] text-slate-500">
+                            {transfer.fromWarehouse} ← {transfer.toWarehouse} · {formatMoney(transfer.transferredCostIrr, unit)}
+                          </div>
+                          <button
+                            onClick={() => receiveTrackedTransfer(transfer.id)}
+                            className="w-full py-1.5 rounded-md bg-amber-600 hover:bg-amber-700 text-white font-semibold"
+                          >
+                            ثبت دریافت در انبار مقصد
+                          </button>
+                        </div>
+                      ))}
+                    </div>
+                  )}
+                  {isCloudMode && (
+                    <div className="pt-3 border-t border-slate-200 dark:border-slate-800 space-y-2">
+                      <div className="flex items-center justify-between gap-2">
+                        <strong className="text-slate-700 dark:text-slate-200">تاریخچه دائمی حواله‌ها</strong>
+                        <button
+                          type="button"
+                          onClick={() => loadTransferHistory(true)}
+                          disabled={transferHistoryLoading}
+                          className="px-2.5 py-1 rounded-md border border-slate-300 dark:border-slate-700 disabled:opacity-50"
+                        >
+                          {transferHistoryLoading && transferHistory.length === 0 ? 'در حال بارگذاری...' : 'بارگذاری / تازه‌سازی'}
+                        </button>
+                      </div>
+                      <p className="text-[10px] text-slate-500">
+                        تاریخچه از دفتر مرجع فقط‌خواندنی سرور خوانده می‌شود و محدودیت ۱۰۰ حواله فعال را ندارد.
+                      </p>
+                      {transferHistoryError && (
+                        <p role="alert" className="text-[11px] text-rose-600">{transferHistoryError}</p>
+                      )}
+                      {transferHistory.length > 0 && (
+                        <div className="space-y-1.5">
+                          {transferHistory
+                            .filter((transfer) => transfer.productId === selectedProduct?.id)
+                            .map((transfer) => (
+                              <div key={transfer.id} className="rounded-md border border-slate-200 dark:border-slate-700 p-2">
+                                <div className="flex items-center justify-between gap-2">
+                                  <strong>{transfer.transferNumber}</strong>
+                                  <span className={transfer.status === 'received' ? 'text-emerald-700 dark:text-emerald-400' : 'text-amber-700 dark:text-amber-400'}>
+                                    {transfer.status === 'received' ? 'دریافت‌شده' : 'در راه'}
+                                  </span>
+                                </div>
+                                <div className="text-[11px] text-slate-500">
+                                  {transfer.fromWarehouse} ← {transfer.toWarehouse} · {formatWeight(transfer.qty)} {selectedProduct.unit}
+                                </div>
+                                <div className="text-[10px] text-slate-400">
+                                  خروج: {transfer.date}{transfer.receivedDate ? ` · دریافت: ${transfer.receivedDate}` : ''}
+                                </div>
+                              </div>
+                            ))}
+                        </div>
+                      )}
+                      {transferHistoryHasMore && (
+                        <button
+                          type="button"
+                          onClick={() => loadTransferHistory(false)}
+                          disabled={transferHistoryLoading}
+                          className="w-full py-1.5 rounded-md border border-slate-300 dark:border-slate-700 disabled:opacity-50"
+                        >
+                          {transferHistoryLoading ? 'در حال بارگذاری...' : 'نمایش صفحه بعدی تاریخچه'}
+                        </button>
+                      )}
+                    </div>
+                  )}
                 </div>
               )}
 

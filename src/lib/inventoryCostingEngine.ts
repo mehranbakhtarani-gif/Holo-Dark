@@ -127,6 +127,51 @@ export function roundQty(qty: number): number {
   return Math.round((Number(qty) || 0) * QTY_SCALE) / QTY_SCALE;
 }
 
+/**
+ * Selects the next FIFO cost slice to restore for a partial sale return.
+ * Earlier returns consume the tail of the original sale's FIFO allocations first.
+ * Cumulative rounded boundaries keep integer-IRR allocations exactly additive.
+ */
+export function selectUnreturnedSaleAllocations(
+  originalAllocations: ConsumedCostLayerAllocation[],
+  previouslyReturnedQty: number,
+  requestedQty: number
+): ConsumedCostLayerAllocation[] {
+  let skipQty = roundQty(Math.max(0, previouslyReturnedQty));
+  let remainingQty = roundQty(requestedQty);
+  const selectedInReverse: ConsumedCostLayerAllocation[] = [];
+
+  for (let i = originalAllocations.length - 1; i >= 0 && remainingQty > 0.00005; i--) {
+    const allocation = originalAllocations[i];
+    const allocationQty = roundQty(allocation.qty);
+    if (allocationQty <= 0) continue;
+    if (skipQty >= allocationQty - 0.00005) {
+      skipQty = roundQty(Math.max(0, skipQty - allocationQty));
+      continue;
+    }
+
+    const offsetInLayer = skipQty;
+    const availableInLayer = roundQty(allocationQty - offsetInLayer);
+    const takeQty = roundQty(Math.min(availableInLayer, remainingQty));
+    const startCost = Math.round((allocation.totalCostIrr * offsetInLayer) / allocationQty);
+    const endCost = Math.round((allocation.totalCostIrr * (offsetInLayer + takeQty)) / allocationQty);
+    const takeCost = Math.max(0, endCost - startCost);
+    selectedInReverse.push({
+      layerId: allocation.layerId,
+      qty: takeQty,
+      unitCostIrr: takeQty > 0 ? Math.round(takeCost / takeQty) : allocation.unitCostIrr,
+      totalCostIrr: takeCost,
+    });
+    remainingQty = roundQty(Math.max(0, remainingQty - takeQty));
+    skipQty = 0;
+  }
+
+  if (remainingQty > 0.00005) {
+    throw new Error('اطلاعات لایه‌های بهای تمام‌شدهٔ فاکتور فروش برای محاسبهٔ برگشت ناقص است.');
+  }
+  return selectedInReverse.reverse();
+}
+
 function roundQty2(qty: number): number {
   return Math.round((Number(qty) || 0) * 100) / 100;
 }
@@ -145,19 +190,45 @@ export function normalizeProductCostState(
   const buyPrice = Math.max(0, Math.round(Number(product.buyPrice) || 0));
 
   if (Array.isArray(product.costLayers) && product.costLayers.length > 0) {
+    // Never trust a persisted cost-layer set if any layer contains invalid quantities or valuation.
+    // In particular, without inventoryValueIrr a non-finite layer value could otherwise be
+    // normalized to zero and incorrectly treated as a reconciled inventory valuation.
+    const hasInvalidLayerData = product.costLayers.some((layer) =>
+      !layer ||
+      typeof layer.layerId !== 'string' || layer.layerId.length === 0 ||
+      typeof layer.date !== 'string' || layer.date.length === 0 ||
+      typeof layer.sourceRef !== 'string' || layer.sourceRef.length === 0 ||
+      !Number.isFinite(layer.originalQty) || layer.originalQty <= 0 ||
+      !Number.isFinite(layer.remainingQty) || layer.remainingQty < 0 ||
+      layer.remainingQty > layer.originalQty + 0.00005 ||
+      !Number.isFinite(layer.unitCostIrr) || layer.unitCostIrr < 0 ||
+      !Number.isFinite(layer.totalCostIrr) || layer.totalCostIrr < 0
+    );
     const cleanLayers = product.costLayers
-      .filter((l) => roundQty(l.remainingQty) > 0)
-      .map((l) => ({
-        ...l,
-        originalQty: roundQty(l.originalQty),
-        remainingQty: roundQty(l.remainingQty),
-        unitCostIrr: Math.max(0, Math.round(Number(l.unitCostIrr) || 0)),
-        totalCostIrr: Math.max(0, Math.round(Number(l.totalCostIrr) || 0)),
-      }));
+      .filter((l) => Number.isFinite(l.remainingQty) && roundQty(l.remainingQty) > 0)
+      .map((l) => {
+        const originalQty = Number.isFinite(l.originalQty) ? roundQty(l.originalQty) : 0;
+        const remainingQty = roundQty(l.remainingQty);
+        const unitCost = Number(l.unitCostIrr);
+        const totalCost = Number(l.totalCostIrr);
+        return {
+          ...l,
+          originalQty: Math.max(remainingQty, originalQty),
+          remainingQty,
+          unitCostIrr: Number.isFinite(unitCost) ? Math.max(0, Math.round(unitCost)) : 0,
+          totalCostIrr: Number.isFinite(totalCost) ? Math.max(0, Math.round(totalCost)) : 0,
+        };
+      });
     const layerQty = roundQty(cleanLayers.reduce((s, l) => s + l.remainingQty, 0));
     const layerVal = cleanLayers.reduce((s, l) => s + l.totalCostIrr, 0);
-    // Only trust stored layers if they reconcile with current stock quantity
-    if (Math.abs(layerQty - stockQty) < 0.005) {
+    // Trust persisted layers only when both quantity and valuation reconcile with
+    // the product snapshot. A quantity-only match can silently drift from GL 10501.
+    const snapshotValue = product.inventoryValueIrr;
+    const hasSnapshotValue =
+      typeof snapshotValue === 'number' && Number.isFinite(snapshotValue) && snapshotValue >= 0;
+    const valueMatchesSnapshot =
+      !hasSnapshotValue || Math.abs(layerVal - Math.round(snapshotValue)) < 1;
+    if (!hasInvalidLayerData && Math.abs(layerQty - stockQty) < 0.005 && valueMatchesSnapshot) {
       return {
         productId: product.id,
         costingMethod: method,
@@ -539,23 +610,34 @@ export function applyInventoryMovementStep(
     let inventoryCostRemovedIrr = 0;
 
     if (method === 'fifo') {
-      // First target the exact originating purchase layer if sourceRefId is provided
+      // A linked purchase return must consume only its originating purchase layer.
+      // Never silently substitute stock from an unrelated receipt.
       if (movement.sourceRefId) {
-        const target = layers.find(
-          (l) => l.sourceRef === movement.sourceRefId && l.remainingQty > 0.00005
+        const sourceLayers = layers.filter(
+          (layer) => layer.sourceRef === movement.sourceRefId && layer.remainingQty > 0.00005
         );
-        if (target) {
-          const take = roundQty(Math.min(target.remainingQty, remainingToRemove));
-          const takeVal = allocateLayerCostIrr(target, take);
-          target.remainingQty = roundQty(Math.max(0, target.remainingQty - take));
-          target.totalCostIrr = Math.max(0, target.totalCostIrr - takeVal);
+        const sourceRemainingQty = roundQty(
+          sourceLayers.reduce((sum, layer) => sum + layer.remainingQty, 0)
+        );
+        if (sourceRemainingQty + 0.0001 < qty) {
+          throw new Error(
+            `موجودی باقی‌مانده از خرید مرجع برای برگشت کافی نیست (شناسه خرید: ${movement.sourceRefId}، موجودی قابل برگشت: ${roundQty2(sourceRemainingQty)}، مقدار درخواستی: ${roundQty2(qty)}).`
+          );
+        }
+        // A source purchase can be split across warehouses by transfers. Consume
+        // only its surviving descendant layers, never an unrelated purchase layer.
+        for (const sourceLayer of sourceLayers) {
+          if (remainingToRemove <= 0.00005) break;
+          const take = roundQty(Math.min(sourceLayer.remainingQty, remainingToRemove));
+          const takeVal = allocateLayerCostIrr(sourceLayer, take);
+          sourceLayer.remainingQty = roundQty(Math.max(0, sourceLayer.remainingQty - take));
+          sourceLayer.totalCostIrr = Math.max(0, sourceLayer.totalCostIrr - takeVal);
           remainingToRemove = roundQty(Math.max(0, remainingToRemove - take));
           inventoryCostRemovedIrr += takeVal;
         }
-      }
-
-      // If still remaining (or no explicit sourceRefId), adjust newest purchase layers first (LIFO layer reversal)
-      for (let i = layers.length - 1; i >= 0 && remainingToRemove > 0.00005; i--) {
+      } else {
+        // Without a source reference, reverse the newest available layers first (LIFO).
+        for (let i = layers.length - 1; i >= 0 && remainingToRemove > 0.00005; i--) {
         const layer = layers[i];
         if (layer.remainingQty <= 0.00005) continue;
         const take = roundQty(Math.min(layer.remainingQty, remainingToRemove));
@@ -564,6 +646,7 @@ export function applyInventoryMovementStep(
         layer.totalCostIrr = Math.max(0, layer.totalCostIrr - takeVal);
         remainingToRemove = roundQty(Math.max(0, remainingToRemove - take));
         inventoryCostRemovedIrr += takeVal;
+        }
       }
 
       const activeLayers = layers.filter((l) => l.remainingQty > 0.00005);
@@ -700,10 +783,46 @@ export function recalculateInventoryLedger(input: {
     let totalNetOutQty = 0;
     let totalSalesQty = 0;
     let totalWasteQty = 0;
+    const saleQtyByRef = new Map<string, number>();
+    const returnedQtyBySaleRef = new Map<string, number>();
+    const purchaseQtyByRef = new Map<string, number>();
+    const returnedQtyByPurchaseRef = new Map<string, number>();
 
     // Pass 1: Pool all opening + purchases + surplus - purchase_returns across the entire period
+    // Validate linked returns here too; periodic costing must enforce the same source limits as FIFO.
     for (const m of sorted) {
       const q = roundQty(m.qty);
+      if (m.kind === 'purchase') {
+        purchaseQtyByRef.set(m.id, q);
+      } else if (m.kind === 'purchase_return' && m.sourceRefId) {
+        const originalPurchaseQty = purchaseQtyByRef.get(m.sourceRefId);
+        if (originalPurchaseQty === undefined) {
+          throw new Error(`فاکتور خرید مرجع برای برگشت از خرید یافت نشد: ${m.sourceRefId}`);
+        }
+        const alreadyReturned = returnedQtyByPurchaseRef.get(m.sourceRefId) ?? 0;
+        const remainingReturnableQty = roundQty(originalPurchaseQty - alreadyReturned);
+        if (q > remainingReturnableQty + 0.0001) {
+          throw new Error(
+            `مقدار برگشت از خرید از مقدار خریداری‌شدهٔ باقی‌مانده بیشتر است (باقی‌مانده: ${roundQty2(remainingReturnableQty)}، برگشتی: ${roundQty2(q)}).`
+          );
+        }
+        returnedQtyByPurchaseRef.set(m.sourceRefId, roundQty(alreadyReturned + q));
+      } else if (m.kind === 'sale') {
+        saleQtyByRef.set(m.id, q);
+      } else if (m.kind === 'sale_return' && m.sourceRefId) {
+        const originalSaleQty = saleQtyByRef.get(m.sourceRefId);
+        if (originalSaleQty === undefined) {
+          throw new Error(`فاکتور فروش مرجع برای برگشت از فروش یافت نشد: ${m.sourceRefId}`);
+        }
+        const alreadyReturned = returnedQtyBySaleRef.get(m.sourceRefId) ?? 0;
+        const remainingReturnableQty = roundQty(originalSaleQty - alreadyReturned);
+        if (q > remainingReturnableQty + 0.0001) {
+          throw new Error(
+            `مقدار برگشت از فروش از مقدار فروش‌رفتهٔ باقی‌مانده بیشتر است (باقی‌مانده: ${roundQty2(remainingReturnableQty)}، برگشتی: ${roundQty2(q)}).`
+          );
+        }
+        returnedQtyBySaleRef.set(m.sourceRefId, roundQty(alreadyReturned + q));
+      }
       if (m.kind === 'opening' || m.kind === 'purchase' || m.kind === 'surplus') {
         const val =
           m.totalCostIrr !== undefined
@@ -782,6 +901,11 @@ export function recalculateInventoryLedger(input: {
           purchaseReturnVarianceIrr: 0,
         });
       } else if (m.kind === 'purchase_return') {
+        if (!m.allowNegativeStock && runningQty + 0.0001 < q) {
+          throw new Error(
+            `موجودی انبار در تاریخ ${m.date} برای برگشت از خرید کافی نیست (موجودی: ${roundQty2(runningQty)}، مقدار برگشتی: ${roundQty2(q)}).`
+          );
+        }
         const val =
           m.totalCostIrr !== undefined
             ? Math.round(m.totalCostIrr)
@@ -925,8 +1049,9 @@ export function recalculateInventoryLedger(input: {
 
   const saleHistoryByRef = new Map<
     string,
-    { unitCostIrr: number; consumedLayers?: ConsumedCostLayerAllocation[] }
+    { unitCostIrr: number; consumedLayers?: ConsumedCostLayerAllocation[]; quantity: number }
   >();
+  const returnedQtyBySaleRef = new Map<string, number>();
 
   const kardex: InventoryKardexEntry[] = [];
   let totalPurchasesQty = 0;
@@ -939,13 +1064,65 @@ export function recalculateInventoryLedger(input: {
   let netOutflowsIrr = 0;
 
   for (const m of sorted) {
-    const step = applyInventoryMovementStep(state, m, saleHistoryByRef);
+    let movementForStep = m;
+    if (m.kind === 'sale_return' && m.sourceRefId) {
+      const originalSale = saleHistoryByRef.get(m.sourceRefId);
+      if (!originalSale) {
+        throw new Error(`فاکتور فروش مرجع برای برگشت از فروش یافت نشد: ${m.sourceRefId}`);
+      }
+      const alreadyReturned = returnedQtyBySaleRef.get(m.sourceRefId) ?? 0;
+      const remainingReturnableQty = roundQty(originalSale.quantity - alreadyReturned);
+      if (roundQty(m.qty) > remainingReturnableQty + 0.0001) {
+        throw new Error(
+          `مقدار برگشت از فروش از مقدار فروش‌رفتهٔ باقی‌مانده بیشتر است (باقی‌مانده: ${roundQty2(remainingReturnableQty)}، برگشتی: ${roundQty2(m.qty)}).`
+        );
+      }
+
+      // Allocate each partial return to the next unreturned portion of the original
+      // sale's FIFO consumption, starting with the last layer consumed.
+      const originalAllocations = m.originalConsumedLayers || originalSale.consumedLayers || [];
+      if (costingMethod === 'fifo' && originalAllocations.length > 0) {
+        let skipQty = alreadyReturned;
+        let remainingQty = roundQty(m.qty);
+        const selectedInReverse: ConsumedCostLayerAllocation[] = [];
+        for (let i = originalAllocations.length - 1; i >= 0 && remainingQty > 0.00005; i--) {
+          const allocation = originalAllocations[i];
+          const allocationQty = roundQty(allocation.qty);
+          if (skipQty >= allocationQty - 0.00005) {
+            skipQty = roundQty(Math.max(0, skipQty - allocationQty));
+            continue;
+          }
+          const offsetInLayer = skipQty;
+          const availableInLayer = roundQty(allocationQty - offsetInLayer);
+          const takeQty = roundQty(Math.min(availableInLayer, remainingQty));
+          const startCost = Math.round((allocation.totalCostIrr * offsetInLayer) / allocationQty);
+          const endCost = Math.round((allocation.totalCostIrr * (offsetInLayer + takeQty)) / allocationQty);
+          const takeCost = Math.max(0, endCost - startCost);
+          selectedInReverse.push({
+            layerId: allocation.layerId,
+            qty: takeQty,
+            unitCostIrr: takeQty > 0 ? Math.round(takeCost / takeQty) : allocation.unitCostIrr,
+            totalCostIrr: takeCost,
+          });
+          remainingQty = roundQty(Math.max(0, remainingQty - takeQty));
+          skipQty = 0;
+        }
+        if (remainingQty > 0.00005) {
+          throw new Error('اطلاعات لایه‌های بهای تمام‌شدهٔ فاکتور فروش برای محاسبهٔ برگشت ناقص است.');
+        }
+        movementForStep = { ...m, originalConsumedLayers: selectedInReverse.reverse() };
+      }
+      returnedQtyBySaleRef.set(m.sourceRefId, roundQty(alreadyReturned + m.qty));
+    }
+
+    const step = applyInventoryMovementStep(state, movementForStep, saleHistoryByRef);
     state = step.nextState;
 
     if (m.kind === 'sale') {
       saleHistoryByRef.set(m.id, {
         unitCostIrr: step.effectiveUnitCostIrr,
         consumedLayers: step.consumedLayers,
+        quantity: roundQty(m.qty),
       });
       totalSalesQty = roundQty(totalSalesQty + m.qty);
       totalCogsIrr += step.cogsOrCostIrr;
@@ -1029,20 +1206,27 @@ export function planWarehouseTransfer(input: {
   if (qty <= 0) {
     throw new Error('مقدار انتقال بین انبارها باید بزرگ‌تر از صفر باشد.');
   }
-  if (state.stockQty + 0.0001 < qty) {
+  const remainingSourceLayers = cloneLayers(state.layers);
+  const sourceQty = roundQty(
+    remainingSourceLayers
+      .filter((layer) => layer.warehouse === fromWarehouse)
+      .reduce((sum, layer) => sum + layer.remainingQty, 0)
+  );
+  if (sourceQty + 0.0001 < qty) {
     throw new Error(
-      `موجودی کافی برای انتقال از «${fromWarehouse}» وجود ندارد (موجودی: ${state.stockQty}، درخواستی: ${qty}).`
+      `موجودی کافی برای انتقال از «${fromWarehouse}» وجود ندارد (موجودی این انبار: ${roundQty2(sourceQty)}، درخواستی: ${roundQty2(qty)}).`
     );
   }
 
-  const remainingSourceLayers = cloneLayers(state.layers);
   const transferredLayers: InventoryCostLayer[] = [];
   let rem = qty;
   let transferredCostIrr = 0;
 
+  // Transfer only layers physically held by the selected source warehouse.
+  // Other warehouses' layers remain untouched even when aggregate product stock is sufficient.
   for (const layer of remainingSourceLayers) {
     if (rem <= 0.00005) break;
-    if (layer.remainingQty <= 0.00005) continue;
+    if (layer.warehouse !== fromWarehouse || layer.remainingQty <= 0.00005) continue;
     const take = roundQty(Math.min(layer.remainingQty, rem));
     const takeCost = allocateLayerCostIrr(layer, take);
     layer.remainingQty = roundQty(Math.max(0, layer.remainingQty - take));
@@ -1066,7 +1250,7 @@ export function planWarehouseTransfer(input: {
     productId: state.productId,
     fromWarehouse,
     toWarehouse,
-    qty: roundQty2(qty),
+    qty: roundQty(qty),
     transferredCostIrr,
     transferredLayers,
     remainingSourceLayers: remainingSourceLayers.filter((l) => l.remainingQty > 0.00005),

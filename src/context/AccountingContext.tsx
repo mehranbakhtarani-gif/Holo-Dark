@@ -24,7 +24,14 @@ import {
   signInWithGoogle,
   signOutAccount,
   testFirestoreConnection,
+  resolveWorkspaceContext,
+  migrateInvoiceReturnCounters,
+  listWorkspaceCoreRecords,
+  mutateWorkspaceCoreRecord,
+  mutateWorkspaceVoucher,
+  adjustWorkspaceProductStockWithVoucher,
 } from '../lib/firebase';
+import type { WorkspaceContextResult } from '../lib/firebase';
 import {
   Account,
   AuditActivityLog,
@@ -42,6 +49,7 @@ import {
   Party,
   Product,
   RbacOperator,
+  RbacPermissions,
   SalesOrder,
   SubcontractJob,
   Voucher,
@@ -114,6 +122,7 @@ import {
   setAutoBackupOnClosePref,
 } from '../lib/localBackup';
 import { planPeriodReopening } from '../lib/accountingIntegrityEngine';
+import { getStatutoryParamsForYear, validateStatutoryParams } from '../lib/iranStatutoryParams';
 import {
   Holo203SourcePayload,
   HoloMigrationResult,
@@ -181,7 +190,7 @@ interface AccountingContextValue {
   deleteParty: (partyId: string) => Promise<boolean>;
   // Products & Warehouse CRUD
   addProduct: (product: Omit<Product, 'id' | 'ownerId'>) => Promise<void>;
-  updateProduct: (productId: string, patch: Partial<Omit<Product, 'id' | 'ownerId' | 'sku'>>) => Promise<void>;
+  updateProduct: (productId: string, patch: Partial<Omit<Product, 'id' | 'ownerId' | 'sku'>>) => Promise<boolean>;
   deleteProduct: (productId: string) => Promise<boolean>;
   adjustProductStock: (productId: string, newStock: number) => Promise<void>;
   adjustProductStockWithVoucher: (productId: string, countedStock: number, reason: string) => Promise<void>;
@@ -221,7 +230,7 @@ interface AccountingContextValue {
     }
   ) => Promise<void>;
   deleteVoucher: (voucherId: string) => Promise<boolean>;
-  finalizeVoucher: (voucherId: string) => Promise<void>;
+  finalizeVoucher: (voucherId: string) => Promise<boolean>;
   finalizeAllDraftVouchers: () => Promise<number>;
   createReversingVoucher: (voucherId: string) => Promise<Voucher | null>;
   renumberVouchersChronologically: () => Promise<void>;
@@ -337,6 +346,7 @@ interface AccountingContextValue {
   // Backup, Restore & Comprehensive Data Reset
   exportBackupJson: () => string;
   importBackupJson: (jsonText: string) => boolean;
+  importBackupJsonDurably: (jsonText: string) => Promise<boolean>;
   resetWorkspaceTables: (options: {
     mode: 'blank' | 'demo';
     keepChartOfAccounts?: boolean;
@@ -372,6 +382,9 @@ export const AccountingProvider: React.FC<{ children: React.ReactNode }> = ({ ch
   const [lastLocalBackupAt, setLastLocalBackupAt] = useState<string | null>(null);
 
   const [user, setUser] = useState<User | null>(null);
+  const [workspaceContext, setWorkspaceContext] = useState<WorkspaceContextResult | null>(null);
+  const workspaceCoreVersionsRef = useRef(new Map<string, number>());
+
   const [authReady, setAuthReady] = useState(false);
   const [isSyncing, setIsSyncing] = useState(false);
   const [isSigningIn, setIsSigningIn] = useState(false);
@@ -398,6 +411,7 @@ export const AccountingProvider: React.FC<{ children: React.ReactNode }> = ({ ch
   const [rbacOperators, setRbacOperators] = useState<RbacOperator[]>(initialSeed.rbacOperators);
   const [activeOperatorId, setActiveOperatorId] = useState<string>(initialSeed.rbacOperators[0].id);
   const [auditLogs, setAuditLogs] = useState<AuditActivityLog[]>(initialSeed.auditLogs);
+  const pendingDurableImportRef = useRef<((success: boolean) => void) | null>(null);
 
   const activeOperator = useMemo(
     () =>
@@ -415,6 +429,15 @@ export const AccountingProvider: React.FC<{ children: React.ReactNode }> = ({ ch
       setToast((prev) => (prev === msg ? null : prev));
     }, 4500);
   }, []);
+
+  const requirePermission = useCallback(
+    (permission: keyof RbacPermissions, operation: string): boolean => {
+      if (activeOperator?.active && activeOperator.permissions?.[permission] === true) return true;
+      showToast(`اپراتور فعال مجوز «${operation}» را ندارد؛ عملیات انجام نشد.`, 'error');
+      return false;
+    },
+    [activeOperator, showToast]
+  );
 
   const setAudioEnabled = useCallback((enabled: boolean) => {
     setAudioFeedbackEnabled(enabled);
@@ -548,6 +571,9 @@ export const AccountingProvider: React.FC<{ children: React.ReactNode }> = ({ ch
             const docId = `${uid.slice(0, 10)}_${id}`;
             batch.set(doc(db, colName, docId), {
               ...rest,
+              ...(colName === 'invoices' && (
+                (rest as unknown as Invoice).invoiceType === 'sale' || (rest as unknown as Invoice).invoiceType === 'purchase'
+              ) ? { returnRevision: 0, activeReturnCount: 0 } : {}),
               createdAt: now,
               updatedAt: now,
             });
@@ -658,6 +684,8 @@ export const AccountingProvider: React.FC<{ children: React.ReactNode }> = ({ ch
   useEffect(() => {
     if (!authReady) return;
     if (!user) {
+      workspaceCoreVersionsRef.current.clear();
+      setWorkspaceContext(null);
       let cancelledLocal = false;
 
       const hydrateFallbackLocal = () => {
@@ -787,10 +815,83 @@ export const AccountingProvider: React.FC<{ children: React.ReactNode }> = ({ ch
       }
     }
 
-    ensureCloudSeed(user)
-      .then(() => {
-        if (cancelled) return;
-        const uid = user.uid;
+    // Resolve Workspace membership before any cloud seeding or owner-scoped listeners.
+    // A member must never seed a second tenant under their personal Firebase UID.
+    (async () => {
+      let resolvedWorkspace: WorkspaceContextResult | null = null;
+      try {
+        resolvedWorkspace = await resolveWorkspaceContext();
+      } catch (error) {
+        const code = error && typeof error === 'object' && 'code' in error
+          ? String((error as { code?: unknown }).code || '')
+          : '';
+        // Existing single-owner installations may not have bootstrapped Workspace yet.
+        // Only absence of a workspace/function is legacy-compatible; authorization failures fail closed.
+        if (code !== 'functions/failed-precondition' && code !== 'functions/not-found') {
+          if (!cancelled) {
+            setWorkspaceContext(null);
+            showToast('اعتبارسنجی فضای کاری انجام نشد؛ برای جلوگیری از دسترسی ناامن، همگام‌سازی ابری متوقف شد.');
+          }
+          return;
+        }
+      }
+      if (cancelled) return;
+      setWorkspaceContext(resolvedWorkspace);
+      if (resolvedWorkspace && (resolvedWorkspace.workspaceId !== user.uid || resolvedWorkspace.coreWritesFrozen)) {
+        if (!resolvedWorkspace.stagedReadsEnabled) {
+          workspaceCoreVersionsRef.current.clear();
+          setAccounts([]);
+          setProducts([]);
+          showToast('عضویت فضای کاری تأیید شد؛ تا تأیید مهاجرت و ثبت مانع همگام‌سازی، داده‌های حساب‌ها و کالاها قابل‌خواندن نیستند.');
+          return;
+        }
+        try {
+          // Fetch both collections completely before publishing either one to Context.
+          // The server rejects reads until the verified snapshot has an explicit freeze barrier.
+          const [accountRows, productRows, partyRows, voucherRows] = await Promise.all([
+            listWorkspaceCoreRecords<Account>('accounts'),
+            listWorkspaceCoreRecords<Product>('products'),
+            listWorkspaceCoreRecords<Party>('parties'),
+            listWorkspaceCoreRecords<Voucher>('vouchers'),
+          ]);
+          if (cancelled) return;
+          workspaceCoreVersionsRef.current = new Map([
+            ...accountRows.map(({ id, version }) => [`accounts:${id}`, version] as [string, number]),
+            ...productRows.map(({ id, version }) => [`products:${id}`, version] as [string, number]),
+            ...partyRows.map(({ id, version }) => [`parties:${id}`, version] as [string, number]),
+            ...voucherRows.map(({ id, version }) => [`vouchers:${id}`, version] as [string, number]),
+          ]);
+          setAccounts(accountRows.map(({ id, payload }) => ({ ...payload, id })));
+          setProducts(productRows.map(({ id, payload }) => ({ ...payload, id })));
+          setParties(partyRows.map(({ id, payload, version }) => ({ ...payload, id, _version: version })));
+          setVouchers(voucherRows.map(({ id, payload, version }) => ({ ...payload, id, _version: version })));
+          showToast('حساب‌ها، کالاها، طرف‌حساب‌ها و اسناد فضای کاری با موفقیت بارگذاری شدند.');
+        } catch (error) {
+          if (cancelled) return;
+          workspaceCoreVersionsRef.current.clear();
+          setAccounts([]);
+          setProducts([]);
+          console.error('Workspace core read adapter rejected the snapshot:', error);
+          showToast('خواندن امن حساب‌ها و کالاها ممکن نشد؛ هیچ داده ناقصی نمایش داده نشد.');
+        }
+        return;
+      }
+
+      // Backfill legacy source invoices before owner-scoped listeners expose them to accounting actions.
+      if (typeof navigator === 'undefined' || navigator.onLine) {
+        try {
+          await migrateInvoiceReturnCounters();
+        } catch (error) {
+          if (cancelled) return;
+          console.error('Invoice return counter migration was not completed:', error);
+          showToast('به‌روزرسانی امن فاکتورهای قدیمی انجام نشد؛ ثبت یا ابطال برگشت برای فاکتورهای قدیمی تا تکمیل مهاجرت محدود می‌ماند.', 'error');
+        }
+      }
+      if (cancelled) return;
+
+      await ensureCloudSeed(user);
+      if (cancelled) return;
+      const uid = user.uid;
 
         unsubs.push(
           onSnapshot(
@@ -854,18 +955,22 @@ export const AccountingProvider: React.FC<{ children: React.ReactNode }> = ({ ch
         subscribeCol<SubcontractJob>('subcontractJobs', setSubcontractJobs);
         subscribeCol<RbacOperator>('rbacOperators', setRbacOperators);
         subscribeCol<AuditActivityLog>('auditLogs', setAuditLogs);
-      })
-      .catch((err) => {
+    })().catch((err) => {
+      if (!cancelled) {
         console.error(err);
-      });
+        showToast('بارگذاری فضای کاری ناموفق بود؛ همگام‌سازی ابری متوقف شد.');
+      }
+    });
 
     return () => {
       cancelled = true;
       unsubs.forEach((u) => u());
     };
-  }, [authReady, user, ensureCloudSeed]);
+  }, [authReady, user, ensureCloudSeed, showToast]);
 
-  const ownerId = user?.uid ?? DEMO_OWNER;
+  // For an invited member this is the tenant owner ID, not the member UID.
+  // Until server-backed CRUD adapters are ready, existing root Rules reject member writes (fail closed).
+  const ownerId = workspaceContext?.workspaceId ?? user?.uid ?? DEMO_OWNER;
   const isCloudMode = !!user;
 
   const reportFilterOpts = useMemo(
@@ -959,6 +1064,8 @@ export const AccountingProvider: React.FC<{ children: React.ReactNode }> = ({ ch
 
   const updateCompanyProfile = useCallback(
     async (patch: Partial<CompanyProfile>) => {
+      if (!requirePermission('canManageSettings', 'تغییر تنظیمات شرکت')) return;
+
       const next = { ...profile, ...patch };
       setProfile(next);
       if (user) {
@@ -979,7 +1086,7 @@ export const AccountingProvider: React.FC<{ children: React.ReactNode }> = ({ ch
       }
       showToast('مشخصات شرکتی و سال مالی ذخیره شد.');
     },
-    [profile, user, showToast]
+    [profile, user, showToast, requirePermission]
   );
 
   const setCurrencyUnit = useCallback(
@@ -994,11 +1101,27 @@ export const AccountingProvider: React.FC<{ children: React.ReactNode }> = ({ ch
     async (acc: Omit<Account, 'id' | 'ownerId'>) => {
       const id = generateSafeId('acc');
       const full: Account = { ...acc, id, ownerId };
-      if (user) {
+      if (user && workspaceContext && (workspaceContext.workspaceId !== user.uid || workspaceContext.coreWritesFrozen || workspaceContext.coreWriteMode === 'workspace_native')) {
+        const payload = {
+          ownerId: workspaceContext.workspaceId,
+          code: acc.code.replace(/\\D/g, '').slice(0, 24),
+          title: acc.title.trim().slice(0, 160),
+          level: acc.level,
+          ...(acc.parentCode ? { parentCode: acc.parentCode.slice(0, 24) } : {}),
+          category: acc.category,
+          nature: acc.nature,
+          isSystem: false,
+          createdAt: new Date(),
+          updatedAt: new Date(),
+        };
+        await mutateWorkspaceCoreRecord({ collection: 'accounts', documentId: id, operation: 'create', operationId: generateSafeId('op'), expectedVersion: 0, data: payload });
+        workspaceCoreVersionsRef.current.set(`accounts:${id}`, 1);
+        setAccounts((prev) => [...prev, { ...payload, id } as Account]);
+      } else if (user) {
         try {
           await setDoc(doc(db, 'accounts', id), {
             ownerId,
-            code: acc.code.replace(/\D/g, '').slice(0, 24),
+            code: acc.code.replace(/\\D/g, '').slice(0, 24),
             title: acc.title.trim().slice(0, 160),
             level: acc.level,
             ...(acc.parentCode ? { parentCode: acc.parentCode.slice(0, 24) } : {}),
@@ -1010,13 +1133,14 @@ export const AccountingProvider: React.FC<{ children: React.ReactNode }> = ({ ch
           });
         } catch (err) {
           handleFirestoreError(err, OperationType.CREATE, `accounts/${id}`);
+          throw err;
         }
       } else {
         setAccounts((prev) => [...prev, full]);
       }
       showToast(`حساب «${acc.title}» با کد ${acc.code} در کدینگ ثبت شد.`);
     },
-    [ownerId, user, showToast]
+    [ownerId, user, workspaceContext, showToast]
   );
 
   const updateAccount = useCallback(
@@ -1026,26 +1150,33 @@ export const AccountingProvider: React.FC<{ children: React.ReactNode }> = ({ ch
     ) => {
       const existing = accounts.find((a) => a.id === accountId);
       if (!existing) return;
-      const updatePayload: Record<string, unknown> = { updatedAt: serverTimestamp() };
+      const updatePayload: Record<string, unknown> = { updatedAt: new Date() };
       if (patch.title !== undefined) updatePayload.title = patch.title.trim().slice(0, 160);
       if (patch.parentCode !== undefined) updatePayload.parentCode = patch.parentCode.slice(0, 24);
       if (patch.category !== undefined) updatePayload.category = patch.category;
       if (patch.nature !== undefined) updatePayload.nature = patch.nature;
 
-      if (user) {
+      if (user && workspaceContext && (workspaceContext.workspaceId !== user.uid || workspaceContext.coreWritesFrozen || workspaceContext.coreWriteMode === 'workspace_native')) {
+        const version = workspaceCoreVersionsRef.current.get(`accounts:${accountId}`);
+        if (!version) throw new Error('نسخه معتبر حساب در فضای کاری موجود نیست؛ ابتدا داده‌ها را تازه‌سازی کنید.');
+        const payload = { ...existing, ...updatePayload, ownerId: workspaceContext.workspaceId, createdAt: new Date(), updatedAt: new Date() };
+        delete (payload as Record<string, unknown>).id;
+        await mutateWorkspaceCoreRecord({ collection: 'accounts', documentId: accountId, operation: 'update', operationId: generateSafeId('op'), expectedVersion: version, data: payload });
+        workspaceCoreVersionsRef.current.set(`accounts:${accountId}`, version + 1);
+        setAccounts((prev) => prev.map((a) => (a.id === accountId ? { ...a, ...patch } : a)));
+      } else if (user) {
         try {
           await updateDoc(doc(db, 'accounts', accountId), updatePayload);
         } catch (err) {
           handleFirestoreError(err, OperationType.UPDATE, `accounts/${accountId}`);
+          throw err;
         }
       } else {
-        setAccounts((prev) =>
-          prev.map((a) => (a.id === accountId ? { ...a, ...patch } : a))
-        );
+        setAccounts((prev) => prev.map((a) => (a.id === accountId ? { ...a, ...patch } : a)));
       }
       showToast(`حساب «${patch.title ?? existing.title}» ویرایش شد.`);
     },
-    [accounts, user, showToast]
+    [accounts, user, workspaceContext, showToast]
   );
 
   const deleteAccount = useCallback(
@@ -1061,11 +1192,18 @@ export const AccountingProvider: React.FC<{ children: React.ReactNode }> = ({ ch
         showToast('این حساب دارای گردش در اسناد حسابداری است و طبق اصول حسابرسی قابل حذف نیست.');
         return false;
       }
-      if (user) {
+      if (user && workspaceContext && (workspaceContext.workspaceId !== user.uid || workspaceContext.coreWritesFrozen || workspaceContext.coreWriteMode === 'workspace_native')) {
+        const version = workspaceCoreVersionsRef.current.get(`accounts:${accountId}`);
+        if (!version) throw new Error('نسخه معتبر حساب در فضای کاری موجود نیست؛ ابتدا داده‌ها را تازه‌سازی کنید.');
+        await mutateWorkspaceCoreRecord({ collection: 'accounts', documentId: accountId, operation: 'delete', operationId: generateSafeId('op'), expectedVersion: version });
+        workspaceCoreVersionsRef.current.set(`accounts:${accountId}`, version + 1);
+        setAccounts((prev) => prev.filter((a) => a.id !== accountId));
+      } else if (user) {
         try {
           await deleteDoc(doc(db, 'accounts', accountId));
         } catch (err) {
           handleFirestoreError(err, OperationType.DELETE, `accounts/${accountId}`);
+          throw err;
         }
       } else {
         setAccounts((prev) => prev.filter((a) => a.id !== accountId));
@@ -1073,7 +1211,7 @@ export const AccountingProvider: React.FC<{ children: React.ReactNode }> = ({ ch
       showToast(`حساب «${acc.title}» از کدینگ حذف شد.`);
       return true;
     },
-    [accounts, vouchers, user, showToast]
+    [accounts, vouchers, user, workspaceContext, showToast]
   );
 
   // ---------------- PARTIES CRUD ----------------
@@ -1227,6 +1365,11 @@ export const AccountingProvider: React.FC<{ children: React.ReactNode }> = ({ ch
       currencyCode?: string;
       exchangeRate?: number;
     }): Promise<Voucher> => {
+      if (!requirePermission('canCreateVoucher', 'ایجاد یا ویرایش سند حسابداری')) throw new Error('مجوز ایجاد سند حسابداری وجود ندارد.');
+      if (user && workspaceContext && !(workspaceContext.coreWritesFrozen && workspaceContext.coreWriteMode === 'workspace_native')) {
+        throw new Error('ثبت سند حسابداری تا فعال‌شدن مسیر اتمیک Workspace موقتاً متوقف است؛ هیچ تغییری اعمال نشد.');
+      }
+
       const validation = validateVoucherPayload({
         payload,
         accounts,
@@ -1246,8 +1389,15 @@ export const AccountingProvider: React.FC<{ children: React.ReactNode }> = ({ ch
       const sameYearMax = vouchers
         .filter((v) => (v.fiscalYear || extractFiscalYearFromDate(v.date)) === voucherFy)
         .reduce((max, v) => Math.max(max, v.voucherNumber || 0), 0);
-      const nextNumber =
-        voucherFy === profile.fiscalYear
+      const workspaceNativeVoucher = Boolean(user && workspaceContext
+        && workspaceContext.coreWritesFrozen
+        && workspaceContext.coreWriteMode === 'workspace_native');
+      if (workspaceNativeVoucher && payload.status !== 'draft') {
+        throw new Error('در Workspace ابتدا سند را به‌صورت پیش‌نویس ثبت و سپس قطعی کنید.');
+      }
+      const nextNumber = workspaceNativeVoucher
+        ? 0
+        : voucherFy === profile.fiscalYear
           ? await reserveNextVoucherNumber(sameYearMax)
           : sameYearMax + 1;
       const id = generateSafeId('vch');
@@ -1299,9 +1449,38 @@ export const AccountingProvider: React.FC<{ children: React.ReactNode }> = ({ ch
           ? { ...baseFull, integrityHash: computeVoucherIntegrityHash(baseFull) }
           : baseFull;
 
+      let committedVoucher = full;
       if (user) {
         try {
-          await setDoc(doc(db, 'vouchers', id), {
+          if (workspaceNativeVoucher) {
+            const result = await mutateWorkspaceVoucher({
+              operation: 'create',
+              documentId: id,
+              operationId: generateSafeId('op'),
+              data: {
+                ownerId,
+                date: full.date.slice(0, 20),
+                fiscalYear: full.fiscalYear,
+                description: full.description,
+                voucherType: full.voucherType,
+                status: 'draft',
+                totalDebit,
+                totalCredit,
+                ...(isFx && safeRate ? {
+                  currencyCode: normCode.slice(0, 10),
+                  exchangeRate: safeRate,
+                  foreignTotalDebit: foreignTotalDebit ?? 0,
+                  foreignTotalCredit: foreignTotalCredit ?? 0,
+                } : {}),
+                ...(full.referenceId ? { referenceId: full.referenceId.slice(0, 128) } : {}),
+                ...(full.reversalOfVoucherId ? { reversalOfVoucherId: full.reversalOfVoucherId } : {}),
+                lines: full.lines,
+                updatedByDevice: deviceId.slice(0, 64),
+              },
+            });
+            committedVoucher = { ...full, voucherNumber: result.voucherNumber, _version: result.version };
+          } else {
+            await setDoc(doc(db, 'vouchers', id), {
             ownerId,
             voucherNumber: nextNumber,
             date: full.date.slice(0, 20),
@@ -1310,6 +1489,9 @@ export const AccountingProvider: React.FC<{ children: React.ReactNode }> = ({ ch
             status: full.status,
             totalDebit,
             totalCredit,
+            fiscalYear: full.fiscalYear,
+            ...(full.reversalOfVoucherId ? { reversalOfVoucherId: full.reversalOfVoucherId } : {}),
+            ...(full.integrityHash ? { integrityHash: full.integrityHash } : {}),
             ...(isFx && safeRate
               ? {
                   currencyCode: normCode.slice(0, 10),
@@ -1325,7 +1507,12 @@ export const AccountingProvider: React.FC<{ children: React.ReactNode }> = ({ ch
             createdAt: serverTimestamp(),
             updatedAt: serverTimestamp(),
           });
+          }
         } catch (err) {
+          if (workspaceNativeVoucher) {
+            showToast(err instanceof Error ? err.message : 'ثبت اتمیک سند در Workspace ناموفق بود.', 'error');
+            throw err;
+          }
           handleFirestoreError(err, OperationType.CREATE, `vouchers/${id}`);
         }
       } else {
@@ -1333,10 +1520,10 @@ export const AccountingProvider: React.FC<{ children: React.ReactNode }> = ({ ch
       }
       showToast(
         isFx
-          ? `سند ارزی شماره ${nextNumber} (${normCode}) با موفقیت ثبت شد.`
-          : `سند حسابداری شماره ${nextNumber} با موفقیت ثبت شد.`
+          ? `سند ارزی شماره ${committedVoucher.voucherNumber} (${normCode}) با موفقیت ثبت شد.`
+          : `سند حسابداری شماره ${committedVoucher.voucherNumber} با موفقیت ثبت شد.`
       );
-      return full;
+      return committedVoucher;
     },
     [
       accounts,
@@ -1349,6 +1536,8 @@ export const AccountingProvider: React.FC<{ children: React.ReactNode }> = ({ ch
       deviceId,
       reserveNextVoucherNumber,
       showToast,
+      requirePermission,
+      workspaceContext,
     ]
   );
 
@@ -1365,6 +1554,15 @@ export const AccountingProvider: React.FC<{ children: React.ReactNode }> = ({ ch
         exchangeRate?: number;
       }
     ) => {
+      if (!requirePermission('canCreateVoucher', 'ویرایش سند حسابداری')) return;
+      const workspaceNativeVoucher = Boolean(user && workspaceContext
+        && workspaceContext.coreWritesFrozen && workspaceContext.coreWriteMode === 'workspace_native');
+      if (user && workspaceContext && !workspaceNativeVoucher
+          && (workspaceContext.workspaceId !== user.uid || workspaceContext.coreWritesFrozen || workspaceContext.coreWriteMode === 'workspace_native')) {
+        showToast('ویرایش سند حسابداری تا فعال‌شدن مسیر اتمیک Workspace موقتاً متوقف است؛ هیچ تغییری اعمال نشد.', 'error');
+        return;
+      }
+
       const existing = vouchers.find((v) => v.id === voucherId);
       if (!existing) return;
       if (existing.status === 'permanent') {
@@ -1422,6 +1620,53 @@ export const AccountingProvider: React.FC<{ children: React.ReactNode }> = ({ ch
               lines: cleanLines,
             })
           : undefined;
+
+      if (workspaceNativeVoucher) {
+        if (payload.status !== 'draft') {
+          showToast('در Workspace فقط ویرایش پیش‌نویس مجاز است؛ قطعی‌سازی از مسیر مستقل انجام می‌شود.', 'error');
+          return;
+        }
+        try {
+          const result = await mutateWorkspaceVoucher({
+            operation: 'update',
+            documentId: voucherId,
+            operationId: generateSafeId('op'),
+            expectedVersion,
+            data: {
+              ownerId: workspaceContext!.workspaceId,
+              date: payload.date.slice(0, 20),
+              fiscalYear: voucherFy,
+              description: cleanDesc,
+              voucherType: payload.voucherType,
+              status: 'draft',
+              totalDebit,
+              totalCredit,
+              ...(isFx ? {
+                currencyCode: normCode.slice(0, 10), exchangeRate: safeRate,
+                foreignTotalDebit, foreignTotalCredit,
+              } : {}),
+              ...(existing.referenceId ? { referenceId: existing.referenceId.slice(0, 128) } : {}),
+              ...(existing.reversalOfVoucherId ? { reversalOfVoucherId: existing.reversalOfVoucherId } : {}),
+              lines: cleanLines,
+              updatedByDevice: deviceId.slice(0, 64),
+            },
+          });
+          setVouchers((prev) => prev.map((v) => v.id === voucherId ? {
+            ...v, date: payload.date, fiscalYear: voucherFy, description: cleanDesc,
+            voucherType: payload.voucherType, status: 'draft', lines: cleanLines,
+            totalDebit, totalCredit, currencyCode: isFx ? normCode : undefined,
+            exchangeRate: isFx ? safeRate : undefined,
+            foreignTotalDebit: isFx ? foreignTotalDebit : undefined,
+            foreignTotalCredit: isFx ? foreignTotalCredit : undefined,
+            _version: result.version, updatedByDevice: deviceId,
+          } : v));
+          showToast(`سند موقت شماره ${existing.voucherNumber} با موفقیت اصلاح شد.`);
+        } catch (err) {
+          showToast(err instanceof Error ? err.message : 'ویرایش اتمیک سند در Workspace ناموفق بود.', 'error');
+          throw err;
+        }
+        return;
+      }
 
       if (user) {
         try {
@@ -1518,11 +1763,20 @@ export const AccountingProvider: React.FC<{ children: React.ReactNode }> = ({ ch
       }
       showToast(`سند موقت شماره ${existing.voucherNumber} با موفقیت اصلاح شد.`);
     },
-    [accounts, parties, vouchers, profile.closedFiscalYears, user, deviceId, showToast]
+    [accounts, parties, vouchers, profile.closedFiscalYears, user, deviceId, showToast, requirePermission, workspaceContext]
   );
 
   const deleteVoucher = useCallback(
     async (voucherId: string): Promise<boolean> => {
+      if (!requirePermission('canDeleteRecords', 'حذف سند موقت')) return false;
+      const workspaceNativeVoucher = Boolean(user && workspaceContext
+        && workspaceContext.coreWritesFrozen && workspaceContext.coreWriteMode === 'workspace_native');
+      if (user && workspaceContext && !workspaceNativeVoucher
+          && (workspaceContext.workspaceId !== user.uid || workspaceContext.coreWritesFrozen || workspaceContext.coreWriteMode === 'workspace_native')) {
+        showToast('حذف سند موقت تا فعال‌شدن مسیر اتمیک Workspace موقتاً متوقف است؛ هیچ تغییری اعمال نشد.', 'error');
+        return false;
+      }
+
       const existing = vouchers.find((v) => v.id === voucherId);
       if (!existing) return false;
       if (existing.status === 'permanent') {
@@ -1534,7 +1788,23 @@ export const AccountingProvider: React.FC<{ children: React.ReactNode }> = ({ ch
         showToast(`سال مالی ${existingFy} بسته شده است و امکان حذف سند در آن وجود ندارد.`, 'error');
         return false;
       }
-      if (user) {
+      if (workspaceNativeVoucher) {
+        try {
+          const result = await mutateWorkspaceVoucher({
+            operation: 'delete',
+            documentId: voucherId,
+            operationId: generateSafeId('op'),
+            expectedVersion: existing._version ?? 1,
+          });
+          setVouchers((prev) => prev
+            .filter((v) => v.id !== voucherId)
+            .map((v) => v.id === existing.reversalOfVoucherId && result.sourceVersion
+              ? { ...v, _version: result.sourceVersion } : v));
+        } catch (err) {
+          showToast(err instanceof Error ? err.message : 'حذف اتمیک پیش‌نویس در Workspace ناموفق بود.', 'error');
+          return false;
+        }
+      } else if (user) {
         try {
           await deleteDoc(doc(db, 'vouchers', voucherId));
         } catch (err) {
@@ -1546,46 +1816,79 @@ export const AccountingProvider: React.FC<{ children: React.ReactNode }> = ({ ch
       showToast(`سند موقت شماره ${existing.voucherNumber} حذف شد.`);
       return true;
     },
-    [vouchers, profile.closedFiscalYears, user, showToast]
+    [vouchers, profile.closedFiscalYears, user, showToast, requirePermission, workspaceContext]
   );
 
   const finalizeVoucher = useCallback(
-    async (voucherId: string) => {
-      const target = vouchers.find((v) => v.id === voucherId);
-      if (target) {
-        const fy = target.fiscalYear || extractFiscalYearFromDate(target.date);
-        if (fy && profile.closedFiscalYears?.includes(fy)) {
-          showToast(`سال مالی ${fy} بسته شده است و امکان تغییر وضعیت سند وجود ندارد.`, 'error');
-          return;
-        }
+    async (voucherId: string): Promise<boolean> => {
+      if (!requirePermission('canFinalizeVoucher', 'قطعی‌سازی سند')) return false;
+      if (user && workspaceContext && !(workspaceContext.coreWritesFrozen && workspaceContext.coreWriteMode === 'workspace_native')) {
+        showToast('قطعی‌سازی سند تا فعال‌شدن مسیر اتمیک Workspace موقتاً متوقف است؛ هیچ تغییری اعمال نشد.', 'error');
+        return false;
       }
+
+      const target = vouchers.find((v) => v.id === voucherId);
+      if (!target || target.status !== 'draft') return false;
+      const validation = validateVoucherPayload({
+        payload: { date: target.date, description: target.description, voucherType: target.voucherType,
+          referenceId: target.referenceId, reversalOfVoucherId: target.reversalOfVoucherId, lines: target.lines },
+        accounts, parties, existingVouchers: vouchers, closedFiscalYears: profile.closedFiscalYears,
+        ignoreVoucherId: target.id, allowDuplicate: Boolean(target.reversalOfVoucherId),
+        isReversal: Boolean(target.reversalOfVoucherId),
+      });
+      if (!validation.valid || validation.totalDebit !== target.totalDebit || validation.totalCredit !== target.totalCredit) {
+        showToast(validation.errors[0] || 'جمع بدهکار/بستانکار سند با آرتیکل‌های معتبر مطابقت ندارد.', 'error');
+        return false;
+      }
+      const fy = target.fiscalYear || validation.fiscalYear || extractFiscalYearFromDate(target.date);
+      if (!fy || (profile.closedFiscalYears || []).includes(fy)) {
+        showToast(fy ? `سال مالی ${fy} بسته شده است و امکان تغییر وضعیت سند وجود ندارد.` : 'سال مالی سند قابل تشخیص نیست.', 'error');
+        return false;
+      }
+      const integrityHash = computeVoucherIntegrityHash(target);
       if (user) {
         try {
-          await updateDoc(doc(db, 'vouchers', voucherId), {
-            status: 'permanent',
-            updatedAt: serverTimestamp(),
-          });
+          if (workspaceContext && workspaceContext.coreWritesFrozen
+              && workspaceContext.coreWriteMode === 'workspace_native') {
+            const result = await mutateWorkspaceVoucher({
+              operation: 'finalize',
+              documentId: voucherId,
+              operationId: generateSafeId('op'),
+              expectedVersion: target._version ?? 1,
+              integrityHash,
+            });
+            target._version = result.version;
+          } else {
+            await updateDoc(doc(db, 'vouchers', voucherId), {
+              status: 'permanent', fiscalYear: fy, integrityHash, updatedAt: serverTimestamp(),
+            });
+          }
         } catch (err) {
           handleFirestoreError(err, OperationType.UPDATE, `vouchers/${voucherId}`);
+          return false;
         }
-      } else {
-        setVouchers((prev) =>
-          prev.map((v) =>
-            v.id === voucherId
-              ? { ...v, status: 'permanent', integrityHash: computeVoucherIntegrityHash(v) }
-              : v
-          )
-        );
       }
-      showToast('سند حسابداری به وضعیت «دائم و قطعی» تبدیل و مُهر اصالت ثبت شد.');
+      setVouchers((prev) => prev.map((v) => v.id === voucherId
+        ? { ...target, fiscalYear: fy, status: 'permanent', integrityHash } : v));
+      showToast('سند حسابداری پس از اعتبارسنجی کامل، دائم و مُهر اصالت شد.');
+      return true;
     },
-    [vouchers, profile.closedFiscalYears, user, showToast]
+    [vouchers, accounts, parties, profile.closedFiscalYears, user, showToast, requirePermission, workspaceContext]
   );
 
   const createReversingVoucher = useCallback(
     async (voucherId: string): Promise<Voucher | null> => {
       const orig = vouchers.find((v) => v.id === voucherId);
       if (!orig) return null;
+      if (!requirePermission('canCreateVoucher', 'معکوس‌سازی سند حسابداری')) return null;
+      if (orig.status !== 'permanent') {
+        showToast('فقط سند قطعی قابل معکوس‌سازی است.', 'error');
+        return null;
+      }
+      if (vouchers.some((voucher) => voucher.reversalOfVoucherId === orig.id)) {
+        showToast('برای این سند قبلاً سند معکوس ثبت شده است.', 'error');
+        return null;
+      }
       const reversedLines: VoucherLine[] = orig.lines.map((l) => ({
         ...l,
         description: `برگشت/اصلاح سند #${orig.voucherNumber}: ${l.description}`,
@@ -1594,9 +1897,63 @@ export const AccountingProvider: React.FC<{ children: React.ReactNode }> = ({ ch
         ...(l.foreignCredit !== undefined ? { foreignDebit: l.foreignCredit } : { foreignDebit: undefined }),
         ...(l.foreignDebit !== undefined ? { foreignCredit: l.foreignDebit } : { foreignCredit: undefined }),
       }));
+      const reversalDate = getTodayShamsi();
+      const reversalId = generateSafeId('vch');
+      const reversalDescription = `سند معکوس و اصلاحی بابت ابطال اثر سند شماره ${orig.voucherNumber} (${orig.date})`;
+      const reversalFiscalYear = extractFiscalYearFromDate(reversalDate) || profile.fiscalYear;
+      if (profile.closedFiscalYears?.includes(reversalFiscalYear)) {
+        showToast(`سال مالی ${reversalFiscalYear} بسته شده است و ثبت سند معکوس در آن مجاز نیست.`, 'error');
+        return null;
+      }
+      if (user && workspaceContext?.coreWritesFrozen && workspaceContext.coreWriteMode === 'workspace_native') {
+        try {
+          const result = await mutateWorkspaceVoucher({
+            operation: 'reverse',
+            documentId: reversalId,
+            operationId: generateSafeId('op'),
+            sourceDocumentId: orig.id,
+            expectedSourceVersion: orig._version ?? 1,
+            data: {
+              date: reversalDate,
+              fiscalYear: reversalFiscalYear,
+              description: reversalDescription,
+              updatedByDevice: deviceId.slice(0, 64),
+            },
+          });
+          const reversal: Voucher = {
+            id: reversalId,
+            ownerId: workspaceContext.workspaceId,
+            voucherNumber: result.voucherNumber,
+            date: reversalDate,
+            fiscalYear: reversalFiscalYear,
+            description: reversalDescription,
+            voucherType: 'general',
+            status: 'draft',
+            totalDebit: orig.totalCredit,
+            totalCredit: orig.totalDebit,
+            ...(isForeignCurrency(orig.currencyCode) && orig.exchangeRate ? {
+              currencyCode: orig.currencyCode,
+              exchangeRate: orig.exchangeRate,
+              foreignTotalDebit: orig.foreignTotalCredit,
+              foreignTotalCredit: orig.foreignTotalDebit,
+            } : {}),
+            referenceId: orig.id,
+            reversalOfVoucherId: orig.id,
+            lines: reversedLines,
+            _version: result.version,
+            updatedByDevice: deviceId,
+          };
+          setVouchers((prev) => [...prev.map((v) => v.id === orig.id ? { ...v, _version: (orig._version ?? 1) + 1 } : v), reversal]);
+          showToast(`پیش‌نویس سند معکوس شماره ${result.voucherNumber} ثبت شد.`);
+          return reversal;
+        } catch (err) {
+          showToast(err instanceof Error ? err.message : 'معکوس‌سازی اتمیک سند ناموفق بود.', 'error');
+          return null;
+        }
+      }
       return createVoucher({
-        date: getTodayShamsi(),
-        description: `سند معکوس و اصلاحی بابت ابطال اثر سند شماره ${orig.voucherNumber} (${orig.date})`,
+        date: reversalDate,
+        description: reversalDescription,
         voucherType: 'general',
         status: 'draft',
         lines: reversedLines,
@@ -1608,7 +1965,7 @@ export const AccountingProvider: React.FC<{ children: React.ReactNode }> = ({ ch
           : {}),
       });
     },
-    [vouchers, createVoucher]
+    [vouchers, createVoucher, user, workspaceContext, profile.fiscalYear, profile.closedFiscalYears, deviceId, requirePermission, showToast]
   );
 
   const renumberVouchersChronologically = useCallback(async () => {
@@ -1672,98 +2029,126 @@ export const AccountingProvider: React.FC<{ children: React.ReactNode }> = ({ ch
   // ---------------- PRODUCTS & WAREHOUSE CRUD ----------------
   const addProduct = useCallback(
     async (product: Omit<Product, 'id' | 'ownerId'>) => {
+      if (!requirePermission('canEditInventory', 'تعریف کالا')) return;
       const id = generateSafeId('prd');
       const full: Product = { ...product, id, ownerId };
-      if (user) {
+      const payload = {
+        ownerId: workspaceContext?.workspaceId ?? ownerId,
+        sku: product.sku.slice(0, 48),
+        name: product.name.trim().slice(0, 180),
+        category: product.category.slice(0, 80),
+        warehouse: product.warehouse.slice(0, 80),
+        unit: product.unit.slice(0, 32),
+        ...(product.secondaryUnit ? { secondaryUnit: product.secondaryUnit.trim().slice(0, 32) } : {}),
+        ...(product.kgPerCarton && Number(product.kgPerCarton) > 0 ? { kgPerCarton: Math.min(10000, Number(product.kgPerCarton)) } : {}),
+        ...(product.bobbinUnit ? { bobbinUnit: product.bobbinUnit.trim().slice(0, 32) } : {}),
+        ...(product.bobbinsPerCarton !== undefined && Number(product.bobbinsPerCarton) >= 0 ? { bobbinsPerCarton: Math.min(10000, Number(product.bobbinsPerCarton)) } : {}),
+        ...(product.yarnCount ? { yarnCount: product.yarnCount.trim().slice(0, 48) } : {}),
+        ...(product.lotNumber ? { lotNumber: product.lotNumber.trim().slice(0, 48) } : {}),
+        ...(product.originCountry ? { originCountry: product.originCountry.trim().slice(0, 64) } : {}),
+        buyPrice: Math.max(0, Number(product.buyPrice) || 0),
+        sellPrice: Math.max(0, Number(product.sellPrice) || 0),
+        stock: Number((Number(product.stock) || 0).toFixed(2)),
+        reorderPoint: Math.max(0, Number(product.reorderPoint) || 0),
+        vatExempt: Boolean(product.vatExempt),
+        ...(product.costingMethod ? { costingMethod: product.costingMethod } : {}),
+        ...(Array.isArray(product.costLayers) ? { costLayers: product.costLayers } : {}),
+        ...(typeof product.inventoryValueIrr === 'number' && Number.isFinite(product.inventoryValueIrr) ? { inventoryValueIrr: Math.max(0, Math.round(product.inventoryValueIrr)) } : {}),
+        createdAt: new Date(),
+        updatedAt: new Date(),
+      };
+      if (user && workspaceContext && (workspaceContext.workspaceId !== user.uid || workspaceContext.coreWritesFrozen || workspaceContext.coreWriteMode === 'workspace_native')) {
+        await mutateWorkspaceCoreRecord({ collection: 'products', documentId: id, operation: 'create', operationId: generateSafeId('op'), expectedVersion: 0, data: payload });
+        workspaceCoreVersionsRef.current.set(`products:${id}`, 1);
+        setProducts((prev) => [ { ...payload, id } as Product, ...prev ]);
+      } else if (user) {
         try {
-          await setDoc(doc(db, 'products', id), {
-            ownerId,
-            sku: product.sku.slice(0, 48),
-            name: product.name.trim().slice(0, 180),
-            category: product.category.slice(0, 80),
-            warehouse: product.warehouse.slice(0, 80),
-            unit: product.unit.slice(0, 32),
-            ...(product.secondaryUnit ? { secondaryUnit: product.secondaryUnit.trim().slice(0, 32) } : {}),
-            ...(product.kgPerCarton && Number(product.kgPerCarton) > 0
-              ? { kgPerCarton: Math.min(10000, Number(product.kgPerCarton)) }
-              : {}),
-            ...(product.bobbinUnit ? { bobbinUnit: product.bobbinUnit.trim().slice(0, 32) } : {}),
-            ...(product.bobbinsPerCarton !== undefined && Number(product.bobbinsPerCarton) >= 0
-              ? { bobbinsPerCarton: Math.min(10000, Number(product.bobbinsPerCarton)) }
-              : {}),
-            ...(product.yarnCount ? { yarnCount: product.yarnCount.trim().slice(0, 48) } : {}),
-            ...(product.lotNumber ? { lotNumber: product.lotNumber.trim().slice(0, 48) } : {}),
-            ...(product.originCountry ? { originCountry: product.originCountry.trim().slice(0, 64) } : {}),
-            buyPrice: Math.max(0, Number(product.buyPrice) || 0),
-            sellPrice: Math.max(0, Number(product.sellPrice) || 0),
-            stock: Number((Number(product.stock) || 0).toFixed(2)),
-            reorderPoint: Math.max(0, Number(product.reorderPoint) || 0),
-            vatExempt: Boolean(product.vatExempt),
-            ...(product.costingMethod ? { costingMethod: product.costingMethod } : {}),
-            ...(Array.isArray(product.costLayers) ? { costLayers: product.costLayers } : {}),
-            ...(typeof product.inventoryValueIrr === 'number' && Number.isFinite(product.inventoryValueIrr)
-              ? { inventoryValueIrr: Math.max(0, Math.round(product.inventoryValueIrr)) }
-              : {}),
-            createdAt: serverTimestamp(),
-            updatedAt: serverTimestamp(),
-          });
+          await setDoc(doc(db, 'products', id), { ...payload, ownerId, createdAt: serverTimestamp(), updatedAt: serverTimestamp() });
         } catch (err) {
           handleFirestoreError(err, OperationType.CREATE, `products/${id}`);
+          throw err;
         }
       } else {
         setProducts((prev) => [full, ...prev]);
       }
       showToast(`نخ/کالای «${product.name}» با موفقیت در انبار ثبت شد.`);
     },
-    [ownerId, user, showToast]
+    [ownerId, user, workspaceContext, showToast, requirePermission]
   );
 
   const updateProduct = useCallback(
     async (productId: string, patch: Partial<Omit<Product, 'id' | 'ownerId' | 'sku'>>) => {
+      if (!requirePermission('canEditInventory', 'ویرایش کالا')) return false;
       const existing = products.find((p) => p.id === productId);
-      if (!existing) return;
-      if (user) {
+      if (!existing) return false;
+      const next = { ...existing, ...patch };
+      const payload: Record<string, unknown> = {
+        ownerId: workspaceContext?.workspaceId ?? ownerId,
+        sku: existing.sku,
+        name: next.name.trim().slice(0, 180),
+        category: next.category.slice(0, 80),
+        warehouse: next.warehouse.slice(0, 80),
+        unit: next.unit.slice(0, 32),
+        buyPrice: Math.max(0, Number(next.buyPrice) || 0),
+        sellPrice: Math.max(0, Number(next.sellPrice) || 0),
+        // Inventory movements support four decimal places; do not truncate FIFO quantities on persistence.
+        stock: Number((Number(next.stock) || 0).toFixed(4)),
+        reorderPoint: Math.max(0, Number(next.reorderPoint) || 0),
+        vatExempt: Boolean(next.vatExempt),
+        updatedAt: new Date(),
+        ...(next.secondaryUnit ? { secondaryUnit: next.secondaryUnit.trim().slice(0, 32) } : {}),
+        ...(next.kgPerCarton !== undefined ? { kgPerCarton: Number(next.kgPerCarton) } : {}),
+        ...(next.bobbinUnit ? { bobbinUnit: next.bobbinUnit.trim().slice(0, 32) } : {}),
+        ...(next.bobbinsPerCarton !== undefined ? { bobbinsPerCarton: Number(next.bobbinsPerCarton) } : {}),
+        ...(next.yarnCount ? { yarnCount: next.yarnCount.trim().slice(0, 48) } : {}),
+        ...(next.lotNumber ? { lotNumber: next.lotNumber.trim().slice(0, 48) } : {}),
+        ...(next.originCountry ? { originCountry: next.originCountry.trim().slice(0, 64) } : {}),
+        ...(next.costingMethod ? { costingMethod: next.costingMethod } : {}),
+        ...(Array.isArray(next.costLayers) ? { costLayers: next.costLayers } : {}),
+        ...(typeof next.inventoryValueIrr === 'number' && Number.isFinite(next.inventoryValueIrr) ? { inventoryValueIrr: Math.max(0, Math.round(next.inventoryValueIrr)) } : {}),
+      };
+      const requiresWorkspaceGateway = Boolean(
+        user && workspaceContext && (
+          workspaceContext.workspaceId !== user.uid ||
+          workspaceContext.coreWritesFrozen ||
+          workspaceContext.coreWriteMode === 'workspace_native'
+        )
+      );
+      if (requiresWorkspaceGateway && typeof navigator !== 'undefined' && !navigator.onLine) {
+        // Keep workspace-native edits local while disconnected; the local-first mesh
+        // transports the resulting product + transfer snapshot when peers reconnect.
+        setProducts((prev) => prev.map((p) => (p.id === productId ? { ...p, ...patch } : p)));
+      } else if (requiresWorkspaceGateway) {
+        const version = workspaceCoreVersionsRef.current.get(`products:${productId}`);
+        if (!version) throw new Error('نسخه معتبر کالا در فضای کاری موجود نیست؛ ابتدا داده‌ها را تازه‌سازی کنید.');
+        await mutateWorkspaceCoreRecord({ collection: 'products', documentId: productId, operation: 'update', operationId: generateSafeId('op'), expectedVersion: version, data: payload });
+        workspaceCoreVersionsRef.current.set(`products:${productId}`, version + 1);
+        setProducts((prev) => prev.map((p) => (p.id === productId ? { ...p, ...patch } : p)));
+      } else if (user) {
         try {
-          const payload: Record<string, unknown> = { updatedAt: serverTimestamp() };
-          if (patch.name !== undefined) payload.name = patch.name.trim().slice(0, 180);
-          if (patch.category !== undefined) payload.category = patch.category.slice(0, 80);
-          if (patch.warehouse !== undefined) payload.warehouse = patch.warehouse.slice(0, 80);
-          if (patch.unit !== undefined) payload.unit = patch.unit.slice(0, 32);
-          if (patch.secondaryUnit !== undefined) payload.secondaryUnit = patch.secondaryUnit.trim().slice(0, 32);
-          if (patch.kgPerCarton !== undefined && Number(patch.kgPerCarton) > 0) {
-            payload.kgPerCarton = Math.min(10000, Number(patch.kgPerCarton));
-          }
-          if (patch.bobbinUnit !== undefined) payload.bobbinUnit = patch.bobbinUnit.trim().slice(0, 32);
-          if (patch.bobbinsPerCarton !== undefined && Number(patch.bobbinsPerCarton) >= 0) {
-            payload.bobbinsPerCarton = Math.min(10000, Number(patch.bobbinsPerCarton));
-          }
-          if (patch.yarnCount !== undefined) payload.yarnCount = patch.yarnCount.trim().slice(0, 48);
-          if (patch.lotNumber !== undefined) payload.lotNumber = patch.lotNumber.trim().slice(0, 48);
-          if (patch.originCountry !== undefined) payload.originCountry = patch.originCountry.trim().slice(0, 64);
-          if (patch.buyPrice !== undefined) payload.buyPrice = Math.max(0, Number(patch.buyPrice) || 0);
-          if (patch.sellPrice !== undefined) payload.sellPrice = Math.max(0, Number(patch.sellPrice) || 0);
-          if (patch.stock !== undefined) payload.stock = Number((Number(patch.stock) || 0).toFixed(2));
-          if (patch.reorderPoint !== undefined) payload.reorderPoint = Math.max(0, Number(patch.reorderPoint) || 0);
-          if (patch.vatExempt !== undefined) payload.vatExempt = Boolean(patch.vatExempt);
-          if (patch.costingMethod !== undefined) payload.costingMethod = patch.costingMethod;
-          if (patch.costLayers !== undefined) payload.costLayers = patch.costLayers;
-          if (patch.inventoryValueIrr !== undefined && Number.isFinite(patch.inventoryValueIrr)) {
-            payload.inventoryValueIrr = Math.max(0, Math.round(patch.inventoryValueIrr));
-          }
-          await updateDoc(doc(db, 'products', productId), payload);
+          // Firestore product updates must preserve the original creation timestamp.
+          const { createdAt: _createdAt, ...legacyFields } = payload;
+          void _createdAt;
+          await updateDoc(doc(db, 'products', productId), {
+            ...legacyFields,
+            updatedAt: serverTimestamp(),
+          });
         } catch (err) {
           handleFirestoreError(err, OperationType.UPDATE, `products/${productId}`);
+          throw err;
         }
       } else {
         setProducts((prev) => prev.map((p) => (p.id === productId ? { ...p, ...patch } : p)));
       }
       showToast(`مشخصات نخ/کالا «${patch.name ?? existing.name}» ویرایش شد.`);
+      return true;
     },
-    [products, user, showToast]
+    [products, ownerId, user, workspaceContext, showToast, requirePermission]
   );
 
   const deleteProduct = useCallback(
     async (productId: string): Promise<boolean> => {
+      if (!requirePermission('canDeleteRecords', 'حذف کالا')) return false;
       const prod = products.find((p) => p.id === productId);
       if (!prod) return false;
       const used = invoices.some((i) => i.items.some((it) => it.productId === productId));
@@ -1771,11 +2156,18 @@ export const AccountingProvider: React.FC<{ children: React.ReactNode }> = ({ ch
         showToast('این کالا دارای گردش در فاکتورها است و قابل حذف نیست.');
         return false;
       }
-      if (user) {
+      if (user && workspaceContext && (workspaceContext.workspaceId !== user.uid || workspaceContext.coreWritesFrozen || workspaceContext.coreWriteMode === 'workspace_native')) {
+        const version = workspaceCoreVersionsRef.current.get(`products:${productId}`);
+        if (!version) throw new Error('نسخه معتبر کالا در فضای کاری موجود نیست؛ ابتدا داده‌ها را تازه‌سازی کنید.');
+        await mutateWorkspaceCoreRecord({ collection: 'products', documentId: productId, operation: 'delete', operationId: generateSafeId('op'), expectedVersion: version });
+        workspaceCoreVersionsRef.current.set(`products:${productId}`, version + 1);
+        setProducts((prev) => prev.filter((p) => p.id !== productId));
+      } else if (user) {
         try {
           await deleteDoc(doc(db, 'products', productId));
         } catch (err) {
           handleFirestoreError(err, OperationType.DELETE, `products/${productId}`);
+          throw err;
         }
       } else {
         setProducts((prev) => prev.filter((p) => p.id !== productId));
@@ -1783,35 +2175,80 @@ export const AccountingProvider: React.FC<{ children: React.ReactNode }> = ({ ch
       showToast(`کالا «${prod.name}» از انبار حذف شد.`);
       return true;
     },
-    [products, invoices, user, showToast]
+    [products, invoices, user, workspaceContext, showToast, requirePermission]
   );
 
   const adjustProductStock = useCallback(
     async (productId: string, newStock: number) => {
-      if (user) {
+      if (!requirePermission('canEditInventory', 'تعدیل مستقیم موجودی')) return;
+      const product = products.find((item) => item.id === productId);
+      if (!product || !Number.isFinite(newStock) || newStock < 0) return;
+      if (user && workspaceContext && (workspaceContext.workspaceId !== user.uid || workspaceContext.coreWritesFrozen || workspaceContext.coreWriteMode === 'workspace_native')) {
+        const version = workspaceCoreVersionsRef.current.get(`products:${productId}`);
+        if (!version) throw new Error('نسخه معتبر کالا در فضای کاری موجود نیست؛ ابتدا داده‌ها را تازه‌سازی کنید.');
+        const payload: Record<string, unknown> = { ...product, ownerId: workspaceContext.workspaceId, createdAt: new Date(), stock: Number(newStock), updatedAt: new Date() };
+        delete payload.id;
+        await mutateWorkspaceCoreRecord({ collection: 'products', documentId: productId, operation: 'update', operationId: generateSafeId('op'), expectedVersion: version, data: payload });
+        workspaceCoreVersionsRef.current.set(`products:${productId}`, version + 1);
+        setProducts((prev) => prev.map((item) => item.id === productId ? { ...item, stock: Number(newStock) } : item));
+      } else if (user) {
         try {
-          await updateDoc(doc(db, 'products', productId), {
-            stock: Number(newStock),
-            updatedAt: serverTimestamp(),
-          });
+          await updateDoc(doc(db, 'products', productId), { stock: Number(newStock), updatedAt: serverTimestamp() });
         } catch (err) {
           handleFirestoreError(err, OperationType.UPDATE, `products/${productId}`);
+          throw err;
         }
       } else {
-        setProducts((prev) =>
-          prev.map((p) => (p.id === productId ? { ...p, stock: Number(newStock) } : p))
-        );
+        setProducts((prev) => prev.map((item) => item.id === productId ? { ...item, stock: Number(newStock) } : item));
       }
     },
-    [user]
+    [products, user, workspaceContext, requirePermission]
   );
 
   const adjustProductStockWithVoucher = useCallback(
     async (productId: string, countedStock: number, reason: string) => {
+      if (!requirePermission('canCreateVoucher', 'ثبت سند تعدیل موجودی')) return;
+      if (!requirePermission('canEditInventory', 'انبارگردانی و تعدیل موجودی')) return;
+      const workspaceNative = Boolean(user && workspaceContext
+        && workspaceContext.coreWritesFrozen && workspaceContext.coreWriteMode === 'workspace_native');
+      if (user && workspaceContext && !workspaceNative
+          && (workspaceContext.workspaceId !== user.uid || workspaceContext.coreWritesFrozen || workspaceContext.coreWriteMode === 'workspace_native')) {
+        showToast('وضعیت فضای کاری برای تعدیل موجودی معتبر نیست؛ هیچ تغییری اعمال نشد.', 'error');
+        return;
+      }
+
       const prod = products.find((p) => p.id === productId);
       if (!prod) return;
       const today = getTodayShamsi();
       const refId = generateSafeId('stk');
+      if (workspaceNative && user) {
+        const expectedVersion = workspaceCoreVersionsRef.current.get(`products:${productId}`);
+        if (!expectedVersion) throw new Error('نسخه معتبر کالا در فضای کاری موجود نیست؛ ابتدا داده‌ها را تازه‌سازی کنید.');
+        const voucherId = generateSafeId('vch');
+        try {
+          const result = await adjustWorkspaceProductStockWithVoucher({
+            productId, voucherId, operationId: generateSafeId('op'),
+            expectedVersion, countedStock, date: today,
+            reason: String(reason || '').slice(0, 300), deviceId: deviceId.slice(0, 64),
+          });
+          if (result.status !== 'no_change' && result.product) {
+            workspaceCoreVersionsRef.current.set(`products:${productId}`, result.version);
+            setProducts((prev) => prev.map((item) => item.id === productId
+              ? { ...item, ...result.product } as Product : item));
+            if (result.voucher) {
+              setVouchers((prev) => prev.some((item) => item.id === voucherId)
+                ? prev : [...prev, { ...result.voucher, id: voucherId } as unknown as Voucher]);
+            }
+            showToast('تعدیل موجودی و سند حسابداری در یک تراکنش Workspace ثبت شد.');
+          } else {
+            showToast('موجودی شمارش‌شده با موجودی ثبت‌شده برابر است؛ تغییری لازم نبود.');
+          }
+        } catch (err) {
+          showToast(err instanceof Error ? err.message : 'ثبت اتمیک تعدیل موجودی ناموفق بود.', 'error');
+          throw err;
+        }
+        return;
+      }
       let plan;
       try {
         plan = planStockAdjustmentWithCostLayers({
@@ -1840,38 +2277,118 @@ export const AccountingProvider: React.FC<{ children: React.ReactNode }> = ({ ch
         return;
       }
 
-      await updateProduct(prod.id, {
-        stock: plan.productDelta.stock,
-        buyPrice: plan.productDelta.buyPrice,
-        costLayers: plan.productDelta.costLayers,
-        inventoryValueIrr: plan.productDelta.inventoryValueIrr,
-      });
-
-      if (plan.voucher) {
-        await createVoucher({
-          date: plan.voucher.date,
-          description: plan.voucher.description,
-          voucherType: 'general',
-          status: 'permanent',
-          lines: plan.voucher.lines,
-          referenceId: refId,
-        });
-      } else {
-        showToast('موجودی انبارگردانی با موفقیت تعدیل شد.');
+      if (!plan.voucher) {
+        showToast('برنامه تعدیل فاقد سند حسابداری است؛ عملیات انجام نشد.', 'error');
+        return;
       }
+
+      const voucherPayload = {
+        date: plan.voucher.date,
+        description: plan.voucher.description,
+        voucherType: 'general' as const,
+        status: 'permanent' as const,
+        lines: plan.voucher.lines,
+        referenceId: refId,
+      };
+      const validation = validateVoucherPayload({
+        payload: voucherPayload,
+        accounts,
+        parties,
+        existingVouchers: vouchers,
+        closedFiscalYears: profile.closedFiscalYears,
+      });
+      if (!validation.valid) {
+        throw new Error(validation.errors[0] || 'سند تعدیل موجودی معتبر نیست.');
+      }
+      const fiscalYear = validation.fiscalYear;
+      const sameYearMax = vouchers
+        .filter((v) => (v.fiscalYear || extractFiscalYearFromDate(v.date)) === fiscalYear)
+        .reduce((max, v) => Math.max(max, v.voucherNumber || 0), 0);
+      const voucherNumber = fiscalYear === profile.fiscalYear
+        ? await reserveNextVoucherNumber(sameYearMax)
+        : sameYearMax + 1;
+      const voucherId = plan.voucher.id || generateSafeId('vch');
+      const baseVoucher: Voucher = {
+        id: voucherId,
+        ownerId,
+        voucherNumber,
+        date: voucherPayload.date,
+        fiscalYear,
+        description: voucherPayload.description.trim().slice(0, 300),
+        voucherType: 'general',
+        status: 'permanent',
+        totalDebit: validation.totalDebit,
+        totalCredit: validation.totalCredit,
+        referenceId: refId,
+        lines: validation.sanitizedLines.slice(0, 100),
+        _version: 1,
+        updatedByDevice: deviceId,
+      };
+      const fullVoucher: Voucher = {
+        ...baseVoucher,
+        integrityHash: computeVoucherIntegrityHash(baseVoucher),
+      };
+
+      if (user) {
+        const batch = writeBatch(db);
+        batch.update(doc(db, 'products', prod.id), {
+          stock: plan.productDelta.stock,
+          buyPrice: plan.productDelta.buyPrice,
+          costingMethod: prod.costingMethod ?? profile.defaultCostingMethod ?? 'fifo',
+          costLayers: plan.productDelta.costLayers,
+          inventoryValueIrr: plan.productDelta.inventoryValueIrr,
+          _version: (prod._version ?? 1) + 1,
+          updatedByDevice: deviceId.slice(0, 64),
+          updatedAt: serverTimestamp(),
+        });
+        batch.set(doc(db, 'vouchers', voucherId), {
+          ownerId,
+          voucherNumber,
+          date: fullVoucher.date.slice(0, 20),
+          description: fullVoucher.description,
+          voucherType: fullVoucher.voucherType,
+          status: fullVoucher.status,
+          totalDebit: fullVoucher.totalDebit,
+          totalCredit: fullVoucher.totalCredit,
+          referenceId: refId.slice(0, 128),
+          fiscalYear: fullVoucher.fiscalYear,
+          ...(fullVoucher.reversalOfVoucherId ? { reversalOfVoucherId: fullVoucher.reversalOfVoucherId } : {}),
+          integrityHash: fullVoucher.integrityHash,
+          lines: fullVoucher.lines,
+          _version: 1,
+          updatedByDevice: deviceId.slice(0, 64),
+          createdAt: serverTimestamp(),
+          updatedAt: serverTimestamp(),
+        });
+        await batch.commit();
+      } else {
+        setProducts((prev) => prev.map((p) => p.id === prod.id
+          ? { ...p, ...plan.productDelta, costingMethod: p.costingMethod ?? profile.defaultCostingMethod ?? 'fifo' }
+          : p));
+        setVouchers((prev) => [...prev, fullVoucher]);
+      }
+      showToast('تعدیل موجودی و سند حسابداری به‌صورت یکپارچه ثبت شد.');
     },
-    [products, profile, accounts, ownerId, vouchers, deviceId, updateProduct, createVoucher, showToast]
+    [products, profile, accounts, parties, ownerId, vouchers, deviceId, user, reserveNextVoucherNumber, showToast, requirePermission]
   );
 
   const bulkStocktakingWithVoucher = useCallback(
     async (items: { productId: string; countedStock: number }[], reason: string) => {
+      if (!requirePermission('canEditInventory', 'انبارگردانی گروهی')) return;
+      if (!requirePermission('canCreateVoucher', 'ثبت اسناد انبارگردانی')) return;
+      if (user && workspaceContext && (workspaceContext.workspaceId !== user.uid || workspaceContext.coreWritesFrozen || workspaceContext.coreWriteMode === 'workspace_native')) {
+        showToast('انبارگردانی گروهی تا انتقال تراکنش‌های چندسندی به Workspace غیرفعال است؛ هیچ تغییری اعمال نشد.', 'error');
+        return;
+      }
+
       const today = getTodayShamsi();
       const batchRefId = generateSafeId('stk_bulk');
+      const workingProducts = new Map<string, Product>();
       const voucherLines: VoucherLine[] = [];
       let changedCount = 0;
 
       for (const entry of items) {
-        const prod = products.find((p) => p.id === entry.productId);
+        const prod = workingProducts.get(entry.productId) ?? products.find((p) => p.id === entry.productId);
         if (!prod) continue;
         let plan;
         try {
@@ -1880,7 +2397,7 @@ export const AccountingProvider: React.FC<{ children: React.ReactNode }> = ({ ch
             newStock: entry.countedStock,
             date: today,
             reason,
-            costingMethod: profile.defaultCostingMethod ?? 'fifo',
+            costingMethod: prod.costingMethod ?? profile.defaultCostingMethod ?? 'fifo',
             allowNegativeStock: false,
             closedFiscalYears: profile.closedFiscalYears ?? [],
             accounts,
@@ -1891,42 +2408,118 @@ export const AccountingProvider: React.FC<{ children: React.ReactNode }> = ({ ch
             deviceId,
           });
         } catch (err) {
-          showToast(err instanceof Error ? err.message : `خطا در تعدیل کالای «${prod.name}».`);
+          showToast(err instanceof Error ? err.message : `خطا در تعدیل کالای «${prod.name}».`, 'error');
           return;
         }
         if (Math.abs(plan.diffQty) < 0.001) continue;
-
         changedCount += 1;
-        await updateProduct(prod.id, {
-          stock: plan.productDelta.stock,
-          buyPrice: plan.productDelta.buyPrice,
-          costLayers: plan.productDelta.costLayers,
-          inventoryValueIrr: plan.productDelta.inventoryValueIrr,
+        workingProducts.set(prod.id, {
+          ...prod,
+          ...plan.productDelta,
+          costingMethod: prod.costingMethod ?? profile.defaultCostingMethod ?? 'fifo',
         });
-        if (plan.voucher && plan.voucher.lines.length >= 2) {
-          voucherLines.push(...plan.voucher.lines);
-        }
+        if (plan.voucher?.lines?.length) voucherLines.push(...plan.voucher.lines);
       }
 
       if (changedCount === 0) {
         showToast('تغییری در موجودی شمارش‌شده نسبت به سیستم وجود نداشت.');
         return;
       }
+      if (voucherLines.length < 2) {
+        showToast('برای تعدیل انبار سند حسابداری معتبر تولید نشد؛ هیچ تغییری ذخیره نشد.', 'error');
+        return;
+      }
 
-      if (voucherLines.length >= 2) {
-        await createVoucher({
-          date: today,
-          description: `سند تجمیعی انبارگردانی (${changedCount} قلم کالا) — ${reason}`,
+      const voucherPayload = {
+        date: today,
+        description: `سند تجمیعی انبارگردانی (${changedCount} قلم کالا) — ${reason}`,
+        voucherType: 'general' as const,
+        status: 'permanent' as const,
+        lines: voucherLines,
+        referenceId: batchRefId,
+      };
+      const validation = validateVoucherPayload({
+        payload: voucherPayload,
+        accounts,
+        parties,
+        existingVouchers: vouchers,
+        closedFiscalYears: profile.closedFiscalYears,
+      });
+      if (!validation.valid) {
+        throw new Error(validation.errors[0] || 'سند تجمیعی انبارگردانی معتبر نیست.');
+      }
+      const fiscalYear = validation.fiscalYear;
+      const sameYearMax = vouchers
+        .filter((v) => (v.fiscalYear || extractFiscalYearFromDate(v.date)) === fiscalYear)
+        .reduce((max, v) => Math.max(max, v.voucherNumber || 0), 0);
+      const voucherNumber = fiscalYear === profile.fiscalYear
+        ? await reserveNextVoucherNumber(sameYearMax)
+        : sameYearMax + 1;
+      const voucherId = generateSafeId('vch');
+      const baseVoucher: Voucher = {
+        id: voucherId,
+        ownerId,
+        voucherNumber,
+        date: today,
+        fiscalYear,
+        description: voucherPayload.description.trim().slice(0, 300),
+        voucherType: 'general',
+        status: 'permanent',
+        totalDebit: validation.totalDebit,
+        totalCredit: validation.totalCredit,
+        referenceId: batchRefId,
+        lines: validation.sanitizedLines.slice(0, 100),
+        _version: 1,
+        updatedByDevice: deviceId,
+      };
+      const fullVoucher: Voucher = {
+        ...baseVoucher,
+        integrityHash: computeVoucherIntegrityHash(baseVoucher),
+      };
+
+      if (user) {
+        const batch = writeBatch(db);
+        for (const [productId, updated] of workingProducts) {
+          const original = products.find((p) => p.id === productId);
+          if (!original) continue;
+          batch.update(doc(db, 'products', productId), {
+            stock: updated.stock,
+            buyPrice: updated.buyPrice,
+            costingMethod: updated.costingMethod ?? 'fifo',
+            costLayers: updated.costLayers ?? [],
+            inventoryValueIrr: updated.inventoryValueIrr ?? 0,
+            _version: (original._version ?? 1) + 1,
+            updatedByDevice: deviceId.slice(0, 64),
+            updatedAt: serverTimestamp(),
+          });
+        }
+        batch.set(doc(db, 'vouchers', voucherId), {
+          ownerId,
+          voucherNumber,
+          date: today.slice(0, 20),
+          description: fullVoucher.description,
           voucherType: 'general',
           status: 'permanent',
-          lines: voucherLines,
-          referenceId: batchRefId,
+          totalDebit: fullVoucher.totalDebit,
+          totalCredit: fullVoucher.totalCredit,
+          referenceId: batchRefId.slice(0, 128),
+          fiscalYear: fullVoucher.fiscalYear,
+          ...(fullVoucher.reversalOfVoucherId ? { reversalOfVoucherId: fullVoucher.reversalOfVoucherId } : {}),
+          integrityHash: fullVoucher.integrityHash,
+          lines: fullVoucher.lines,
+          _version: 1,
+          updatedByDevice: deviceId.slice(0, 64),
+          createdAt: serverTimestamp(),
+          updatedAt: serverTimestamp(),
         });
+        await batch.commit();
       } else {
-        showToast(`موجودی ${changedCount} قلم کالا با موفقیت اصلاح شد.`);
+        setProducts((prev) => prev.map((p) => workingProducts.get(p.id) ?? p));
+        setVouchers((prev) => [...prev, fullVoucher]);
       }
+      showToast(`انبارگردانی ${changedCount} قلم کالا همراه با سند حسابداری به‌صورت یکپارچه ثبت شد.`);
     },
-    [products, profile, accounts, ownerId, deviceId, updateProduct, createVoucher, showToast]
+    [products, profile, accounts, parties, ownerId, vouchers, deviceId, user, reserveNextVoucherNumber, showToast, requirePermission]
   );
 
   const bulkUpdateProductPrices = useCallback(
@@ -1958,42 +2551,48 @@ export const AccountingProvider: React.FC<{ children: React.ReactNode }> = ({ ch
     }
     let finalized = 0;
     for (const v of drafts) {
-      if (v.totalDebit === v.totalCredit && v.totalDebit > 0 && v.lines.length >= 2) {
-        await finalizeVoucher(v.id);
-        finalized += 1;
-      }
+      if (await finalizeVoucher(v.id)) finalized += 1;
     }
-    showToast(`${finalized} سند موقت تراز با موفقیت به دائم تبدیل شد.`);
+    showToast(`${finalized} سند موقت پس از اعتبارسنجی کامل به دائم تبدیل شد.`);
     return finalized;
   }, [vouchers, finalizeVoucher, showToast]);
 
   const transferProductWarehouse = useCallback(
     async (productId: string, targetWarehouse: string) => {
+      if (!requirePermission('canEditInventory', 'انتقال بین انبارها')) return;
       const prod = products.find((p) => p.id === productId);
       if (!prod || !targetWarehouse.trim()) return;
       const cleanWh = targetWarehouse.trim().slice(0, 80);
-      if (user) {
+      if (user && workspaceContext && (workspaceContext.workspaceId !== user.uid || workspaceContext.coreWritesFrozen || workspaceContext.coreWriteMode === 'workspace_native')) {
+        const version = workspaceCoreVersionsRef.current.get(`products:${productId}`);
+        if (!version) throw new Error('نسخه معتبر کالا در فضای کاری موجود نیست؛ ابتدا داده‌ها را تازه‌سازی کنید.');
+        const payload: Record<string, unknown> = { ...prod, ownerId: workspaceContext.workspaceId, createdAt: new Date(), warehouse: cleanWh, updatedAt: new Date() };
+        delete payload.id;
+        await mutateWorkspaceCoreRecord({ collection: 'products', documentId: productId, operation: 'update', operationId: generateSafeId('op'), expectedVersion: version, data: payload });
+        workspaceCoreVersionsRef.current.set(`products:${productId}`, version + 1);
+        setProducts((prev) => prev.map((p) => p.id === productId ? { ...p, warehouse: cleanWh } : p));
+      } else if (user) {
         try {
-          await updateDoc(doc(db, 'products', productId), {
-            warehouse: cleanWh,
-            updatedAt: serverTimestamp(),
-          });
+          await updateDoc(doc(db, 'products', productId), { warehouse: cleanWh, updatedAt: serverTimestamp() });
         } catch (err) {
           handleFirestoreError(err, OperationType.UPDATE, `products/${productId}`);
+          throw err;
         }
       } else {
-        setProducts((prev) =>
-          prev.map((p) => (p.id === productId ? { ...p, warehouse: cleanWh } : p))
-        );
+        setProducts((prev) => prev.map((p) => p.id === productId ? { ...p, warehouse: cleanWh } : p));
       }
       showToast(`حواله انتقال کالای «${prod.name}» به «${cleanWh}» ثبت شد.`);
     },
-    [products, user, showToast]
+    [products, user, workspaceContext, showToast, requirePermission]
   );
 
   // ---------------- CHEQUES & TREASURY ----------------
   const addCheque = useCallback(
     async (payload: Omit<Cheque, 'id' | 'ownerId'>, skipVoucher = false) => {
+      if (!skipVoucher && !requirePermission('canCreateVoucher', 'صدور سند مرتبط با چک')) return;
+
+      if (!requirePermission('canManageTreasury', 'ثبت چک')) return;
+
       const id = generateSafeId('chq');
       const full: Cheque = { ...payload, id, ownerId };
 
@@ -2077,7 +2676,7 @@ export const AccountingProvider: React.FC<{ children: React.ReactNode }> = ({ ch
         });
       }
     },
-    [ownerId, user, createVoucher]
+    [ownerId, user, createVoucher, requirePermission]
   );
 
   const updateCheque = useCallback(
@@ -2085,6 +2684,8 @@ export const AccountingProvider: React.FC<{ children: React.ReactNode }> = ({ ch
       chequeId: string,
       patch: Partial<Pick<Cheque, 'bankName' | 'branch' | 'dueDate' | 'notes'>>
     ) => {
+      if (!requirePermission('canManageTreasury', 'ویرایش اطلاعات چک')) return;
+
       if (user) {
         try {
           const payload: Record<string, unknown> = { updatedAt: serverTimestamp() };
@@ -2101,7 +2702,7 @@ export const AccountingProvider: React.FC<{ children: React.ReactNode }> = ({ ch
       }
       showToast('مشخصات چک صیادی ویرایش شد.');
     },
-    [user, showToast]
+    [user, showToast, requirePermission]
   );
 
   const updateChequeStatus = useCallback(
@@ -2110,6 +2711,8 @@ export const AccountingProvider: React.FC<{ children: React.ReactNode }> = ({ ch
       newStatus: ChequeStatus,
       options?: { bankAccountCode?: string; endorsePartyId?: string }
     ) => {
+      if (!requirePermission('canManageTreasury', 'تغییر وضعیت چک')) return;
+
       const chq = cheques.find((c) => c.id === chequeId);
       if (!chq || chq.status === newStatus) return;
 
@@ -2155,7 +2758,7 @@ export const AccountingProvider: React.FC<{ children: React.ReactNode }> = ({ ch
         showToast(plan.description || 'وضعیت چک صیادی به‌روزرسانی شد.');
       }
     },
-    [cheques, accounts, parties, user, createVoucher, showToast]
+    [cheques, accounts, parties, user, createVoucher, showToast, requirePermission]
   );
 
   const recordQuickTreasury = useCallback(
@@ -2167,6 +2770,10 @@ export const AccountingProvider: React.FC<{ children: React.ReactNode }> = ({ ch
       date: string;
       description: string;
     }) => {
+      if (!requirePermission('canCreateVoucher', 'صدور سند خزانه‌داری')) return;
+
+      if (!requirePermission('canManageTreasury', 'ثبت دریافت یا پرداخت نقدی')) return;
+
       const party = parties.find((p) => p.id === payload.partyId);
       if (!party) return;
       const cashAcc = accounts.find((a) => a.code === payload.accountCode);
@@ -2223,7 +2830,7 @@ export const AccountingProvider: React.FC<{ children: React.ReactNode }> = ({ ch
         lines,
       });
     },
-    [parties, accounts, createVoucher]
+    [parties, accounts, createVoucher, requirePermission]
   );
 
   const recordBankTransfer = useCallback(
@@ -2234,6 +2841,10 @@ export const AccountingProvider: React.FC<{ children: React.ReactNode }> = ({ ch
       date: string;
       description: string;
     }) => {
+      if (!requirePermission('canCreateVoucher', 'صدور سند خزانه‌داری')) return;
+
+      if (!requirePermission('canManageTreasury', 'انتقال بین حساب‌های بانکی')) return;
+
       if (payload.fromAccountCode === payload.toAccountCode) {
         showToast('حساب مبدأ و مقصد انتقال وجه نمی‌تواند یکسان باشد.');
         return;
@@ -2265,12 +2876,15 @@ export const AccountingProvider: React.FC<{ children: React.ReactNode }> = ({ ch
         ],
       });
     },
-    [accounts, createVoucher, showToast]
+    [accounts, createVoucher, showToast, requirePermission]
   );
 
   // ---------------- INVOICES CRUD & COMMERCIAL OPS (STRICT 4-ENTITY ATOMICITY) ----------------
   const createInvoice = useCallback(
     async (payload: Omit<Invoice, 'id' | 'ownerId' | 'voucherId'>): Promise<Invoice> => {
+      if (!requirePermission('canIssueInvoice', 'صدور فاکتور')) throw new Error('مجوز صدور فاکتور وجود ندارد.');
+      if (user && workspaceContext && (workspaceContext.workspaceId !== user.uid || workspaceContext.coreWritesFrozen || workspaceContext.coreWriteMode === 'workspace_native')) throw new Error('صدور فاکتور تا انتقال اتمیک موجودی، سند حسابداری و شماره‌گذاری به Workspace موقتاً متوقف است؛ هیچ تغییری اعمال نشد.');
+
       const id = generateSafeId('inv');
       const plannedVoucherId = generateSafeId('vch');
       const plannedChequeId = generateSafeId('chq');
@@ -2299,6 +2913,7 @@ export const AccountingProvider: React.FC<{ children: React.ReactNode }> = ({ ch
         invoiceNumber: inv.invoiceNumber.slice(0, 48),
         ...(inv.taxSerial ? { taxSerial: inv.taxSerial.slice(0, 64) } : {}),
         invoiceType: inv.invoiceType,
+        ...(inv.sourceInvoiceId ? { sourceInvoiceId: inv.sourceInvoiceId.slice(0, 128) } : {}),
         date: inv.date.slice(0, 20),
         partyId: inv.partyId.slice(0, 128),
         partyName: inv.partyName.slice(0, 160),
@@ -2326,6 +2941,9 @@ export const AccountingProvider: React.FC<{ children: React.ReactNode }> = ({ ch
         creditAmount: inv.creditAmount,
         status: inv.status,
         ...(inv.voucherId ? { voucherId: inv.voucherId } : {}),
+        ...(Number.isSafeInteger(inv.eventSequence)
+          ? { eventSequence: inv.eventSequence, eventSequenceSource: 'online' }
+          : {}),
         items: inv.items.slice(0, 100),
         _version: 1,
         updatedByDevice: deviceId.slice(0, 64),
@@ -2372,6 +2990,13 @@ export const AccountingProvider: React.FC<{ children: React.ReactNode }> = ({ ch
             : {}),
           ...(vch.referenceId ? { referenceId: vch.referenceId.slice(0, 128) } : {}),
           lines: annotatedLines.slice(0, 100),
+          ...((vch.fiscalYear || extractFiscalYearFromDate(vch.date))
+            ? { fiscalYear: vch.fiscalYear || extractFiscalYearFromDate(vch.date) }
+            : {}),
+          ...(vch.reversalOfVoucherId ? { reversalOfVoucherId: vch.reversalOfVoucherId.slice(0, 128) } : {}),
+          ...(vch.status === 'permanent'
+            ? { integrityHash: computeVoucherIntegrityHash({ ...vch, lines: annotatedLines.slice(0, 100) }) }
+            : {}),
           _version: 1,
           updatedByDevice: deviceId.slice(0, 64),
           createdAt: serverTimestamp(),
@@ -2442,6 +3067,9 @@ export const AccountingProvider: React.FC<{ children: React.ReactNode }> = ({ ch
           batch.update(doc(db, 'products', prod.id), {
             stock: prod.stock,
             buyPrice: prod.buyPrice,
+            costingMethod: prod.costingMethod ?? profile.defaultCostingMethod ?? 'moving_average',
+            costLayers: prod.costLayers ?? [],
+            inventoryValueIrr: prod.inventoryValueIrr ?? 0,
             _version: prod._version ?? 2,
             updatedByDevice: deviceId.slice(0, 64),
             updatedAt: serverTimestamp(),
@@ -2462,6 +3090,13 @@ export const AccountingProvider: React.FC<{ children: React.ReactNode }> = ({ ch
 
       if (user) {
         const isOfflineNow = typeof navigator !== 'undefined' && !navigator.onLine;
+        if (
+          isOfflineNow &&
+          payload.sourceInvoiceId &&
+          (payload.invoiceType === 'sale_return' || payload.invoiceType === 'purchase_return')
+        ) {
+          throw new Error('ثبت برگشت ارجاع‌دار در حالت آفلاین مجاز نیست؛ برای کنترل سقف برگشت و جلوگیری از ثبت هم‌زمان، اتصال اینترنت لازم است.');
+        }
         if (isOfflineNow) {
           // Single atomic Firestore writeBatch (products + voucher + cheque + invoice) queued in local IndexedDB
           committedInvoice = await commitAtomicOfflineCloudBatch();
@@ -2476,6 +3111,37 @@ export const AccountingProvider: React.FC<{ children: React.ReactNode }> = ({ ch
                 ? Math.max(Number(counterSnap.data().lastVoucherNumber) || 0, localMaxVoucherNum)
                 : localMaxVoucherNum;
               const liveNextVoucherNum = currentMax + 1;
+              const liveNextInventorySequence = Math.max(0, Number(counterSnap.data()?.lastInventorySequence) || 0) + 1;
+
+              let liveOriginalInvoice = linkedOriginalInvoice;
+              let sourceInvoiceReturnRevision: number | null = null;
+              let sourceInvoiceActiveReturnCount: number | null = null;
+              let sourceInvoiceVersion: number | null = null;
+              const isLinkedReturn =
+                (payload.invoiceType === 'sale_return' || payload.invoiceType === 'purchase_return') &&
+                Boolean(payload.sourceInvoiceId);
+
+              // The source invoice revision is the transaction lock. A changed revision means
+              // another device created/cancelled a return after this client's invoice snapshot.
+              if (isLinkedReturn && payload.sourceInvoiceId) {
+                const sourceInvoiceSnap = await tx.get(doc(db, 'invoices', payload.sourceInvoiceId));
+                if (!sourceInvoiceSnap.exists()) {
+                  throw new Error('فاکتور مرجع برگشت در پایگاه داده یافت نشد.');
+                }
+                const liveRevision = Number(sourceInvoiceSnap.data().returnRevision) || 0;
+                const knownRevision = Number(linkedOriginalInvoice?.returnRevision) || 0;
+                if (liveRevision !== knownRevision) {
+                  throw new Error('اطلاعات برگشت این فاکتور در دستگاه دیگری تغییر کرده است؛ اطلاعات را تازه‌سازی و دوباره تلاش کنید.');
+                }
+                liveOriginalInvoice = {
+                  ...(linkedOriginalInvoice || {}),
+                  ...sourceInvoiceSnap.data(),
+                  id: sourceInvoiceSnap.id,
+                } as Invoice;
+                sourceInvoiceReturnRevision = liveRevision;
+                sourceInvoiceActiveReturnCount = Number(sourceInvoiceSnap.data().activeReturnCount) || 0;
+                sourceInvoiceVersion = Number(sourceInvoiceSnap.data()._version) || 1;
+              }
 
               // Read live products for every item in the invoice
               const uniqueProductIds = Array.from(new Set(payload.items.map((it) => it.productId)));
@@ -2493,6 +3159,13 @@ export const AccountingProvider: React.FC<{ children: React.ReactNode }> = ({ ch
                         ...base,
                         stock: Number(d.stock) || 0,
                         buyPrice: Number(d.buyPrice) || 0,
+                        costingMethod: d.costingMethod === 'fifo' || d.costingMethod === 'moving_average' || d.costingMethod === 'periodic_average'
+                          ? d.costingMethod
+                          : base?.costingMethod,
+                        costLayers: Array.isArray(d.costLayers) ? d.costLayers : (base?.costLayers ?? []),
+                        inventoryValueIrr: typeof d.inventoryValueIrr === 'number'
+                          ? d.inventoryValueIrr
+                          : (base?.inventoryValueIrr ?? 0),
                         _version: Number(d._version) || 1,
                       });
                     }
@@ -2515,11 +3188,12 @@ export const AccountingProvider: React.FC<{ children: React.ReactNode }> = ({ ch
                 currentPartyBalance: currentPartyBal,
                 enforceCashOverdraftGuard: true,
                 defaultCostingMethod: profile.defaultCostingMethod,
-                originalInvoice: linkedOriginalInvoice,
+                originalInvoice: liveOriginalInvoice,
                 existingInvoices: invoices,
                 existingVouchers: vouchers,
                 closedFiscalYears: profile.closedFiscalYears,
                 fxDecimals,
+                eventSequence: payload.invoiceType === 'proforma' ? undefined : liveNextInventorySequence,
               });
 
               if (livePlan.voucher) {
@@ -2528,6 +3202,7 @@ export const AccountingProvider: React.FC<{ children: React.ReactNode }> = ({ ch
                     ownerId: user.uid,
                     lastVoucherNumber: liveNextVoucherNum,
                     lastInvoiceSeq: 102,
+                    lastInventorySequence: liveNextInventorySequence,
                     updatedByDevice: deviceId.slice(0, 64),
                     createdAt: serverTimestamp(),
                     updatedAt: serverTimestamp(),
@@ -2535,16 +3210,36 @@ export const AccountingProvider: React.FC<{ children: React.ReactNode }> = ({ ch
                 } else {
                   tx.update(counterRef, {
                     lastVoucherNumber: liveNextVoucherNum,
+                    lastInventorySequence: liveNextInventorySequence,
                     updatedByDevice: deviceId.slice(0, 64),
                     updatedAt: serverTimestamp(),
                   });
                 }
               }
 
+              if (
+                payload.sourceInvoiceId &&
+                sourceInvoiceReturnRevision !== null &&
+                sourceInvoiceActiveReturnCount !== null &&
+                sourceInvoiceVersion !== null
+              ) {
+                tx.update(doc(db, 'invoices', payload.sourceInvoiceId), {
+                  returnRevision: sourceInvoiceReturnRevision + 1,
+                  activeReturnCount: sourceInvoiceActiveReturnCount + 1,
+                  lastReturnMutationId: id,
+                  _version: sourceInvoiceVersion + 1,
+                  updatedByDevice: deviceId.slice(0, 64),
+                  updatedAt: serverTimestamp(),
+                });
+              }
+
               for (const prod of livePlan.updatedProducts) {
                 tx.update(doc(db, 'products', prod.id), {
                   stock: prod.stock,
                   buyPrice: prod.buyPrice,
+                  costingMethod: prod.costingMethod ?? profile.defaultCostingMethod ?? 'moving_average',
+                  costLayers: prod.costLayers ?? [],
+                  inventoryValueIrr: prod.inventoryValueIrr ?? 0,
                   _version: prod._version ?? 2,
                   updatedByDevice: deviceId.slice(0, 64),
                   updatedAt: serverTimestamp(),
@@ -2571,14 +3266,24 @@ export const AccountingProvider: React.FC<{ children: React.ReactNode }> = ({ ch
               return livePlan.invoice;
             });
           } catch (err) {
-            if (isFirestoreOfflineError(err)) {
+            if (
+              isFirestoreOfflineError(err) &&
+              payload.sourceInvoiceId &&
+              (payload.invoiceType === 'sale_return' || payload.invoiceType === 'purchase_return')
+            ) {
+              throw new Error('تراکنش کنترل سقف برگشت به‌دلیل قطع اتصال کامل نشد؛ برای جلوگیری از برگشت تکراری، ثبت آفلاین انجام نشد.');
+            } else if (isFirestoreOfflineError(err)) {
               committedInvoice = await commitAtomicOfflineCloudBatch();
             } else {
               const msg =
                 err instanceof Error &&
                 (err.message.includes('موجودی') ||
                   err.message.includes('تسویه') ||
-                  err.message.includes('تراز'))
+                  err.message.includes('تراز') ||
+                  err.message.includes('مقدار برگشت') ||
+                  err.message.includes('فاکتور مرجع') ||
+                  err.message.includes('طرف حساب فاکتور برگشت') ||
+                  err.message.includes('اطلاعات برگشت'))
                   ? err.message
                   : null;
               if (msg) {
@@ -2586,6 +3291,7 @@ export const AccountingProvider: React.FC<{ children: React.ReactNode }> = ({ ch
                 throw err;
               }
               handleFirestoreError(err, OperationType.CREATE, `atomic-invoice/${id}`);
+              throw err;
             }
           }
         }
@@ -2657,11 +3363,18 @@ export const AccountingProvider: React.FC<{ children: React.ReactNode }> = ({ ch
       user,
       deviceId,
       showToast,
+      requirePermission,
     ]
   );
 
   const cancelInvoice = useCallback(
     async (invoiceId: string) => {
+      if (!requirePermission('canIssueInvoice', 'ابطال فاکتور')) return;
+      if (user && workspaceContext && (workspaceContext.workspaceId !== user.uid || workspaceContext.coreWritesFrozen || workspaceContext.coreWriteMode === 'workspace_native')) {
+        showToast('ابطال فاکتور تا انتقال اتمیک موجودی، سند معکوس و چک‌ها به Workspace موقتاً متوقف است؛ هیچ تغییری اعمال نشد.', 'error');
+        return;
+      }
+
       const inv = invoices.find((i) => i.id === invoiceId);
       if (!inv || inv.status === 'cancelled') return;
 
@@ -2675,15 +3388,231 @@ export const AccountingProvider: React.FC<{ children: React.ReactNode }> = ({ ch
           products,
           vouchers,
           cheques,
+          existingInvoices: invoices,
           costingMethod: profile.defaultCostingMethod ?? 'fifo',
           closedFiscalYears: profile.closedFiscalYears ?? [],
           ownerId,
-          reversalVoucherId: generateSafeId('vch'),
+          reversalVoucherId: 'vch_cancel_' + invoiceId,
           nextVoucherNumber: nextNum,
           deviceId,
         });
       } catch (err) {
         showToast(err instanceof Error ? err.message : 'خطا در ابطال فاکتور.');
+        return;
+      }
+
+
+      // Authenticated cancellation requires an online transaction to prevent stale offline replay.
+      if (user) {
+        if (typeof navigator !== 'undefined' && !navigator.onLine) {
+          showToast('ابطال فاکتور در حالت آفلاین مجاز نیست؛ برای جلوگیری از ثبت تکراری، اتصال را برقرار و دوباره تلاش کنید.', 'error');
+          return;
+        }
+        try {
+          const invoiceRef = doc(db, 'invoices', invoiceId);
+          const counterRef = doc(db, 'counters', user.uid);
+          const reversalId = 'vch_cancel_' + invoiceId;
+          const reversalRef = doc(db, 'vouchers', reversalId);
+          const candidateChequeIds = [...new Set(plan.chequeIdsToCancel)];
+          const chequeRefs = candidateChequeIds.map((id) => doc(db, 'cheques', id));
+          const productRefs = [...plan.productDeltas.keys()].map((id) => doc(db, 'products', id));
+          const linkedOriginalVoucher = vouchers.find((v) => v.id === inv.voucherId || (v.referenceId === inv.id && !v.reversalOfVoucherId));
+          const originalVoucherId = inv.voucherId || linkedOriginalVoucher?.id;
+          const originalVoucherRef = originalVoucherId ? doc(db, 'vouchers', originalVoucherId) : null;
+
+          const committed = await runTransaction(db, async (tx) => {
+            const invoiceSnap = await tx.get(invoiceRef);
+            if (!invoiceSnap.exists()) throw new Error('فاکتور در پایگاه داده یافت نشد.');
+            const liveInvoice = { ...inv, ...invoiceSnap.data(), id: invoiceId } as Invoice;
+            if (liveInvoice.status === 'cancelled') return { alreadyCancelled: true as const };
+
+            let sourceInvoiceReturnRevision: number | null = null;
+            let sourceInvoiceActiveReturnCount: number | null = null;
+            let sourceInvoiceVersion: number | null = null;
+            if (
+              liveInvoice.sourceInvoiceId &&
+              (liveInvoice.invoiceType === 'sale_return' || liveInvoice.invoiceType === 'purchase_return')
+            ) {
+              const sourceInvoiceSnap = await tx.get(doc(db, 'invoices', liveInvoice.sourceInvoiceId));
+              if (!sourceInvoiceSnap.exists()) {
+                throw new Error('فاکتور مرجع برگشت یافت نشد؛ ابطال برگشت متوقف شد.');
+              }
+              const sourceInState = invoices.find((candidate) => candidate.id === liveInvoice.sourceInvoiceId);
+              const liveRevision = Number(sourceInvoiceSnap.data().returnRevision) || 0;
+              const knownRevision = Number(sourceInState?.returnRevision) || 0;
+              if (liveRevision !== knownRevision) {
+                throw new Error('اطلاعات برگشت فاکتور مرجع در دستگاه دیگری تغییر کرده است؛ اطلاعات را تازه‌سازی و دوباره تلاش کنید.');
+              }
+              sourceInvoiceReturnRevision = liveRevision;
+              sourceInvoiceActiveReturnCount = Number(sourceInvoiceSnap.data().activeReturnCount) || 0;
+              if (sourceInvoiceActiveReturnCount < 1) throw new Error('شمارنده برگشت‌های فعال فاکتور مرجع معتبر نیست؛ ابطال برگشت متوقف شد.');
+              sourceInvoiceVersion = Number(sourceInvoiceSnap.data()._version) || 1;
+            } else if (liveInvoice.invoiceType === 'sale' || liveInvoice.invoiceType === 'purchase') {
+              const liveRevision = Number(invoiceSnap.data().returnRevision) || 0;
+              const knownRevision = Number(inv.returnRevision) || 0;
+              if (liveRevision !== knownRevision) {
+                throw new Error('اطلاعات برگشت فاکتور در دستگاه دیگری تغییر کرده است؛ اطلاعات را تازه‌سازی و دوباره تلاش کنید.');
+              }
+            }
+
+            const reversalSnap = await tx.get(reversalRef);
+            if (reversalSnap.exists()) throw new Error('سند معکوس این فاکتور قبلاً ایجاد شده است؛ برای جلوگیری از ثبت تکراری، ابطال متوقف شد.');
+            const counterSnap = await tx.get(counterRef);
+            const productSnaps = await Promise.all(productRefs.map((ref) => tx.get(ref)));
+            const chequeSnaps = await Promise.all(chequeRefs.map((ref) => tx.get(ref)));
+            const originalVoucherSnap = originalVoucherRef ? await tx.get(originalVoucherRef) : null;
+
+            const liveProducts = productSnaps.map((snap) => {
+              if (!snap.exists()) throw new Error('یکی از کالاهای فاکتور در انبار یافت نشد؛ ابطال متوقف شد.');
+              const prior = products.find((p) => p.id === snap.id);
+              if (!prior) throw new Error('اطلاعات پایه یکی از کالاهای فاکتور در دسترس نیست.');
+              return { ...prior, ...snap.data(), id: snap.id } as Product;
+            });
+            const liveCheques = chequeSnaps.filter((snap) => snap.exists()).map((snap) => {
+              const prior = cheques.find((ch) => ch.id === snap.id);
+              return { ...(prior || {} as Cheque), ...snap.data(), id: snap.id } as Cheque;
+            });
+            for (const cheque of liveCheques) {
+              if (cheque.status !== 'in_box') throw new Error('وضعیت یکی از چک‌های مرتبط تغییر کرده است؛ ابتدا وضعیت چک را بررسی کنید.');
+            }
+            const liveOriginalVoucher = originalVoucherSnap?.exists()
+              ? ({ ...(linkedOriginalVoucher || {} as Voucher), ...originalVoucherSnap.data(), id: originalVoucherSnap.id } as Voucher)
+              : undefined;
+            const liveVouchers = [
+              ...vouchers.filter((v) => v.id !== liveOriginalVoucher?.id),
+              ...(liveOriginalVoucher ? [liveOriginalVoucher] : []),
+            ];
+            const maxVoucherNumber = liveVouchers
+              .filter((v) => (v.fiscalYear || extractFiscalYearFromDate(v.date)) === extractFiscalYearFromDate(today))
+              .reduce((max, v) => Math.max(max, Number(v.voucherNumber) || 0), 0);
+            const liveCounter = counterSnap.exists() ? Number(counterSnap.data().lastVoucherNumber) || 0 : 0;
+            const livePlan = planInvoiceCancellation({
+              invoice: liveInvoice,
+              cancellationDate: today,
+              products: liveProducts,
+              vouchers: liveVouchers,
+              cheques: liveCheques,
+              existingInvoices: invoices,
+              costingMethod: profile.defaultCostingMethod ?? 'fifo',
+              closedFiscalYears: profile.closedFiscalYears ?? [],
+              ownerId,
+              reversalVoucherId: reversalId,
+              nextVoucherNumber: Math.max(maxVoucherNumber, liveCounter) + 1,
+              deviceId,
+            });
+
+            // All reads are complete. Touching the source invoice serializes return creation/cancellation.
+            if (
+              liveInvoice.sourceInvoiceId &&
+              sourceInvoiceReturnRevision !== null &&
+              sourceInvoiceActiveReturnCount !== null &&
+              sourceInvoiceVersion !== null
+            ) {
+              tx.update(doc(db, 'invoices', liveInvoice.sourceInvoiceId), {
+                returnRevision: sourceInvoiceReturnRevision + 1,
+                activeReturnCount: sourceInvoiceActiveReturnCount - 1,
+                lastReturnMutationId: invoiceId,
+                _version: sourceInvoiceVersion + 1,
+                updatedByDevice: deviceId.slice(0, 64),
+                updatedAt: serverTimestamp(),
+              });
+            }
+            // Stock, invoice, cheque, reversal voucher and sequence are one commit.
+            for (const [pid, delta] of livePlan.productDeltas.entries()) {
+              const snap = productSnaps.find((item) => item.id === pid);
+              if (!snap?.exists()) throw new Error('کالای مرتبط برای به‌روزرسانی موجود نیست.');
+              tx.update(doc(db, 'products', pid), {
+                stock: delta.stock,
+                buyPrice: delta.buyPrice,
+                costLayers: delta.costLayers,
+                inventoryValueIrr: delta.inventoryValueIrr,
+                _version: (Number(snap.data()._version) || 1) + 1,
+                updatedByDevice: deviceId.slice(0, 64),
+                updatedAt: serverTimestamp(),
+              });
+            }
+            for (const cheque of liveCheques) {
+              tx.update(doc(db, 'cheques', cheque.id), {
+                status: 'cancelled',
+                notes: ((cheque.notes || '') + ' (ابطال خودکار همراه فاکتور ' + liveInvoice.invoiceNumber + ')').slice(0, 300),
+                _version: (cheque._version ?? 1) + 1,
+                updatedByDevice: deviceId.slice(0, 64),
+                updatedAt: serverTimestamp(),
+              });
+            }
+            tx.update(invoiceRef, {
+              status: 'cancelled',
+              _version: (Number(invoiceSnap.data()._version) || 1) + 1,
+              updatedByDevice: deviceId.slice(0, 64),
+              updatedAt: serverTimestamp(),
+            });
+            if (livePlan.reversalVoucher) {
+              const rev = livePlan.reversalVoucher;
+              const fxLines = liveOriginalVoucher && isForeignCurrency(liveOriginalVoucher.currencyCode) && liveOriginalVoucher.exchangeRate
+                ? rev.lines.map((line) => ({
+                    ...line,
+                    ...(line.foreignCredit !== undefined ? { foreignDebit: line.foreignCredit } : {}),
+                    ...(line.foreignDebit !== undefined ? { foreignCredit: line.foreignDebit } : {}),
+                  }))
+                : rev.lines;
+              const sealedBase = { ...rev, lines: fxLines };
+              const sealed = { ...sealedBase, integrityHash: computeVoucherIntegrityHash(sealedBase) };
+              tx.set(doc(db, 'vouchers', reversalId), {
+                ownerId,
+                voucherNumber: sealed.voucherNumber,
+                date: sealed.date.slice(0, 20),
+                description: sealed.description.slice(0, 300),
+                voucherType: sealed.voucherType,
+                status: 'permanent',
+                totalDebit: sealed.totalDebit,
+                totalCredit: sealed.totalCredit,
+                fiscalYear: sealed.fiscalYear,
+                reversalOfVoucherId: sealed.reversalOfVoucherId,
+                integrityHash: sealed.integrityHash,
+                ...(sealed.currencyCode && sealed.exchangeRate ? {
+                  currencyCode: normalizeCurrencyCode(sealed.currencyCode).slice(0, 10),
+                  exchangeRate: sealed.exchangeRate,
+                  foreignTotalDebit: roundCurrency(fxLines.reduce((sum, line) => sum + (Number(line.foreignDebit) || 0), 0), 2),
+                  foreignTotalCredit: roundCurrency(fxLines.reduce((sum, line) => sum + (Number(line.foreignCredit) || 0), 0), 2),
+                } : {}),
+                ...(sealed.referenceId ? { referenceId: sealed.referenceId.slice(0, 128) } : {}),
+                lines: fxLines.slice(0, 100),
+                _version: 1,
+                updatedByDevice: deviceId.slice(0, 64),
+                createdAt: serverTimestamp(),
+                updatedAt: serverTimestamp(),
+              });
+              if (!counterSnap.exists()) {
+                tx.set(counterRef, { ownerId: user.uid, lastVoucherNumber: sealed.voucherNumber, lastInvoiceSeq: 102, updatedByDevice: deviceId.slice(0, 64), createdAt: serverTimestamp(), updatedAt: serverTimestamp() });
+              } else {
+                tx.update(counterRef, { lastVoucherNumber: sealed.voucherNumber, updatedByDevice: deviceId.slice(0, 64), updatedAt: serverTimestamp() });
+              }
+            }
+            return { alreadyCancelled: false as const, plan: livePlan };
+          });
+
+          if (committed.alreadyCancelled) {
+            showToast('این فاکتور قبلاً توسط دستگاه دیگری ابطال شده است.');
+            return;
+          }
+          const appliedPlan = committed.plan;
+          setProducts((prev) => prev.map((product) => appliedPlan.updatedProducts.find((next) => next.id === product.id) ?? product));
+          setInvoices((prev) => prev.map((invoice) => invoice.id === invoiceId ? { ...invoice, status: 'cancelled', _version: (invoice._version ?? 1) + 1 } : invoice));
+          setCheques((prev) => prev.map((cheque) => appliedPlan.chequeIdsToCancel.includes(cheque.id) ? { ...cheque, status: 'cancelled', notes: ((cheque.notes || '') + ' (ابطال همراه فاکتور)').slice(0, 300) } : cheque));
+          if (appliedPlan.reversalVoucher) {
+            const original = appliedPlan.reversalVoucher;
+            const fxLines = linkedOriginalVoucher && isForeignCurrency(linkedOriginalVoucher.currencyCode) && linkedOriginalVoucher.exchangeRate
+              ? original.lines.map((line) => ({ ...line, ...(line.foreignCredit !== undefined ? { foreignDebit: line.foreignCredit } : {}), ...(line.foreignDebit !== undefined ? { foreignCredit: line.foreignDebit } : {}) }))
+              : original.lines;
+            const base = { ...original, lines: fxLines };
+            setVouchers((prev) => prev.some((v) => v.id === reversalId) ? prev : [...prev, { ...base, integrityHash: computeVoucherIntegrityHash(base) }]);
+          }
+          showToast('فاکتور ' + inv.invoiceNumber + ' به‌صورت اتمیک ابطال شد؛ موجودی، سند معکوس و چک‌های مرتبط هم‌زمان به‌روزرسانی شدند.', 'success');
+        } catch (err) {
+          const message = err instanceof Error ? err.message : 'تراکنش اتمیک ابطال فاکتور ناموفق بود.';
+          showToast(message, 'error');
+          throw err;
+        }
         return;
       }
 
@@ -2852,11 +3781,13 @@ export const AccountingProvider: React.FC<{ children: React.ReactNode }> = ({ ch
       }
       showToast(`فاکتور ${inv.invoiceNumber} ابطال شد، لایه‌های بهای تمام‌شده انبار بازگردانی و سند معکوس ثبت گردید.`);
     },
-    [invoices, products, vouchers, cheques, profile, ownerId, createVoucher, user, deviceId, showToast]
+    [invoices, products, vouchers, cheques, profile, ownerId, createVoucher, user, deviceId, showToast, requirePermission]
   );
 
   const convertProformaToSale = useCallback(
     async (invoiceId: string) => {
+      if (!requirePermission('canCreateVoucher', 'صدور سند تبدیل پیش‌فاکتور')) return;
+
       if (!activeOperator.permissions.canIssueInvoice) {
         showToast('نقش فعال مجوز تبدیل پیش‌فاکتور و صدور فاکتور فروش قطعی را ندارد.');
         return;
@@ -2953,6 +3884,8 @@ export const AccountingProvider: React.FC<{ children: React.ReactNode }> = ({ ch
             status: finalInvoice.status,
             voucherId: createdVoucherId ?? null,
             items: finalInvoice.items.slice(0, 100),
+            returnRevision: finalInvoice.returnRevision ?? 0,
+            activeReturnCount: finalInvoice.activeReturnCount ?? 0,
             _version: finalInvoice._version ?? (inv._version ?? 1) + 1,
             updatedByDevice: deviceId.slice(0, 64),
             updatedAt: serverTimestamp(),
@@ -2971,6 +3904,7 @@ export const AccountingProvider: React.FC<{ children: React.ReactNode }> = ({ ch
     },
     [
       activeOperator,
+      requirePermission,
       invoices,
       products,
       parties,
@@ -2983,6 +3917,7 @@ export const AccountingProvider: React.FC<{ children: React.ReactNode }> = ({ ch
       createVoucher,
       user,
       showToast,
+      requirePermission,
     ]
   );
 
@@ -3063,8 +3998,21 @@ export const AccountingProvider: React.FC<{ children: React.ReactNode }> = ({ ch
 
   const postMonthlyPayrollVoucher = useCallback(
     async (monthName: string) => {
+      if (!requirePermission('canCreateVoucher', 'صدور سند حقوق و دستمزد')) return;
+
       const activeEmps = employees.filter((e) => e.active);
       if (activeEmps.length === 0) return;
+      const statutory = getStatutoryParamsForYear(profile.fiscalYear, profile.statutoryParamsByYear);
+      const statutoryErrors = validateStatutoryParams(statutory);
+      if (statutory.requiresUserVerification && !statutory.verifiedByUser) {
+        statutoryErrors.unshift(
+          statutory.verificationNote || `پارامترهای قانونی سال ${profile.fiscalYear} هنوز تأیید نشده‌اند.`
+        );
+      }
+      if (statutoryErrors.length > 0) {
+        showToast(statutoryErrors[0], 'error');
+        return;
+      }
       const calcs = activeEmps.map((emp) =>
         calculateEmployeePayroll(emp, profile.fiscalYear, profile.statutoryParamsByYear)
       );
@@ -3118,11 +4066,13 @@ export const AccountingProvider: React.FC<{ children: React.ReactNode }> = ({ ch
         lines,
       });
     },
-    [employees, profile.fiscalYear, profile.statutoryParamsByYear, createVoucher]
+    [employees, profile.fiscalYear, profile.statutoryParamsByYear, createVoucher, showToast, requirePermission]
   );
 
   const paySalariesVoucher = useCallback(
     async (monthName: string, bankAccountCode: string, amount: number) => {
+      if (!requirePermission('canCreateVoucher', 'ثبت پرداخت حقوق')) return;
+
       if (amount <= 0) return;
       const bankAcc = accounts.find((a) => a.code === bankAccountCode);
       const bankTitle = bankAcc?.title || 'بانک ملت — حساب جاری شرکتی';
@@ -3149,7 +4099,7 @@ export const AccountingProvider: React.FC<{ children: React.ReactNode }> = ({ ch
         ],
       });
     },
-    [accounts, createVoucher]
+    [accounts, createVoucher, requirePermission]
   );
 
   const addFixedAsset = useCallback(
@@ -3224,6 +4174,8 @@ export const AccountingProvider: React.FC<{ children: React.ReactNode }> = ({ ch
 
   const postDepreciationVoucher = useCallback(
     async (periodLabel: string) => {
+      if (!requirePermission('canCreateVoucher', 'ثبت سند استهلاک')) return;
+
       let totalDep = 0;
       for (const a of assets) {
         const dep = calculateMonthlyDepreciation(a);
@@ -3276,7 +4228,7 @@ export const AccountingProvider: React.FC<{ children: React.ReactNode }> = ({ ch
         ],
       });
     },
-    [assets, user, createVoucher, showToast]
+    [assets, user, createVoucher, showToast, requirePermission]
   );
 
   const addCostCenter = useCallback(
@@ -3345,6 +4297,8 @@ export const AccountingProvider: React.FC<{ children: React.ReactNode }> = ({ ch
 
   const runYearEndClosing = useCallback(
     async (options?: { createNextYearOpening?: boolean }) => {
+      if (!requirePermission('canFinalizeVoucher', 'بستن سال مالی')) return;
+
       const fy = profile.fiscalYear;
       const sameYearMax = vouchers
         .filter((v) => (v.fiscalYear || extractFiscalYearFromDate(v.date)) === fy)
@@ -3410,12 +4364,15 @@ export const AccountingProvider: React.FC<{ children: React.ReactNode }> = ({ ch
       createVoucher,
       updateCompanyProfile,
       showToast,
+      requirePermission,
     ]
   );
 
   // ---------------- MULTI-CURRENCY & DAILY EXCHANGE RATES ----------------
   const addCurrency = useCallback(
     async (cur: Omit<CurrencyDefinition, 'id' | 'ownerId' | 'isBase'>): Promise<boolean> => {
+      if (!requirePermission('canManageCurrencies', 'تعریف ارز')) return false;
+
       const code = normalizeCurrencyCode(cur.code).replace(/[^A-Z0-9_-]/g, '').slice(0, 10);
       if (!code || code.length < 2) {
         showToast('کد ارز باید حداقل ۲ حرف لاتین (مثلاً USD، TRY یا GBP) باشد.');
@@ -3494,7 +4451,7 @@ export const AccountingProvider: React.FC<{ children: React.ReactNode }> = ({ ch
       showToast(`ارز «${full.name} (${full.code})» با موفقیت تعریف شد.`);
       return true;
     },
-    [currencies, ownerId, user, showToast]
+    [currencies, ownerId, user, showToast, requirePermission]
   );
 
   const updateCurrency = useCallback(
@@ -3504,6 +4461,8 @@ export const AccountingProvider: React.FC<{ children: React.ReactNode }> = ({ ch
         Pick<CurrencyDefinition, 'name' | 'symbol' | 'decimalPlaces' | 'defaultRateToIrr' | 'active'>
       >
     ) => {
+      if (!requirePermission('canManageCurrencies', 'ویرایش ارز')) return;
+
       const existing = currencies.find((c) => c.id === currencyId);
       if (!existing) return;
       const safePatch: Partial<CurrencyDefinition> = {};
@@ -3537,11 +4496,13 @@ export const AccountingProvider: React.FC<{ children: React.ReactNode }> = ({ ch
       }
       showToast(`مشخصات ارز «${existing.code}» به‌روزرسانی شد.`);
     },
-    [currencies, user, showToast]
+    [currencies, user, showToast, requirePermission]
   );
 
   const deleteCurrency = useCallback(
     async (currencyId: string): Promise<boolean> => {
+      if (!requirePermission('canManageCurrencies', 'حذف ارز')) return false;
+
       const target = currencies.find((c) => c.id === currencyId);
       if (!target) return false;
       if (target.isBase || normalizeCurrencyCode(target.code) === BASE_CURRENCY_CODE) {
@@ -3568,7 +4529,7 @@ export const AccountingProvider: React.FC<{ children: React.ReactNode }> = ({ ch
       showToast(`ارز «${target.name} (${target.code})» حذف شد.`);
       return true;
     },
-    [currencies, vouchers, invoices, user, showToast]
+    [currencies, vouchers, invoices, user, showToast, requirePermission]
   );
 
   const upsertExchangeRate = useCallback(
@@ -4378,6 +5339,9 @@ export const AccountingProvider: React.FC<{ children: React.ReactNode }> = ({ ch
         includeServiceVat?: boolean;
       }
     ) => {
+      if (!requirePermission('canCreateVoucher', 'ثبت سند پیمانکاری')) return;
+      if (!requirePermission('canEditInventory', 'ثبت ورود محصول پیمانکاری')) return;
+
       const job = subcontractJobs.find((j) => j.id === jobId);
       if (!job || job.status === 'completed') {
         showToast('این حواله پیمانکاری قبلاً تکمیل شده است.');
@@ -4648,13 +5612,14 @@ export const AccountingProvider: React.FC<{ children: React.ReactNode }> = ({ ch
       addProduct,
       createVoucher,
       logActivity,
-      showToast,
-    ]
+      showToast, requirePermission]
   );
 
   // ---------------- FX REVALUATION & BROKER COMMISSION VOUCHERS ----------------
   const postFxRevaluationVoucher = useCallback(
     async (rows: FxRevaluationRow[], date: string) => {
+      if (!requirePermission('canCreateVoucher', 'ثبت سند تسعیر ارز')) return;
+
       const nonZero = rows.filter((r) => Math.abs(r.revaluationDiffIrr) >= 1);
       if (nonZero.length === 0) {
         showToast('هیچ اختلاف تسعیر ارزی برای صدور سند وجود ندارد.');
@@ -4730,7 +5695,7 @@ export const AccountingProvider: React.FC<{ children: React.ReactNode }> = ({ ch
       );
       showToast(`سند تسعیر ارز #${v.voucherNumber} با موفقیت صادر شد.`);
     },
-    [createVoucher, logActivity, showToast]
+    [createVoucher, logActivity, showToast, requirePermission]
   );
 
   const postBrokerCommissionVoucher = useCallback(
@@ -4741,6 +5706,8 @@ export const AccountingProvider: React.FC<{ children: React.ReactNode }> = ({ ch
       date: string;
       periodLabel: string;
     }) => {
+      if (!requirePermission('canCreateVoucher', 'ثبت سند کارمزد کارگزاری')) return;
+
       const amount = Math.round(payload.amountIrr);
       if (amount <= 0) return;
       const v = await createVoucher({
@@ -4774,12 +5741,14 @@ export const AccountingProvider: React.FC<{ children: React.ReactNode }> = ({ ch
       );
       showToast(`سند پورسانت ${payload.partyName} (#${v.voucherNumber}) صادر شد.`);
     },
-    [createVoucher, logActivity, showToast]
+    [createVoucher, logActivity, showToast, requirePermission]
   );
 
   // ---------------- RBAC OPERATORS CRUD ----------------
   const addRbacOperator = useCallback(
     async (op: Omit<RbacOperator, 'id' | 'ownerId'>) => {
+      if (!requirePermission('canManageSettings', 'تعریف اپراتور')) return;
+
       const full: RbacOperator = { ...op, id: generateSafeId('op'), ownerId };
       if (user) {
         try {
@@ -4802,7 +5771,7 @@ export const AccountingProvider: React.FC<{ children: React.ReactNode }> = ({ ch
       logActivity('مدیریت کاربران', `تعریف کاربر ${full.fullName}`, `نقش: ${full.role}`);
       showToast(`کاربر «${full.fullName}» به لیست اپراتورها اضافه شد.`);
     },
-    [user, ownerId, logActivity, showToast]
+    [user, ownerId, logActivity, showToast, requirePermission]
   );
 
   const updateRbacOperator = useCallback(
@@ -4810,6 +5779,8 @@ export const AccountingProvider: React.FC<{ children: React.ReactNode }> = ({ ch
       opId: string,
       patch: Partial<Pick<RbacOperator, 'fullName' | 'role' | 'email' | 'active' | 'permissions'>>
     ) => {
+      if (!requirePermission('canManageSettings', 'تغییر دسترسی اپراتور')) return;
+
       if (user) {
         try {
           await updateDoc(doc(db, 'rbacOperators', opId), {
@@ -4825,11 +5796,13 @@ export const AccountingProvider: React.FC<{ children: React.ReactNode }> = ({ ch
       logActivity('مدیریت کاربران', 'ویرایش سطح دسترسی کاربر', `شناسه اپراتور: ${opId}`);
       showToast('سطح دسترسی کاربر به‌روزرسانی شد.');
     },
-    [user, logActivity, showToast]
+    [user, logActivity, showToast, requirePermission]
   );
 
   const deleteRbacOperator = useCallback(
     async (opId: string) => {
+      if (!requirePermission('canManageSettings', 'حذف اپراتور')) return;
+
       if (rbacOperators.length <= 1) {
         showToast('حداقل یک کاربر مدیر در سیستم باید باقی بماند.');
         return;
@@ -4850,7 +5823,7 @@ export const AccountingProvider: React.FC<{ children: React.ReactNode }> = ({ ch
       logActivity('مدیریت کاربران', 'حذف اپراتور', `شناسه اپراتور: ${opId}`);
       showToast('اپراتور حذف شد.');
     },
-    [user, rbacOperators, activeOperatorId, logActivity, showToast]
+    [user, rbacOperators, activeOperatorId, logActivity, showToast, requirePermission]
   );
 
   // ---------------- BACKUP & RESTORE (CLOUD + LOCAL DEVICE STORAGE) ----------------
@@ -4906,6 +5879,8 @@ export const AccountingProvider: React.FC<{ children: React.ReactNode }> = ({ ch
 
   const reopenFiscalYear = useCallback(
     async (fiscalYear: string, reason: string): Promise<boolean> => {
+      if (!requirePermission('canManageSettings', 'بازگشایی سال مالی')) return false;
+
       const nowTime = new Date().toLocaleTimeString('fa-IR', {
         hour: '2-digit',
         minute: '2-digit',
@@ -4954,8 +5929,7 @@ export const AccountingProvider: React.FC<{ children: React.ReactNode }> = ({ ch
       deviceId,
       updateCompanyProfile,
       logActivity,
-      showToast,
-    ]
+      showToast, requirePermission]
   );
 
   const commitHolo203Migration = useCallback(
@@ -5151,6 +6125,26 @@ export const AccountingProvider: React.FC<{ children: React.ReactNode }> = ({ ch
     [showToast]
   );
 
+  /**
+   * Imports a remote workspace and resolves only after the primary operational
+   * IndexedDB transaction has committed. A failed or unavailable commit rejects
+   * the sync acceptance so the sender keeps its outbox operation pending.
+   */
+  const importBackupJsonDurably = useCallback(
+    (jsonText: string): Promise<boolean> => {
+      if (pendingDurableImportRef.current) return Promise.resolve(false);
+      return new Promise<boolean>((resolve) => {
+        pendingDurableImportRef.current = resolve;
+        const imported = importBackupJson(jsonText);
+        if (!imported) {
+          pendingDurableImportRef.current = null;
+          resolve(false);
+        }
+      });
+    },
+    [importBackupJson]
+  );
+
   const resetWorkspaceTables = useCallback(
     async (options: {
       mode: 'blank' | 'demo';
@@ -5335,38 +6329,56 @@ export const AccountingProvider: React.FC<{ children: React.ReactNode }> = ({ ch
   // Primary Operational IndexedDB Persistence + Fast offline-first mirror after any data change
   const hasMountedBackupRef = useRef(false);
   useEffect(() => {
+    const pendingDurableImport = pendingDurableImportRef.current;
     if (!hasMountedBackupRef.current) {
       hasMountedBackupRef.current = true;
-      return;
+      if (!pendingDurableImport) return;
     }
 
-    const opDbTimer = window.setTimeout(async () => {
-      try {
-        await saveOperationalWorkspaceTx({
-          profile,
-          accounts,
-          parties,
-          products,
-          vouchers,
-          invoices,
-          cheques,
-          employees,
-          assets,
-          costCenters,
-          currencies,
-          exchangeRates,
-          importDossiers,
-          salesOrders,
-          subcontractJobs,
-          rbacOperators,
-          auditLogs,
-        });
-        const stats = await getOperationalDbStats();
-        setOperationalDbStats(stats);
-      } catch {
-        // Ignore transient IndexedDB quota/lock issues
-      }
-    }, 650);
+    const operationalWorkspaceData = {
+      profile,
+      accounts,
+      parties,
+      products,
+      vouchers,
+      invoices,
+      cheques,
+      employees,
+      assets,
+      costCenters,
+      currencies,
+      exchangeRates,
+      importDossiers,
+      salesOrders,
+      subcontractJobs,
+      rbacOperators,
+      auditLogs,
+    };
+
+    if (pendingDurableImport) {
+      pendingDurableImportRef.current = null;
+      void saveOperationalWorkspaceTx(operationalWorkspaceData)
+        .then(async (result) => {
+          if (result) {
+            const stats = await getOperationalDbStats();
+            setOperationalDbStats(stats);
+          }
+          pendingDurableImport(result !== null);
+        })
+        .catch(() => pendingDurableImport(false));
+    }
+
+    const opDbTimer = pendingDurableImport
+      ? null
+      : window.setTimeout(async () => {
+          try {
+            await saveOperationalWorkspaceTx(operationalWorkspaceData);
+            const stats = await getOperationalDbStats();
+            setOperationalDbStats(stats);
+          } catch {
+            // Ignore transient IndexedDB quota/lock issues
+          }
+        }, 650);
 
     const fastTimer = window.setTimeout(() => {
       try {
@@ -5404,7 +6416,7 @@ export const AccountingProvider: React.FC<{ children: React.ReactNode }> = ({ ch
       : undefined;
 
     return () => {
-      window.clearTimeout(opDbTimer);
+      if (opDbTimer !== null) window.clearTimeout(opDbTimer);
       window.clearTimeout(fastTimer);
       if (idbTimer !== undefined) window.clearTimeout(idbTimer);
     };
@@ -5597,6 +6609,7 @@ export const AccountingProvider: React.FC<{ children: React.ReactNode }> = ({ ch
         logActivity,
         exportBackupJson,
         importBackupJson,
+        importBackupJsonDurably,
         resetWorkspaceTables,
       }}
     >

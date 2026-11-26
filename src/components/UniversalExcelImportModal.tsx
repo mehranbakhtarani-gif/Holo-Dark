@@ -63,6 +63,7 @@ interface ImportedInvoiceItemRow {
 interface ImportedInvoiceDoc {
   invoiceNumber: string;
   invoiceType: InvoiceType;
+  sourceInvoiceNumber?: string;
   date: string;
   partyName: string;
   items: ImportedInvoiceItemRow[];
@@ -116,6 +117,7 @@ export const UniversalExcelImportModal: React.FC<UniversalExcelImportModalProps>
     accounts,
     parties,
     products,
+    invoices,
     addParty,
     addProduct,
     addAccount,
@@ -331,6 +333,25 @@ export const UniversalExcelImportModal: React.FC<UniversalExcelImportModalProps>
               notes.push(`فاکتور ${doc.invoiceNumber}: طرف‌حسابی در سیستم تعریف نشده است.`);
               continue;
             }
+            const expectedSourceType =
+              doc.invoiceType === 'sale_return' ? 'sale' : doc.invoiceType === 'purchase_return' ? 'purchase' : null;
+            const sourceInvoice = expectedSourceType && doc.sourceInvoiceNumber
+              ? invoices.find((inv) =>
+                  inv.invoiceNumber.trim() === doc.sourceInvoiceNumber!.trim() &&
+                  inv.invoiceType === expectedSourceType &&
+                  inv.status !== 'cancelled'
+                )
+              : undefined;
+            if (expectedSourceType && !sourceInvoice) {
+              skipped++;
+              notes.push(`فاکتور برگشت ${doc.invoiceNumber}: فاکتور مرجع «${doc.sourceInvoiceNumber || 'وارد نشده'}» یافت نشد.`);
+              continue;
+            }
+            if (sourceInvoice && sourceInvoice.partyId !== matchedParty.id) {
+              skipped++;
+              notes.push(`فاکتور برگشت ${doc.invoiceNumber}: طرف‌حساب با فاکتور مرجع یکسان نیست.`);
+              continue;
+            }
 
             const items: InvoiceItem[] = doc.items.map((it) => {
               const matchedProd = matchProductFuzzy(it.productName) || products[0];
@@ -365,6 +386,7 @@ export const UniversalExcelImportModal: React.FC<UniversalExcelImportModalProps>
             await createInvoice({
               invoiceNumber: doc.invoiceNumber,
               invoiceType: doc.invoiceType,
+              ...(sourceInvoice ? { sourceInvoiceId: sourceInvoice.id } : {}),
               date: doc.date,
               partyId: matchedParty.id,
               partyName: matchedParty.name,

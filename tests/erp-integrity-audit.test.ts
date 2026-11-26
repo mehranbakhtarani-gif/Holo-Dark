@@ -44,11 +44,14 @@ import {
   sumIrr,
   toExactIrr,
 } from '../src/lib/moneyMath';
+import { selectUnreturnedSaleAllocations } from '../src/lib/inventoryCostingEngine';
 import {
   computeMultiWarehouseMatrix,
   computeWarehouseProductKardex,
   evaluateWarehouseShortageSurplus,
   executeTrackedWarehouseTransfer,
+  receiveTrackedWarehouseTransfer,
+  reconcileWarehouseKardex,
 } from '../src/lib/multiWarehouseEngine';
 import {
   computeSandboxDiff,
@@ -151,6 +154,31 @@ function makeItem(product: Product, quantity: number, unitPrice: number, vatRate
 // ============================================================================
 // TEST 1: EXPLICIT BALANCE SHEET MANUAL-VS-SYSTEM SCENARIO (END-TO-END)
 // ============================================================================
+test('FIFO partial sale returns restore the next unreturned original cost slices', () => {
+  const original = [
+    { layerId: 'layer-a', qty: 5, unitCostIrr: 100, totalCostIrr: 500 },
+    { layerId: 'layer-b', qty: 5, unitCostIrr: 300, totalCostIrr: 1500 },
+  ];
+  const first = selectUnreturnedSaleAllocations(original, 0, 3);
+  assert.deepEqual(first, [
+    { layerId: 'layer-b', qty: 3, unitCostIrr: 300, totalCostIrr: 900 },
+  ]);
+
+  const second = selectUnreturnedSaleAllocations(original, 3, 3);
+  assert.deepEqual(second, [
+    { layerId: 'layer-a', qty: 1, unitCostIrr: 100, totalCostIrr: 100 },
+    { layerId: 'layer-b', qty: 2, unitCostIrr: 300, totalCostIrr: 600 },
+  ]);
+
+  const final = selectUnreturnedSaleAllocations(original, 6, 4);
+  assert.deepEqual(final, [
+    { layerId: 'layer-a', qty: 4, unitCostIrr: 100, totalCostIrr: 400 },
+  ]);
+  assert.equal(first.reduce((sum, row) => sum + row.totalCostIrr, 0) +
+    second.reduce((sum, row) => sum + row.totalCostIrr, 0) +
+    final.reduce((sum, row) => sum + row.totalCostIrr, 0), 2000);
+});
+
 test('1. Balance Sheet Manual-vs-System Full Verification (Vouchers + Purchase + Sales Invoice + Inventory Deduction + Lineage)', () => {
   const ws = makeFreshCleanWorkspace();
 
@@ -775,13 +803,29 @@ test('6. Multi-Warehouse Physical/Reserved/Available/In-Transit, Tracked Transfe
   });
   const central = matrix.positions.find((p) => p.warehouse === 'انبار مرکزی');
   const shadabad = matrix.positions.find((p) => p.warehouse === 'انبار شادآباد');
-  assert.ok(central && shadabad);
+  const tabriz = matrix.positions.find((p) => p.warehouse === 'انبار تبریز');
+  assert.ok(central && shadabad && tabriz);
   assert.equal(central.physicalQty, 60);
   assert.equal(central.reservedQty, 15);
   assert.equal(central.availableToSellQty, 45);
   assert.equal(central.inTransitOutQty, 10);
   assert.equal(shadabad.physicalQty, 30);
-  assert.equal(matrix.totalPhysicalValuationIrr, 400_000_000);
+  assert.equal(tabriz.physicalQty, 0, 'Goods in transit must not be counted as destination physical stock before receipt');
+  assert.equal(tabriz.inTransitInQty, 10, 'Goods in transit must remain visible as expected inbound quantity');
+  assert.equal(matrix.warehouseSummaries.reduce((sum, row) => sum + row.totalPhysicalQty, 0), 90,
+    'Physical warehouse quantities exclude the 10 kg still in transit');
+  assert.equal(matrix.warehouseSummaries.find((row) => row.warehouse === 'انبار تبریز')?.totalValuationIrr, 40_000_000,
+    'In-transit valuation is attributed to the destination summary without physical quantity');
+  assert.equal(matrix.totalPhysicalValuationIrr, 400_000_000,
+    'The inventory asset valuation still includes the goods in transit');
+  assert.equal(matrix.totalInventoryValuationIrr, 400_000_000);
+  assert.equal(matrix.reconciliation.length, 1);
+  assert.equal(matrix.reconciliation[0].physicalQty, 90);
+  assert.equal(matrix.reconciliation[0].inTransitQty, 10);
+  assert.equal(matrix.reconciliation[0].accountedQty, 100);
+  assert.equal(matrix.reconciliation[0].accountedValueIrr, 400_000_000);
+  assert.equal(matrix.reconciliation[0].isBalanced, true,
+    'Physical plus in-transit FIFO layers must reconcile to product stock and inventory asset value');
 
   // Per-warehouse Kardex
   const shadKardex = computeWarehouseProductKardex({
@@ -804,6 +848,385 @@ test('6. Multi-Warehouse Physical/Reserved/Available/In-Transit, Tracked Transfe
   assert.equal(shortage.kind, 'shortage');
   assert.equal(shortage.varianceQty, -3);
   assert.equal(shortage.varianceValueIrr, -12_000_000);
+});
+
+test('A fully depleted transfer source remains visible and reconciles physical plus in-transit FIFO stock', () => {
+  const product: Product = {
+    id: 'prod_fully_transferred',
+    ownerId: 'owner_test',
+    sku: 'TRF-FULL',
+    name: 'کالای انتقال کامل',
+    category: 'آزمایشی',
+    unit: 'عدد',
+    warehouse: 'انبار مبدأ',
+    buyPrice: 200,
+    sellPrice: 300,
+    stock: 5,
+    reorderPoint: 0,
+    vatExempt: true,
+    inventoryValueIrr: 1_000,
+    costingMethod: 'fifo',
+    costLayers: [
+      { layerId: 'only_source_layer', date: '1405/01/01', sourceRef: 'purchase_full', warehouse: 'انبار مبدأ', originalQty: 5, remainingQty: 5, unitCostIrr: 200, totalCostIrr: 1_000 },
+    ],
+  };
+  const transfer = executeTrackedWarehouseTransfer({
+    product,
+    fromWarehouse: 'انبار مبدأ',
+    toWarehouse: 'انبار مقصد',
+    qty: 5,
+    date: '1405/01/02',
+    transferNumber: 'TRF-FULL-001',
+    mode: 'in_transit',
+    defaultCostingMethod: 'fifo',
+  });
+  const matrix = computeMultiWarehouseMatrix({
+    products: [transfer.updatedProduct],
+    transfers: [transfer.transferRecord],
+    defaultCostingMethod: 'fifo',
+  });
+  const source = matrix.positions.find((position) => position.warehouse === 'انبار مبدأ');
+  const destination = matrix.positions.find((position) => position.warehouse === 'انبار مقصد');
+  assert.ok(source && destination);
+  assert.equal(source.physicalQty, 0);
+  assert.equal(source.inTransitOutQty, 5);
+  assert.equal(destination.physicalQty, 0);
+  assert.equal(destination.inTransitInQty, 5);
+  assert.equal(matrix.reconciliation[0].isBalanced, true);
+  assert.equal(matrix.reconciliation[0].accountedQty, 5);
+  assert.equal(matrix.reconciliation[0].accountedValueIrr, 1_000);
+});
+
+test('Multi-warehouse reconciliation preserves fractional FIFO quantities', () => {
+  const product: Product = {
+    id: 'prod_fractional_fifo',
+    ownerId: 'owner_test',
+    sku: 'FRAC-01',
+    name: 'کالای کسری',
+    category: 'آزمایشی',
+    unit: 'کیلوگرم',
+    warehouse: 'انبار مرکزی',
+    buyPrice: 10_000,
+    sellPrice: 12_000,
+    stock: 0.1234,
+    reorderPoint: 0,
+    vatExempt: true,
+    inventoryValueIrr: 1_234,
+    costingMethod: 'fifo',
+    costLayers: [
+      { layerId: 'fractional_layer', date: '1405/01/01', sourceRef: 'purchase_fractional', warehouse: 'انبار مرکزی', originalQty: 0.1234, remainingQty: 0.1234, unitCostIrr: 10_000, totalCostIrr: 1_234 },
+    ],
+  };
+  const matrix = computeMultiWarehouseMatrix({ products: [product], defaultCostingMethod: 'fifo' });
+  assert.equal(matrix.positions[0].physicalQty, 0.1234);
+  assert.equal(matrix.reconciliation[0].physicalQty, 0.1234);
+  assert.equal(matrix.reconciliation[0].isBalanced, true);
+});
+
+test('Tracked warehouse transfer preserves fractional FIFO quantity through receipt', () => {
+  const product: Product = {
+    id: 'prod_fractional_transfer',
+    ownerId: 'owner_test',
+    sku: 'TRF-FRAC',
+    name: 'کالای وزنی کسری',
+    category: 'آزمایشی',
+    unit: 'کیلوگرم',
+    warehouse: 'انبار مبدأ',
+    buyPrice: 10_000,
+    sellPrice: 12_000,
+    stock: 0.1234,
+    reorderPoint: 0,
+    vatExempt: true,
+    inventoryValueIrr: 1_234,
+    costingMethod: 'fifo',
+    costLayers: [
+      { layerId: 'fractional_source_layer', date: '1405/01/01', sourceRef: 'PUR-FRAC', warehouse: 'انبار مبدأ', originalQty: 0.1234, remainingQty: 0.1234, unitCostIrr: 10_000, totalCostIrr: 1_234 },
+    ],
+  };
+  const dispatched = executeTrackedWarehouseTransfer({
+    product,
+    fromWarehouse: 'انبار مبدأ',
+    toWarehouse: 'انبار مقصد',
+    qty: 0.1234,
+    date: '1405/01/02',
+    transferNumber: 'TRF-FRAC-001',
+    transferId: 'trf_idempotent_test_001',
+    mode: 'in_transit',
+    defaultCostingMethod: 'fifo',
+    eventSequence: 21,
+    eventSequenceSource: 'sync',
+  });
+  assert.equal(dispatched.transferRecord.id, 'trf_idempotent_test_001');
+  assert.equal(dispatched.transferRecord.eventSequence, 21);
+  assert.equal(dispatched.transferRecord.eventSequenceSource, 'sync');
+  assert.equal(dispatched.plan.qty, 0.1234);
+  assert.equal(dispatched.transferRecord.qty, 0.1234);
+  assert.equal(dispatched.updatedProduct.stock, 0.1234);
+  assert.equal(dispatched.updatedProduct.inventoryValueIrr, 1_234);
+
+  const received = receiveTrackedWarehouseTransfer({
+    product: dispatched.updatedProduct,
+    transfer: dispatched.transferRecord,
+    receivedDate: '1405/01/03',
+    eventSequence: 22,
+    eventSequenceSource: 'sync',
+  });
+  assert.equal(received.updatedTransfer.status, 'received');
+  assert.equal(received.updatedTransfer.receivedEventSequence, 22);
+  assert.equal(received.updatedTransfer.receivedEventSequenceSource, 'sync');
+  const destinationKardex = computeWarehouseProductKardex({
+    product: received.updatedProduct,
+    warehouse: 'انبار مقصد',
+    invoices: [],
+    transfers: [received.updatedTransfer],
+  });
+  assert.equal(destinationKardex[0].inQty, 0.1234);
+  assert.equal(destinationKardex[0].balanceQty, 0.1234);
+  assert.equal(destinationKardex[0].eventSequence, 22);
+  assert.equal(destinationKardex[0].eventSequenceSource, 'sync');
+});
+
+test('Warehouse Kardex preserves four-decimal fractional quantities', () => {
+  const product: Product = {
+    id: 'prod_kardex_fractional',
+    ownerId: 'owner_test',
+    sku: 'KDX-FRAC',
+    name: 'کالای وزنی کسری',
+    category: 'آزمایشی',
+    unit: 'کیلوگرم',
+    warehouse: 'انبار مقصد',
+    buyPrice: 10_000,
+    sellPrice: 12_000,
+    stock: 0.1234,
+    reorderPoint: 0,
+    vatExempt: true,
+    inventoryValueIrr: 1_234,
+    costingMethod: 'fifo',
+    costLayers: [
+      { layerId: 'fractional_received', date: '1405/01/03', sourceRef: 'TRF-FRAC', warehouse: 'انبار مقصد', originalQty: 0.1234, remainingQty: 0.1234, unitCostIrr: 10_000, totalCostIrr: 1_234 },
+    ],
+  };
+  const kardex = computeWarehouseProductKardex({
+    product,
+    warehouse: 'انبار مقصد',
+    invoices: [],
+    transfers: [{
+      id: 'transfer_fractional',
+      transferNumber: 'TRF-FRAC',
+      date: '1405/01/02',
+      receivedDate: '1405/01/03',
+      productId: product.id,
+      sku: product.sku,
+      productName: product.name,
+      fromWarehouse: 'انبار مبدأ',
+      toWarehouse: 'انبار مقصد',
+      qty: 0.1234,
+      transferredCostIrr: 1_234,
+      transferredLayers: product.costLayers || [],
+      status: 'received',
+    }],
+  });
+  assert.equal(kardex.length, 1);
+  assert.equal(kardex[0].inQty, 0.1234);
+  assert.equal(kardex[0].balanceQty, 0.1234,
+    'Kardex running balances must preserve the same four-decimal precision as FIFO layers');
+});
+
+test('Same-day warehouse Kardex uses the shared event sequence and flags legacy ambiguity', () => {
+  const product: Product = {
+    id: 'prod_same_day_sequence', ownerId: 'owner_test', sku: 'SEQ-01',
+    name: 'کالای ترتیب رویداد', category: 'آزمایشی', unit: 'عدد',
+    warehouse: 'انبار مرکزی', buyPrice: 100, sellPrice: 150,
+    stock: 8, reorderPoint: 0, vatExempt: true, inventoryValueIrr: 800,
+    costingMethod: 'fifo',
+    costLayers: [
+      { layerId: 'seq-layer', date: '1405/01/01', sourceRef: 'PUR-SEQ', warehouse: 'انبار مرکزی',
+        originalQty: 10, remainingQty: 8, unitCostIrr: 100, totalCostIrr: 800 },
+    ],
+  };
+  const sale = {
+    id: 'sale-seq', ownerId: 'owner_test', invoiceNumber: 'S-SEQ',
+    invoiceType: 'sale' as const, date: '1405/02/01', eventSequence: 30,
+    partyId: 'party', partyName: 'مشتری', warehouse: 'انبار مرکزی',
+    subtotal: 300, discount: 0, vatAmount: 0, grandTotal: 300,
+    paidCash: 300, paidBank: 0, paidCheque: 0, creditAmount: 0,
+    status: 'issued' as const,
+    items: [{ productId: product.id, sku: product.sku, productName: product.name,
+      unit: 'عدد', quantity: 2, unitPrice: 150, unitCostSnapshot: 100,
+      totalCostIrr: 200, discount: 0, vatAmount: 0, lineTotal: 300 }],
+  };
+  const transfer = {
+    id: 'transfer-seq', transferNumber: 'TR-SEQ', date: '1405/02/01',
+    productId: product.id, sku: product.sku, productName: product.name,
+    fromWarehouse: 'انبار مرکزی', toWarehouse: 'انبار مقصد',
+    qty: 3, transferredCostIrr: 300, transferredLayers: [],
+    status: 'in_transit' as const, eventSequence: 20,
+  };
+  const ordered = computeWarehouseProductKardex({
+    product, warehouse: 'انبار مرکزی', invoices: [sale], transfers: [transfer],
+  });
+  assert.deepEqual(ordered.map((row) => row.movementType), ['transfer_out', 'sale']);
+  assert.deepEqual(ordered.map((row) => row.eventSequence), [20, 30]);
+  assert.equal(ordered.every((row) => !row.orderIsAmbiguous), true);
+
+  const synchronizedOffline = computeWarehouseProductKardex({
+    product, warehouse: 'انبار مرکزی',
+    invoices: [{ ...sale, eventSequenceSource: 'sync' }], transfers: [transfer],
+  });
+  assert.deepEqual(synchronizedOffline.map((row) => row.movementType), ['transfer_out', 'sale']);
+  assert.equal(synchronizedOffline.every((row) => row.orderIsAmbiguous), true,
+    'A trigger-assigned sequence must not be presented as original offline-device chronology');
+
+  const legacy = computeWarehouseProductKardex({
+    product, warehouse: 'انبار مرکزی',
+    invoices: [{ ...sale, eventSequence: undefined }],
+    transfers: [{ ...transfer, eventSequence: undefined }],
+  });
+  assert.equal(legacy.length, 2);
+  assert.equal(legacy.every((row) => row.orderIsAmbiguous), true,
+    'Same-day legacy events without a shared sequence must be visibly flagged');
+});
+
+test('Receiving an in-transit transfer moves only its exact FIFO layers and preserves valuation', () => {
+  const product: Product = {
+    id: 'prod_receive_transfer',
+    ownerId: 'owner_test',
+    sku: 'TRF-RCV',
+    name: 'کالای آزمایشی',
+    category: 'آزمایشی',
+    unit: 'عدد',
+    warehouse: 'انبار مرکزی',
+    buyPrice: 100,
+    sellPrice: 150,
+    stock: 8,
+    reorderPoint: 0,
+    vatExempt: true,
+    inventoryValueIrr: 1_000,
+    costingMethod: 'fifo',
+    costLayers: [
+      { layerId: 'source_remain', date: '1405/01/01', sourceRef: 'purchase_1', warehouse: 'انبار مرکزی', originalQty: 3, remainingQty: 3, unitCostIrr: 100, totalCostIrr: 300 },
+      { layerId: 'trf_transfer_1_purchase_2', date: '1405/01/02', sourceRef: 'purchase_2', warehouse: 'در راه → انبار مقصد', originalQty: 5, remainingQty: 5, unitCostIrr: 140, totalCostIrr: 700 },
+    ],
+  };
+  const transfer = {
+    id: 'transfer_1',
+    transferNumber: 'TRF-001',
+    date: '1405/01/02',
+    productId: product.id,
+    sku: product.sku,
+    productName: product.name,
+    fromWarehouse: 'انبار مرکزی',
+    toWarehouse: 'انبار مقصد',
+    qty: 5,
+    transferredCostIrr: 700,
+    transferredLayers: [
+      { layerId: 'trf_transfer_1_purchase_2', date: '1405/01/02', sourceRef: 'purchase_2', warehouse: 'انبار مقصد', originalQty: 5, remainingQty: 5, unitCostIrr: 140, totalCostIrr: 700 },
+    ],
+    status: 'in_transit' as const,
+  };
+
+  const received = receiveTrackedWarehouseTransfer({
+    product,
+    transfer,
+    receivedDate: '1405/01/03',
+  });
+  assert.equal(received.updatedTransfer.status, 'received');
+  assert.equal(received.updatedTransfer.receivedDate, '1405/01/03');
+  assert.equal(received.updatedProduct.stock, 8);
+  assert.equal(received.updatedProduct.inventoryValueIrr, 1_000);
+  assert.equal(received.updatedProduct.costLayers?.find((l) => l.layerId === 'trf_transfer_1_purchase_2')?.warehouse, 'انبار مقصد');
+  assert.equal(received.updatedProduct.costLayers?.find((l) => l.layerId === 'source_remain')?.warehouse, 'انبار مرکزی');
+  assert.equal(received.pnlImpactIrr, 0);
+
+  const destinationBeforeReceipt = computeWarehouseProductKardex({
+    product,
+    warehouse: 'انبار مقصد',
+    invoices: [],
+    transfers: [transfer],
+  });
+  assert.equal(destinationBeforeReceipt.length, 0,
+    'An in-transit transfer must not appear as a physical inbound Kardex movement before receipt');
+  const sourceDuringTransit = computeWarehouseProductKardex({
+    product,
+    warehouse: 'انبار مرکزی',
+    invoices: [],
+    transfers: [transfer],
+  });
+  assert.equal(sourceDuringTransit.length, 1);
+  assert.equal(sourceDuringTransit[0].movementType, 'transfer_out');
+  assert.equal(sourceDuringTransit[0].outQty, 5);
+
+  const destinationAfterReceipt = computeWarehouseProductKardex({
+    product: received.updatedProduct,
+    warehouse: 'انبار مقصد',
+    invoices: [],
+    transfers: [received.updatedTransfer],
+  });
+  assert.equal(destinationAfterReceipt.length, 1);
+  assert.equal(destinationAfterReceipt[0].movementType, 'transfer_in');
+  assert.equal(destinationAfterReceipt[0].date, '1405/01/03',
+    'The destination Kardex must record the physical receipt date, not dispatch date');
+  assert.equal(destinationAfterReceipt[0].inQty, 5);
+  assert.equal(destinationAfterReceipt[0].balanceQty, 5);
+
+  const sourceReconciliation = reconcileWarehouseKardex({
+    product,
+    warehouse: 'انبار مرکزی',
+    invoices: [],
+    transfers: [transfer],
+    openingQty: 8,
+    openingValueIrr: 1_000,
+    defaultCostingMethod: 'fifo',
+  });
+  assert.equal(sourceReconciliation.kardexQty, 3);
+  assert.equal(sourceReconciliation.physicalQty, 3);
+  assert.equal(sourceReconciliation.kardexValueIrr, 300);
+  assert.equal(sourceReconciliation.physicalValueIrr, 300);
+  assert.equal(sourceReconciliation.isBalanced, true,
+    'Source Kardex quantity and value must reconcile after transfer dispatch');
+
+  const destinationReconciliation = reconcileWarehouseKardex({
+    product: received.updatedProduct,
+    warehouse: 'انبار مقصد',
+    invoices: [],
+    transfers: [received.updatedTransfer],
+    openingQty: 0,
+    openingValueIrr: 0,
+    defaultCostingMethod: 'fifo',
+  });
+  assert.equal(destinationReconciliation.kardexQty, 5);
+  assert.equal(destinationReconciliation.physicalQty, 5);
+  assert.equal(destinationReconciliation.kardexValueIrr, 700);
+  assert.equal(destinationReconciliation.physicalValueIrr, 700);
+  assert.equal(destinationReconciliation.isBalanced, true,
+    'Destination Kardex must reconcile quantity and FIFO value on actual receipt');
+
+  const mismatchedOpening = reconcileWarehouseKardex({
+    product,
+    warehouse: 'انبار مرکزی',
+    invoices: [],
+    transfers: [transfer],
+    openingQty: 9,
+    openingValueIrr: 1_100,
+    defaultCostingMethod: 'fifo',
+  });
+  assert.equal(mismatchedOpening.isBalanced, false,
+    'Opening-balance discrepancies must be reported rather than silently normalized');
+  assert.equal(mismatchedOpening.isQuantityBalanced, false);
+  assert.equal(mismatchedOpening.isValueBalanced, false);
+
+  assert.throws(
+    () => receiveTrackedWarehouseTransfer({ product: received.updatedProduct, transfer: received.updatedTransfer, receivedDate: '1405/01/04' }),
+    /فقط انتقالی/
+  );
+  assert.throws(
+    () => receiveTrackedWarehouseTransfer({
+      product: { ...product, costLayers: product.costLayers?.filter((l) => l.layerId !== 'trf_transfer_1_purchase_2') },
+      transfer,
+      receivedDate: '1405/01/03',
+    }),
+    /لایه‌های انتقال/
+  );
 });
 
 // ============================================================================
@@ -1485,3 +1908,52 @@ async function run() {
 }
 
 run();
+
+test('Warehouse stocktake preserves four-decimal quantities and rejects invalid counts', () => {
+  const product: Product = {
+    id: 'prod_stocktake_fractional', ownerId: 'owner_test', sku: 'STK-004',
+    name: 'کالای شمارش کسری', category: 'آزمایشی', unit: 'کیلوگرم',
+    warehouse: 'انبار مرکزی', buyPrice: 1000, sellPrice: 1500, stock: 1,
+    reorderPoint: 0, vatExempt: true, inventoryValueIrr: 1000,
+    costingMethod: 'fifo',
+    costLayers: [{ layerId: 'stocktake_layer', date: '1405/01/01', sourceRef: 'opening',
+      warehouse: 'انبار مرکزی', originalQty: 1, remainingQty: 1, unitCostIrr: 1000, totalCostIrr: 1000 }],
+  };
+  const fractional = evaluateWarehouseShortageSurplus({ product, warehouse: 'انبار مرکزی', countedQty: 0.8765, defaultCostingMethod: 'fifo' });
+  assert.equal(fractional.bookQty, 1);
+  assert.equal(fractional.countedQty, 0.8765);
+  assert.equal(fractional.varianceQty, -0.1235);
+  assert.equal(fractional.kind, 'shortage');
+  assert.throws(() => evaluateWarehouseShortageSurplus({ product, warehouse: 'انبار مرکزی', countedQty: Number.NaN }), /متناهی و غیرمنفی/);
+  assert.throws(() => evaluateWarehouseShortageSurplus({ product, warehouse: 'انبار مرکزی', countedQty: -0.1 }), /متناهی و غیرمنفی/);
+});
+
+test('Warehouse matrix preserves four-decimal reserved and in-transit quantities', () => {
+  const product: Product = {
+    id: 'prod_matrix_fractional', ownerId: 'owner_test', sku: 'MAT-004',
+    name: 'کالای ماتریس کسری', category: 'آزمایشی', unit: 'کیلوگرم',
+    warehouse: 'انبار مبدأ', buyPrice: 1000, sellPrice: 1500, stock: 1,
+    reorderPoint: 0, vatExempt: true, inventoryValueIrr: 1000,
+    costingMethod: 'fifo',
+    costLayers: [
+      { layerId: 'matrix_source', date: '1405/01/01', sourceRef: 'opening', warehouse: 'انبار مبدأ', originalQty: 0.8766, remainingQty: 0.8766, unitCostIrr: 1000, totalCostIrr: 877 },
+      { layerId: 'matrix_transit', date: '1405/01/02', sourceRef: 'transfer', warehouse: 'در راه → انبار مقصد', originalQty: 0.1234, remainingQty: 0.1234, unitCostIrr: 1000, totalCostIrr: 123 },
+    ],
+  };
+  const transfer = {
+    id: 'matrix_transfer', transferNumber: 'MAT-TRF', date: '1405/01/02',
+    productId: product.id, sku: product.sku, productName: product.name,
+    fromWarehouse: 'انبار مبدأ', toWarehouse: 'انبار مقصد', qty: 0.1234,
+    transferredCostIrr: 123, transferredLayers: [], status: 'in_transit' as const,
+  };
+  const matrix = computeMultiWarehouseMatrix({
+    products: [product], transfers: [transfer],
+    reservedInvoiceItems: [{ productId: product.id, warehouse: 'انبار مبدأ', quantity: 0.1234 }],
+    defaultCostingMethod: 'fifo',
+  });
+  const source = matrix.positions.find((position) => position.warehouse === 'انبار مبدأ');
+  const destination = matrix.positions.find((position) => position.warehouse === 'انبار مقصد');
+  assert.equal(source?.reservedQty, 0.1234);
+  assert.equal(source?.availableToSellQty, 0.7532);
+  assert.equal(destination?.inTransitInQty, 0.1234);
+});

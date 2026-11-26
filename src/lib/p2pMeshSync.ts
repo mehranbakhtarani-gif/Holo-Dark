@@ -10,6 +10,15 @@ import {
 
 export type PeerLinkStatus = 'connected' | 'connecting' | 'offline' | 'error';
 
+/** Return operation IDs that may be ACKed only after their state was accepted locally. */
+export function getAcknowledgableMeshOperationIds(
+  operationIds: readonly string[],
+  stateApplied: boolean
+): string[] | null {
+  if (!stateApplied) return null;
+  return Array.from(new Set(operationIds.filter((id) => typeof id === 'string' && id.trim().length > 0)));
+}
+
 export interface MeshPeerRuntimeState {
   peerId: MeshDevicePeerId;
   shortLabel: string;
@@ -30,6 +39,20 @@ export interface MeshRelayEnvelope {
   requiredPeers: string[];
   createdAt: string;
   summary: string;
+}
+
+/** Replaces compacted relay metadata with a self-consistent full merged snapshot before forwarding. */
+export function hydrateCompactedRelayPayload<T extends { snapshotJson?: string; payloadHash: string }>(
+  item: T,
+  fallbackSnapshotJson: string,
+  fallbackPayloadHash: string
+): T {
+  if (item.snapshotJson && item.snapshotJson.length > 2) return item;
+  return {
+    ...item,
+    snapshotJson: fallbackSnapshotJson,
+    payloadHash: fallbackPayloadHash,
+  };
 }
 
 export interface MeshBatchConfig {
@@ -254,6 +277,8 @@ type MeshWireMessage =
       type: 'mesh:hello';
       fromPeerId: MeshDevicePeerId;
       authTag: string;
+      nonce: string;
+      issuedAt: string;
       updatedAt: string;
       payloadHash: string;
       vectorClock: Record<string, number>;
@@ -264,11 +289,15 @@ type MeshWireMessage =
       type: 'mesh:request_state';
       fromPeerId: MeshDevicePeerId;
       authTag: string;
+      nonce: string;
+      issuedAt: string;
     }
   | {
       type: 'mesh:state_payload';
       fromPeerId: MeshDevicePeerId;
       authTag: string;
+      nonce: string;
+      issuedAt: string;
       updatedAt: string;
       payloadHash: string;
       vectorClock: Record<string, number>;
@@ -280,10 +309,103 @@ type MeshWireMessage =
       type: 'mesh:ack';
       fromPeerId: MeshDevicePeerId;
       authTag: string;
+      nonce: string;
+      issuedAt: string;
       receivedOperationIds: string[];
       payloadHash: string;
       syncedAt: string;
     };
+
+type MeshAuthRecord = Record<string, unknown>;
+const MESH_MAX_MESSAGE_AGE_MS = 10 * 60 * 1000;
+const MESH_REPLAY_CACHE_KEY = 'holoo_apex_mesh_replay_nonces_v2';
+
+function createMeshNonce(): string {
+  const bytes = globalThis.crypto.getRandomValues(new Uint8Array(16));
+  return Array.from(bytes, (byte) => byte.toString(16).padStart(2, '0')).join('');
+}
+
+export function isFreshMeshWireMessage(message: MeshAuthRecord, nowMs = Date.now()): boolean {
+  if (typeof message.nonce !== 'string' || !/^[0-9a-f]{32}$/i.test(message.nonce)) return false;
+  if (typeof message.issuedAt !== 'string') return false;
+  const issuedAtMs = Date.parse(message.issuedAt);
+  return Number.isFinite(issuedAtMs) && Math.abs(nowMs - issuedAtMs) <= MESH_MAX_MESSAGE_AGE_MS;
+}
+
+function loadMeshReplayNonces(): Partial<Record<MeshDevicePeerId, string[]>> {
+  try {
+    const parsed: unknown = JSON.parse(localStorage.getItem(MESH_REPLAY_CACHE_KEY) || '{}');
+    if (!parsed || typeof parsed !== 'object' || Array.isArray(parsed)) return {};
+    const result: Partial<Record<MeshDevicePeerId, string[]>> = {};
+    for (const peerId of MESH_DEVICES.map((device) => device.peerId)) {
+      const values = (parsed as Record<string, unknown>)[peerId];
+      if (Array.isArray(values)) {
+        result[peerId] = values.filter((value): value is string =>
+          typeof value === 'string' && /^[0-9a-f]{32}$/i.test(value)
+        ).slice(-256);
+      }
+    }
+    return result;
+  } catch {
+    return {};
+  }
+}
+
+function persistMeshReplayNonce(peerId: MeshDevicePeerId, nonce: string): void {
+  try {
+    const stored = loadMeshReplayNonces();
+    stored[peerId] = [...(stored[peerId] || []).filter((value) => value !== nonce), nonce].slice(-256);
+    localStorage.setItem(MESH_REPLAY_CACHE_KEY, JSON.stringify(stored));
+  } catch {
+    // In-memory replay protection remains active when storage is unavailable.
+  }
+}
+
+
+function stableMeshAuthSerialize(value: unknown): string {
+  if (value === null || typeof value !== 'object') return JSON.stringify(value) ?? 'null';
+  if (Array.isArray(value)) return `[${value.map(stableMeshAuthSerialize).join(',')}]`;
+  const record = value as Record<string, unknown>;
+  const keys = Object.keys(record).filter((key) => record[key] !== undefined).sort();
+  return `{${keys.map((key) => `${JSON.stringify(key)}:${stableMeshAuthSerialize(record[key])}`).join(',')}}`;
+}
+
+export async function deriveMeshAuthKey(passphrase: string): Promise<CryptoKey> {
+  const clean = passphrase.trim();
+  if (clean.length < 16) throw new Error('Mesh passphrase must contain at least 16 characters.');
+  const cryptoApi = globalThis.crypto;
+  if (!cryptoApi?.subtle) throw new Error('Web Crypto is unavailable; secure mesh authentication is disabled.');
+  const material = await cryptoApi.subtle.importKey(
+    'raw', new TextEncoder().encode(clean), 'PBKDF2', false, ['deriveKey']
+  );
+  return cryptoApi.subtle.deriveKey(
+    { name: 'PBKDF2', salt: new TextEncoder().encode('holoo-mesh-p2p-auth-v2'), iterations: 310000, hash: 'SHA-256' },
+    material,
+    { name: 'HMAC', hash: 'SHA-256', length: 256 },
+    false,
+    ['sign', 'verify']
+  );
+}
+
+export async function signMeshWireMessage(message: MeshAuthRecord, key: CryptoKey): Promise<string> {
+  const body = { ...message };
+  delete body.authTag;
+  const signature = await globalThis.crypto.subtle.sign(
+    'HMAC', key, new TextEncoder().encode(stableMeshAuthSerialize(body))
+  );
+  return Array.from(new Uint8Array(signature), (byte) => byte.toString(16).padStart(2, '0')).join('');
+}
+
+export async function verifyMeshWireMessage(message: MeshAuthRecord, key: CryptoKey): Promise<boolean> {
+  const tag = message.authTag;
+  if (typeof tag !== 'string' || !/^[0-9a-f]{64}$/i.test(tag)) return false;
+  const body = { ...message };
+  delete body.authTag;
+  const signature = new Uint8Array(tag.match(/.{2}/g)!.map((byte) => Number.parseInt(byte, 16)));
+  return globalThis.crypto.subtle.verify(
+    'HMAC', key, signature, new TextEncoder().encode(stableMeshAuthSerialize(body))
+  );
+}
 
 const DEVICE_ROLE_STORAGE_KEY = 'holoo_apex_mesh_device_peer_id_v1';
 const MESH_PASSPHRASE_KEY = 'holoo_apex_mesh_passphrase_v1';
@@ -317,17 +439,17 @@ export function saveSelectedMeshPeerId(peerId: MeshDevicePeerId): void {
 export function loadMeshPassphrase(): string {
   try {
     const raw = localStorage.getItem(MESH_PASSPHRASE_KEY);
-    if (raw && raw.trim().length >= 4) return raw.trim();
+    if (raw && raw.trim().length >= 16) return raw.trim();
   } catch {
     // ignore
   }
-  return 'holoo-apex-private-mesh';
+  return '';
 }
 
 export function saveMeshPassphrase(passphrase: string): void {
   try {
     const clean = passphrase.trim();
-    if (clean.length >= 4) {
+    if (clean.length >= 16) {
       localStorage.setItem(MESH_PASSPHRASE_KEY, clean);
     }
   } catch {
@@ -358,20 +480,6 @@ export function getOtherMeshPeerIds(myPeerId: MeshDevicePeerId): MeshDevicePeerI
   return MESH_DEVICES.map((d) => d.peerId).filter((id) => id !== myPeerId);
 }
 
-/** Deterministic lightweight mesh auth tag derived from shared private mesh passphrase */
-export function computeMeshAuthTag(passphrase: string, namespace = 'holoo-mesh-v1'): string {
-  const input = `${namespace}::${passphrase.trim()}`;
-  let h1 = 0x811c9dc5;
-  let h2 = 0x9e3779b9;
-  for (let i = 0; i < input.length; i++) {
-    const c = input.charCodeAt(i);
-    h1 ^= c;
-    h1 = Math.imul(h1, 0x01000193);
-    h2 ^= (c + i) & 0xff;
-    h2 = Math.imul(h2, 0x85ebca6b);
-  }
-  return `mtag_${(h1 >>> 0).toString(16)}_${(h2 >>> 0).toString(16)}`;
-}
 
 // ==================== PEERJS 3-DEVICE MESH CONTROLLER ====================
 
@@ -390,7 +498,7 @@ export interface MeshSyncCallbacks {
     vectorClock: Record<string, number>;
     relayEnvelopes: MeshRelayEnvelope[];
     batchedOperationIds?: string[];
-  }) => Promise<string[]>;
+  }) => Promise<string[] | null>;
   onPeerAckReceived: (params: {
     fromPeerId: MeshDevicePeerId;
     receivedOperationIds: string[];
@@ -413,7 +521,8 @@ export class HolooPeerMeshManager {
   private peerLastHelloSent = new Map<MeshDevicePeerId, { hash: string; sentAt: number }>();
   private peerLastStateSent = new Map<MeshDevicePeerId, { hash: string; sentAt: number }>();
   private myPeerId: MeshDevicePeerId;
-  private authTag: string;
+  private authKeyPromise: Promise<CryptoKey> | null;
+  private seenMessageNonces = new Map<MeshDevicePeerId, Set<string>>();
   private callbacks: MeshSyncCallbacks;
   private batchConfig: MeshBatchConfig;
   private batcher: MeshUpdateBatcher;
@@ -430,7 +539,11 @@ export class HolooPeerMeshManager {
     batchConfig?: Partial<MeshBatchConfig>
   ) {
     this.myPeerId = myPeerId;
-    this.authTag = computeMeshAuthTag(passphrase);
+    this.authKeyPromise = passphrase.trim().length >= 16 ? deriveMeshAuthKey(passphrase) : null;
+    const replayCache = loadMeshReplayNonces();
+    for (const [peerId, nonces] of Object.entries(replayCache) as Array<[MeshDevicePeerId, string[]]>) {
+      this.seenMessageNonces.set(peerId, new Set(nonces));
+    }
     this.callbacks = callbacks;
     this.batchConfig = { ...DEFAULT_MESH_BATCH_CONFIG, ...(batchConfig || {}) };
     this.batcher = new MeshUpdateBatcher((batch) => {
@@ -451,6 +564,12 @@ export class HolooPeerMeshManager {
 
   public start(): void {
     if (this.destroyed || typeof window === 'undefined') return;
+    if (!this.authKeyPromise) {
+      this.selfOnline = false;
+      this.selfError = 'برای فعال‌سازی P2P، یک کلید مشترک تصادفی با حداقل ۱۶ نویسه در هر سه دستگاه تنظیم کنید.';
+      this.emitStatus();
+      return;
+    }
     if (this.peer && !this.peer.destroyed) return;
 
     this.selfError = null;
@@ -706,6 +825,38 @@ export class HolooPeerMeshManager {
     return sent;
   }
 
+  private async getAuthKey(): Promise<CryptoKey> {
+    if (!this.authKeyPromise) throw new Error('Secure mesh passphrase is not configured.');
+    return this.authKeyPromise;
+  }
+
+  private async createSignedMessage<T extends Record<string, unknown>>(
+    body: T
+  ): Promise<T & { authTag: string; nonce: string; issuedAt: string }> {
+    const key = await this.getAuthKey();
+    const signedBody = {
+      ...body,
+      nonce: createMeshNonce(),
+      issuedAt: new Date().toISOString(),
+    };
+    return { ...signedBody, authTag: await signMeshWireMessage(signedBody, key) };
+  }
+
+  private acceptMessageNonce(peerId: MeshDevicePeerId, nonce: string): boolean {
+    if (!isFreshMeshWireMessage({ nonce, issuedAt: new Date().toISOString() })) return false;
+    const seen = this.seenMessageNonces.get(peerId) || new Set<string>();
+    if (seen.has(nonce)) return false;
+    seen.add(nonce);
+    while (seen.size > 256) {
+      const oldest = seen.values().next().value as string | undefined;
+      if (!oldest) break;
+      seen.delete(oldest);
+    }
+    this.seenMessageNonces.set(peerId, seen);
+    persistMeshReplayNonce(peerId, nonce);
+    return true;
+  }
+
   private attachConnection(remotePeerId: MeshDevicePeerId, conn: DataConnection): void {
     const prev = this.connections.get(remotePeerId);
     if (prev && prev !== conn && prev.open) {
@@ -794,16 +945,15 @@ export class HolooPeerMeshManager {
       return false;
     }
 
-    const msg: MeshWireMessage = {
+    const msg: MeshWireMessage = await this.createSignedMessage({
       type: 'mesh:hello',
       fromPeerId: this.myPeerId,
-      authTag: this.authTag,
       updatedAt: local.updatedAt,
       payloadHash: local.payloadHash,
       vectorClock: local.vectorClock,
       pendingRelayIds: relaysForPeer.map((r) => r.operationId),
       batchedCount: opts?.batchedCount && opts.batchedCount > 1 ? opts.batchedCount : undefined,
-    };
+    });
     try {
       conn.send(msg);
       this.peerLastHelloSent.set(remotePeerId, { hash: local.payloadHash, sentAt: nowMs });
@@ -851,17 +1001,16 @@ export class HolooPeerMeshManager {
       ])
     );
 
-    const msg: MeshWireMessage = {
+    const msg: MeshWireMessage = await this.createSignedMessage({
       type: 'mesh:state_payload',
       fromPeerId: this.myPeerId,
-      authTag: this.authTag,
       updatedAt: local.updatedAt,
       payloadHash: local.payloadHash,
       vectorClock: local.vectorClock,
       snapshotJson: local.snapshotJson,
       relayEnvelopes,
       batchedOperationIds: batchedOpIds.length > 0 ? batchedOpIds : undefined,
-    };
+    });
     try {
       conn.send(msg);
       this.peerLastStateSent.set(remotePeerId, { hash: local.payloadHash, sentAt: nowMs });
@@ -897,8 +1046,15 @@ export class HolooPeerMeshManager {
     if (!raw || typeof raw !== 'object') return;
     const msg = raw as MeshWireMessage;
 
-    // Strict mesh authentication check — drop unauthorized external peers immediately
-    if (msg.authTag !== this.authTag || msg.fromPeerId !== remotePeerId) {
+    // Verify every wire-message field with HMAC-SHA-256; fail closed on tampering.
+    const authKey = await this.getAuthKey().catch(() => null);
+    const authRecord = msg as unknown as MeshAuthRecord;
+    const validSignature = authKey
+      ? await verifyMeshWireMessage(authRecord, authKey).catch(() => false)
+      : false;
+    const freshMessage = isFreshMeshWireMessage(authRecord);
+    const unseenNonce = freshMessage && this.acceptMessageNonce(remotePeerId, String(authRecord.nonce));
+    if (!validSignature || !freshMessage || !unseenNonce || msg.fromPeerId !== remotePeerId) {
       this.updatePeerState(remotePeerId, {
         status: 'error',
         lastError: 'کلید امنیتی شبکه ۳ دستگاه مطابقت ندارد',
@@ -961,11 +1117,10 @@ export class HolooPeerMeshManager {
       }
 
       if (decision.shouldRequestRemoteState && conn.open) {
-        conn.send({
+        conn.send(await this.createSignedMessage({
           type: 'mesh:request_state',
           fromPeerId: this.myPeerId,
-          authTag: this.authTag,
-        } satisfies MeshWireMessage);
+        }));
       }
 
       if (decision.shouldSendLocalState) {
@@ -991,17 +1146,28 @@ export class HolooPeerMeshManager {
             ? msg.batchedOperationIds
             : undefined,
         });
+        if (receivedOpIds === null) {
+          this.emitSyncEvent({
+            peerId: remotePeerId,
+            eventType: 'state_pull',
+            status: 'failed',
+            direction: 'inbound',
+            remoteVectorClock: msg.vectorClock || {},
+            summary: `وضعیت دریافتی از «${resolvePeerShortLabel(remotePeerId)}» پذیرفته نشد؛ ACK ارسال نشد و فرستنده باید عملیات را در صف نگه دارد.`,
+            errorDetail: 'remote state was not applied',
+          });
+          return;
+        }
         this.peerLastAckedHash.set(remotePeerId, msg.payloadHash);
         this.updatePeerState(remotePeerId, { lastSyncedAt: nowIso });
         if (conn.open) {
-          conn.send({
+          conn.send(await this.createSignedMessage({
             type: 'mesh:ack',
             fromPeerId: this.myPeerId,
-            authTag: this.authTag,
             receivedOperationIds: receivedOpIds,
             payloadHash: msg.payloadHash,
             syncedAt: nowIso,
-          } satisfies MeshWireMessage);
+          }));
         }
       } catch (err) {
         this.emitSyncEvent({

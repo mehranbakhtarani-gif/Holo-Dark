@@ -490,6 +490,13 @@ export const UNIVERSAL_IMPORT_SCHEMAS: Record<UniversalImportEntity, UniversalEn
         aliases: ['نوع فاکتور', 'نوع', 'type', 'invoice type'],
       },
       {
+        key: 'sourceInvoiceNumber',
+        label: 'شماره فاکتور مرجع برگشت',
+        hint: 'برای برگشت از فروش یا خرید، شماره فاکتور اصلی را وارد کنید',
+        example: 'F-1405-101',
+        aliases: ['شماره فاکتور مرجع', 'فاکتور مرجع', 'شماره فاکتور اصلی', 'source invoice number', 'source invoice'],
+      },
+      {
         key: 'date',
         label: 'تاریخ فاکتور',
         hint: 'فرمت شمسی ۱۴۰۵/۰۵/۱۴',

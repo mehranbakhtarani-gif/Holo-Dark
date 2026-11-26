@@ -48,8 +48,12 @@ import {
 } from '../lib/documentVault';
 import { computeFinancialForecast } from '../lib/financialForecastEngine';
 import { formatMoney, formatNumber, toPersianDigits } from '../lib/format';
-import { computeMultiWarehouseMatrix, loadTrackedWarehouseTransfers } from '../lib/multiWarehouseEngine';
+import {
+  computeMultiWarehouseMatrix,
+  TrackedWarehouseTransfer,
+} from '../lib/multiWarehouseEngine';
 import { useWorkspaceExtensions } from '../context/WorkspaceExtensionsContext';
+import { createTrackedWarehouseTransferAtomic, receiveTrackedWarehouseTransferAtomic } from '../lib/firebase';
 
 export type EnterpriseControlTab =
   | 'independent_audit'
@@ -120,7 +124,7 @@ export const EnterpriseControlPanels: React.FC<{ activeTab: EnterpriseControlTab
     commitHolo203Migration,
     showToast,
   } = useAccounting();
-  const { reservedInvoices } = useWorkspaceExtensions();
+  const { reservedInvoices, trackedWarehouseTransfers } = useWorkspaceExtensions();
 
   const unit = profile.currencyUnit;
 
@@ -384,6 +388,16 @@ export const EnterpriseControlPanels: React.FC<{ activeTab: EnterpriseControlTab
     [trialBalance, vouchers, invoices, cheques, products]
   );
 
+  const [newTransferProductId, setNewTransferProductId] = useState('');
+  const [newTransferFrom, setNewTransferFrom] = useState('');
+  const [newTransferTo, setNewTransferTo] = useState('');
+  const [newTransferQty, setNewTransferQty] = useState('');
+  const [newTransferDate, setNewTransferDate] = useState(() => new Date().toISOString().slice(0, 10));
+  const [creatingTransfer, setCreatingTransfer] = useState(false);
+  const trackedTransfers = trackedWarehouseTransfers;
+  const [transferReceivedDate, setTransferReceivedDate] = useState(() => new Date().toISOString().slice(0, 10));
+  const [receivingTransferId, setReceivingTransferId] = useState<string | null>(null);
+
   const multiWarehouse = useMemo(
     () =>
       computeMultiWarehouseMatrix({
@@ -397,11 +411,65 @@ export const EnterpriseControlPanels: React.FC<{ activeTab: EnterpriseControlTab
           }))
         ),
         importDossiers,
-        transfers: loadTrackedWarehouseTransfers(),
+        transfers: trackedTransfers,
         defaultCostingMethod: profile.defaultCostingMethod || 'moving_average',
       }),
-    [products, salesOrders, reservedInvoices, importDossiers, profile.defaultCostingMethod]
+    [products, salesOrders, reservedInvoices, importDossiers, trackedTransfers, profile.defaultCostingMethod]
   );
+
+  const handleCreateWarehouseTransfer = async () => {
+    if (!activeOperator.active || activeOperator.permissions?.canEditInventory !== true) {
+      showToast('اپراتور فعال مجوز انتقال انبار را ندارد.', 'error'); return;
+    }
+    const product = products.find((item) => item.id === newTransferProductId);
+    const qty = Number(newTransferQty);
+    if (!product || !newTransferFrom.trim() || !newTransferTo.trim()
+        || newTransferFrom.trim() === newTransferTo.trim() || !Number.isFinite(qty) || qty <= 0 || !newTransferDate) {
+      showToast('کالا، انبار مبدأ و مقصد، مقدار و تاریخ انتقال را بررسی کنید.', 'error'); return;
+    }
+    setCreatingTransfer(true);
+    try {
+      const transferId = `trf_${crypto.randomUUID().replace(/-/g, '')}`;
+      const transferNumber = `TR-${Date.now()}`;
+      await createTrackedWarehouseTransferAtomic({
+        productId: product.id, transferId, transferNumber,
+        fromWarehouse: newTransferFrom.trim(), toWarehouse: newTransferTo.trim(),
+        qty, date: newTransferDate.replace(/-/g, '/'), operatorName: activeOperator.fullName || '',
+      });
+      showToast(`حواله ${transferNumber} ثبت شد؛ لایه‌های FIFO به وضعیت در راه منتقل شدند.`, 'success');
+      setNewTransferQty('');
+    } catch (error) {
+      showToast(error instanceof Error ? error.message : 'ثبت حواله انتقال ناموفق بود.', 'error');
+    } finally { setCreatingTransfer(false); }
+  };
+
+  const handleReceiveWarehouseTransfer = async (transfer: TrackedWarehouseTransfer) => {
+    if (!activeOperator.active || activeOperator.permissions?.canEditInventory !== true) {
+      showToast('اپراتور فعال مجوز دریافت انتقال انبار را ندارد.', 'error');
+      return;
+    }
+    const product = products.find((item) => item.id === transfer.productId);
+    if (!product) {
+      showToast('کالای مرتبط با این انتقال یافت نشد؛ دریافت انجام نشد.', 'error');
+      return;
+    }
+    setReceivingTransferId(transfer.id);
+    try {
+      await receiveTrackedWarehouseTransferAtomic({
+        productId: product.id,
+        transferId: transfer.id,
+        receivedDate: transferReceivedDate,
+      });
+      showToast(
+        `انتقال ${transfer.transferNumber} دریافت شد؛ موجودی کل و ارزش ریالی بدون تغییر ماند.`,
+        'success'
+      );
+    } catch (error) {
+      showToast(error instanceof Error ? error.message : 'دریافت انتقال ناموفق بود.', 'error');
+    } finally {
+      setReceivingTransferId(null);
+    }
+  };
 
   // ==================== RENDER BY TAB ====================
 
@@ -1193,6 +1261,81 @@ export const EnterpriseControlPanels: React.FC<{ activeTab: EnterpriseControlTab
         ))}
       </div>
 
+      <div className="bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-800 rounded-xl p-4 space-y-3">
+      <div className="bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-800 rounded-xl p-4 space-y-3">
+        <div className="font-bold text-slate-900 dark:text-white">ثبت حواله انتقال بین انبارها</div>
+        <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-3 text-[11px]">
+          <label className="space-y-1"><span className="text-slate-500">کالا</span>
+            <select value={newTransferProductId} onChange={(e) => setNewTransferProductId(e.target.value)} className="w-full rounded-lg border border-slate-200 dark:border-slate-700 bg-white dark:bg-slate-950 p-2">
+              <option value="">انتخاب کالا</option>
+              {products.map((p) => <option key={p.id} value={p.id}>{p.sku} — {p.name}</option>)}
+            </select>
+          </label>
+          <label className="space-y-1"><span className="text-slate-500">انبار مبدأ</span><input value={newTransferFrom} onChange={(e) => setNewTransferFrom(e.target.value)} maxLength={120} placeholder="انبار مبدأ" className="w-full rounded-lg border border-slate-200 dark:border-slate-700 bg-white dark:bg-slate-950 p-2" /></label>
+          <label className="space-y-1"><span className="text-slate-500">انبار مقصد</span><input value={newTransferTo} onChange={(e) => setNewTransferTo(e.target.value)} maxLength={120} placeholder="انبار مقصد" className="w-full rounded-lg border border-slate-200 dark:border-slate-700 bg-white dark:bg-slate-950 p-2" /></label>
+          <label className="space-y-1"><span className="text-slate-500">مقدار انتقال</span><input type="number" min="0.0001" step="0.0001" value={newTransferQty} onChange={(e) => setNewTransferQty(e.target.value)} placeholder="مقدار" className="w-full rounded-lg border border-slate-200 dark:border-slate-700 bg-white dark:bg-slate-950 p-2" /></label>
+          <label className="space-y-1"><span className="text-slate-500">تاریخ حواله</span><input type="date" value={newTransferDate} onChange={(e) => setNewTransferDate(e.target.value)} className="w-full rounded-lg border border-slate-200 dark:border-slate-700 bg-white dark:bg-slate-950 p-2" /></label>
+          <div className="flex items-end"><button type="button" disabled={creatingTransfer} onClick={() => void handleCreateWarehouseTransfer()} className="w-full rounded-lg bg-indigo-700 hover:bg-indigo-800 disabled:opacity-40 text-white font-semibold p-2">{creatingTransfer ? 'در حال ثبت حواله…' : 'ثبت حواله و انتقال FIFO'}</button></div>
+        </div>
+        <p className="text-[10px] text-slate-500">ثبت حواله، کسر موجودی انبار مبدأ و انتقال لایه‌های بهای تمام‌شده به وضعیت «در راه» در یک تراکنش سرور انجام می‌شود؛ موجودی و ارزش کل کالا ثابت می‌ماند.</p>
+      </div>
+
+        <div className="flex flex-wrap items-center justify-between gap-3">
+          <div className="font-bold text-slate-900 dark:text-white">دریافت انتقال‌های بین‌انبارِ در راه</div>
+          <label className="flex items-center gap-2 text-[11px] text-slate-500">
+            تاریخ دریافت
+            <input
+              type="date"
+              value={transferReceivedDate}
+              onChange={(event) => setTransferReceivedDate(event.target.value)}
+              className="px-2 py-1.5 rounded-lg border border-slate-200 dark:border-slate-700 bg-white dark:bg-slate-950"
+            />
+          </label>
+        </div>
+        {trackedTransfers.filter((transfer) => transfer.status === 'in_transit').length === 0 ? (
+          <div className="text-center text-slate-400 py-4">انتقالِ در راهی برای دریافت وجود ندارد.</div>
+        ) : (
+          <div className="overflow-x-auto">
+            <table className="w-full text-right text-[11px] border-collapse">
+              <thead>
+                <tr className="border-b border-slate-200 dark:border-slate-800 text-slate-500">
+                  <th className="py-2 px-2">شماره انتقال</th>
+                  <th className="py-2 px-2">کالا</th>
+                  <th className="py-2 px-2">مبدأ ← مقصد</th>
+                  <th className="py-2 px-2 text-left">مقدار</th>
+                  <th className="py-2 px-2 text-left">ارزش ریالی</th>
+                  <th className="py-2 px-2">عملیات</th>
+                </tr>
+              </thead>
+              <tbody className="divide-y divide-slate-100 dark:divide-slate-800">
+                {trackedTransfers.filter((transfer) => transfer.status === 'in_transit').map((transfer) => (
+                  <tr key={transfer.id}>
+                    <td className="py-2 px-2 font-code">{transfer.transferNumber}</td>
+                    <td className="py-2 px-2">{transfer.productName}</td>
+                    <td className="py-2 px-2">{transfer.fromWarehouse} ← {transfer.toWarehouse}</td>
+                    <td className="py-2 px-2 text-left font-code">{formatNumber(transfer.qty)}</td>
+                    <td className="py-2 px-2 text-left font-code">{formatMoney(transfer.transferredCostIrr, unit)}</td>
+                    <td className="py-2 px-2 text-center">
+                      <button
+                        type="button"
+                        disabled={receivingTransferId !== null || !transferReceivedDate}
+                        onClick={() => void handleReceiveWarehouseTransfer(transfer)}
+                        className="px-3 py-1.5 rounded-lg bg-teal-700 hover:bg-teal-800 disabled:opacity-40 text-white font-semibold whitespace-nowrap"
+                      >
+                        {receivingTransferId === transfer.id ? 'در حال ثبت…' : 'ثبت دریافت'}
+                      </button>
+                    </td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
+        )}
+        <p className="text-[10px] text-slate-500">
+          دریافت فقط محل لایه‌های بهای تمام‌شدهٔ همان انتقال را تغییر می‌دهد؛ مقدار کل موجودی، ارزش موجودی و سود و زیان ثابت می‌مانند.
+        </p>
+      </div>
+
       {/* Inventory Stagnant & Multi-Warehouse Summary */}
       <div className="grid grid-cols-1 lg:grid-cols-2 gap-4">
         <div className="bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-800 rounded-xl p-4 space-y-2">
@@ -1200,6 +1343,24 @@ export const EnterpriseControlPanels: React.FC<{ activeTab: EnterpriseControlTab
             <FileCheck2 className="w-4 h-4 text-teal-700 dark:text-teal-400" />
             <span>وضعیت چندانباره (فیزیکی / رزروشده / قابل فروش / در راه)</span>
           </div>
+          <div className={`rounded-lg border px-3 py-2 text-[11px] flex flex-wrap items-center justify-between gap-2 ${multiWarehouse.reconciliation.every((row) => row.isBalanced) ? 'border-emerald-200 bg-emerald-50/60 text-emerald-800 dark:border-emerald-900 dark:bg-emerald-950/20 dark:text-emerald-300' : 'border-amber-300 bg-amber-50 text-amber-900 dark:border-amber-900 dark:bg-amber-950/20 dark:text-amber-300'}`}>
+            <span className="font-semibold">
+              {multiWarehouse.reconciliation.every((row) => row.isBalanced)
+                ? 'تطبیق موجودی و ارزش FIFO برقرار است'
+                : `مغایرت در ${toPersianDigits(multiWarehouse.reconciliation.filter((row) => !row.isBalanced).length)} کالا شناسایی شد`}
+            </span>
+            <span>ارزش کل موجودی (با احتساب کالای در راه): {formatMoney(multiWarehouse.totalInventoryValuationIrr, unit)}</span>
+          </div>
+          {multiWarehouse.reconciliation.some((row) => !row.isBalanced) && (
+            <div className="rounded-lg border border-amber-200 dark:border-amber-900 p-2 space-y-1 text-[10px]">
+              {multiWarehouse.reconciliation.filter((row) => !row.isBalanced).slice(0, 5).map((row) => (
+                <div key={row.productId} className="flex flex-wrap justify-between gap-2">
+                  <span>{row.sku}</span>
+                  <span>اختلاف مقدار: {formatNumber(row.quantityDifference)} · اختلاف ارزش: {formatMoney(row.valueDifferenceIrr, unit)}</span>
+                </div>
+              ))}
+            </div>
+          )}
           <div className="overflow-x-auto">
             <table className="w-full text-right text-[11px] border-collapse">
               <thead>

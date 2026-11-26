@@ -1,5 +1,7 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { useAccounting } from '../context/AccountingContext';
+import { useWorkspaceExtensions } from '../context/WorkspaceExtensionsContext';
+import type { TrackedWarehouseTransfer } from '../lib/multiWarehouseEngine';
 import { useOnlineStatus } from './usePWAInstall';
 import {
   appendMeshSyncEventLog,
@@ -8,6 +10,7 @@ import {
   clearStoredDirectoryHandle,
   clearSyncedDexieOutboxItems,
   enqueueDexieOutboxItem,
+  enqueueDexieOutboxItemDurably,
   isDirectoryPickerSupported,
   listDexieOutboxItems,
   listMeshSyncEventLogs,
@@ -21,6 +24,7 @@ import {
   readMirrorFromSelectedFolder,
   requestDirectoryPermission,
   requestPersistentDeviceStorage,
+  safeParseJsonObject,
   saveSnapshotFallbackToDownloads,
   tagSnapshotWithSyncMetadata,
   updateDexieOutboxItem,
@@ -34,9 +38,11 @@ import {
 import {
   buildRelayEnvelopesFromOutbox,
   getOtherMeshPeerIds,
+  hydrateCompactedRelayPayload,
   loadMeshPassphrase,
   loadSelectedMeshPeerId,
   loadVectorClock,
+  getAcknowledgableMeshOperationIds,
   PeerMeshConnector,
   saveMeshPassphrase,
   saveSelectedMeshPeerId,
@@ -88,10 +94,17 @@ export function useLocalFirstMeshSync() {
     deviceId,
     setDeviceLabel,
     exportBackupJson,
-    importBackupJson,
+    importBackupJsonDurably,
     logActivity,
     showToast,
   } = useAccounting();
+
+  const {
+    trackedWarehouseTransfers,
+    updateExtensions,
+  } = useWorkspaceExtensions();
+  const latestTrackedTransfersRef = useRef(trackedWarehouseTransfers);
+  latestTrackedTransfersRef.current = trackedWarehouseTransfers;
 
   const isOnline = useOnlineStatus();
 
@@ -167,8 +180,8 @@ export function useLocalFirstMeshSync() {
   const latestExportRef = useRef(exportBackupJson);
   latestExportRef.current = exportBackupJson;
 
-  const latestImportRef = useRef(importBackupJson);
-  latestImportRef.current = importBackupJson;
+  const latestDurableImportRef = useRef(importBackupJsonDurably);
+  latestDurableImportRef.current = importBackupJsonDurably;
 
   const latestCountsRef = useRef({
     vouchers: vouchers.length,
@@ -232,7 +245,11 @@ export function useLocalFirstMeshSync() {
 
   // ---- Helper: Build tagged local snapshot ----
   const buildTaggedSnapshot = useCallback(() => {
-    const raw = latestExportRef.current();
+    const accountingSnapshot = safeParseJsonObject(latestExportRef.current()) || {};
+    const raw = JSON.stringify({
+      ...accountingSnapshot,
+      trackedWarehouseTransfers: latestTrackedTransfersRef.current,
+    });
     const nowIso = new Date().toISOString();
     const tagged = tagSnapshotWithSyncMetadata(raw, activeDeviceIdentity, nowIso);
     const payloadHash = computePayloadFingerprint(raw);
@@ -368,6 +385,7 @@ export function useLocalFirstMeshSync() {
             Array.isArray(batchedOperationIds) ? batchedOperationIds : []
           );
           const otherPeers = getOtherMeshPeerIds(selectedPeerId);
+          const relayOutboxItems: Array<Omit<MeshSyncOutboxItem, 'id' | 'createdAt' | 'updatedAt'>> = [];
           for (const env of relayEnvelopes) {
             if (!env?.operationId) continue;
             ackedOpIdSet.add(env.operationId);
@@ -392,13 +410,13 @@ export function useLocalFirstMeshSync() {
               (p) => p !== selectedPeerId && !deliveredSet.has(p)
             );
             if (stillNeededForOthers.length > 0) {
-              await enqueueDexieOutboxItem({
+              relayOutboxItems.push({
                 operationId: env.operationId,
                 target: 'p2p_mesh',
                 originDeviceId: env.originDeviceId || fromPeerId,
                 summary: `رله سه‌دستگاهی از ${MESH_DEVICES.find((d) => d.peerId === fromPeerId)?.shortLabel || fromPeerId}: ${env.summary}`,
                 payloadHash: env.payloadHash,
-                snapshotJson: env.snapshotJson || currentMergedJson,
+                snapshotJson: env.snapshotJson || '',
                 deliveredToPeers: Array.from(deliveredSet),
                 requiredPeers: stillNeededForOthers,
                 status: 'pending',
@@ -410,6 +428,17 @@ export function useLocalFirstMeshSync() {
               });
             }
           }
+          // Compaction intentionally strips redundant snapshots. Before relaying those
+          // operation IDs onward, attach the final merged state and its matching fingerprint.
+          const mergedRelayPayloadHash = computePayloadFingerprint(currentMergedJson);
+          for (let i = 0; i < relayOutboxItems.length; i += 1) {
+            relayOutboxItems[i] = hydrateCompactedRelayPayload(
+              relayOutboxItems[i],
+              currentMergedJson,
+              mergedRelayPayloadHash
+            );
+          }
+
           const ackedOpIds = Array.from(ackedOpIdSet);
 
           const peerLabel =
@@ -417,6 +446,7 @@ export function useLocalFirstMeshSync() {
 
           // Respect interactive or saved-default conflict resolution when concurrent edits collide
           let autoConflictNote: string | null = null;
+          let keepLocalByPolicy = false;
           if (totalConflicts > 0) {
             const savedMode = loadSyncConflictDefaultMode();
             const decision = resolveConflictDecision(savedMode);
@@ -458,10 +488,11 @@ export function useLocalFirstMeshSync() {
                 summary: `تداخل در ${toPersianDigits(conflictSummary.totalConflictingDocs)} سند با «${peerLabel}» شناسایی شد و در انتظار تصمیم کاربر قرار گرفت.`,
               });
               await refreshOutboxAndLogs();
-              return [];
+              return null;
             }
 
             if (decision.autoResolved && decision.choice === 'keep_local') {
+              keepLocalByPolicy = true;
               anyChanged = false;
               autoConflictNote = `تداخل با «${peerLabel}» به‌صورت خودکار حل شد (پیش‌فرض ذخیره‌شده: حفظ آخرین تغییر محلی).`;
               logActivity('همگام‌سازی P2P (Mesh)', 'حل خودکار تداخل (حفظ محلی)', autoConflictNote);
@@ -474,24 +505,53 @@ export function useLocalFirstMeshSync() {
             }
           }
 
-          // 3) Advance vector clock deterministically
-          const nextClock: Record<string, number> = { ...vectorClockRef.current };
-          for (const [k, v] of Object.entries(remoteClock || {})) {
-            const num = Number(v) || 0;
-            if (num > (nextClock[k] || 0)) {
-              nextClock[k] = num;
-            }
-          }
-          vectorClockRef.current = nextClock;
-          setVectorClock(nextClock);
-          saveVectorClock(nextClock);
-
           if (anyChanged) {
             // Anti-loop guard: suppress local mutation echo during remote import
             isRemoteUpdateRef.current = true;
             try {
-              const ok = latestImportRef.current(currentMergedJson);
-              if (ok) {
+              const ok = await latestDurableImportRef.current(currentMergedJson);
+              if (!ok) {
+                await recordSyncEvent({
+                  eventId: `mevt_import_failed_${Date.now()}_${Math.random().toString(36).slice(2, 7)}`,
+                  timestamp: new Date().toISOString(),
+                  peerId: fromPeerId,
+                  peerLabel,
+                  eventType: 'state_pull',
+                  status: 'failed',
+                  direction: 'inbound',
+                  localVectorClock: { ...vectorClockRef.current },
+                  remoteVectorClock: { ...(remoteClock || {}) },
+                  summary: `اعمال وضعیت دریافتی از «${peerLabel}» ناموفق بود؛ ACK ارسال نشد تا عملیات در صف فرستنده باقی بماند.`,
+                  errorDetail: 'importBackupJson returned false',
+                });
+                await refreshOutboxAndLogs();
+                return getAcknowledgableMeshOperationIds(ackedOpIds, false);
+              }
+              {
+                const mergedSnapshot = safeParseJsonObject(currentMergedJson);
+                if (mergedSnapshot && Array.isArray(mergedSnapshot.trackedWarehouseTransfers)) {
+                  const safeTransfers = mergedSnapshot.trackedWarehouseTransfers.filter((item): item is TrackedWarehouseTransfer => {
+                    if (!item || typeof item !== 'object') return false;
+                    const transfer = item as Partial<TrackedWarehouseTransfer>;
+                    return typeof transfer.id === 'string'
+                      && transfer.id.length > 0
+                      && typeof transfer.productId === 'string'
+                      && transfer.productId.length > 0
+                      && typeof transfer.transferNumber === 'string'
+                      && typeof transfer.fromWarehouse === 'string'
+                      && typeof transfer.toWarehouse === 'string'
+                      && Number.isFinite(Number(transfer.qty))
+                      && Number(transfer.qty) > 0
+                      && Number.isFinite(Number(transfer.transferredCostIrr))
+                      && Number(transfer.transferredCostIrr) >= 0
+                      && Array.isArray(transfer.transferredLayers)
+                      && (transfer.status === 'in_transit' || transfer.status === 'received' || transfer.status === 'cancelled');
+                  }).slice(-100);
+                  updateExtensions((prev) => ({
+                    ...prev,
+                    trackedWarehouseTransfers: safeTransfers,
+                  }));
+                }
                 lastObservedFingerprintRef.current = computePayloadFingerprint(currentMergedJson);
                 const savedCount = await persistTaggedSnapshotToDexie(
                   currentMergedJson,
@@ -525,6 +585,47 @@ export function useLocalFirstMeshSync() {
             }
           }
 
+          // Relay only after the merged snapshot has been durably committed locally.
+          // If policy explicitly kept our local version, forward that winning version
+          // instead of forwarding the rejected incoming relay envelopes.
+          if (keepLocalByPolicy) {
+            const opId = `p2p_keep_local_relay_${selectedPeerId}_${fromPeerId}_${localBuilt.payloadHash}`;
+            await enqueueDexieOutboxItemDurably({
+              operationId: opId,
+              target: 'p2p_mesh',
+              originDeviceId: selectedPeerId,
+              summary: `رله نسخه محلی برنده پس از حل تعارض با ${peerLabel}`,
+              payloadHash: localBuilt.payloadHash,
+              snapshotJson: localBuilt.snapshotJson,
+              deliveredToPeers: [fromPeerId],
+              requiredPeers: otherPeers,
+              status: 'pending',
+              retryCount: 0,
+              errorMessage: null,
+              voucherCount: latestCountsRef.current.vouchers,
+              invoiceCount: latestCountsRef.current.invoices,
+              productCount: latestCountsRef.current.products,
+            });
+            connectorRef.current?.queueLocalUpdate(opId);
+          } else {
+            for (const relayItem of relayOutboxItems) {
+              await enqueueDexieOutboxItemDurably(relayItem);
+            }
+          }
+
+          // 3) Advance the vector clock only after the received state has been applied
+          // successfully (or no data change was required).
+          const nextClock: Record<string, number> = { ...vectorClockRef.current };
+          for (const [k, v] of Object.entries(remoteClock || {})) {
+            const num = Number(v) || 0;
+            if (num > (nextClock[k] || 0)) {
+              nextClock[k] = num;
+            }
+          }
+          vectorClockRef.current = nextClock;
+          setVectorClock(nextClock);
+          saveVectorClock(nextClock);
+
           await recordSyncEvent({
             eventId: `mevt_pull_${Date.now()}_${Math.random().toString(36).slice(2, 7)}`,
             timestamp: new Date().toISOString(),
@@ -545,25 +646,16 @@ export function useLocalFirstMeshSync() {
           });
 
           await refreshOutboxAndLogs();
-          return ackedOpIds;
+          return getAcknowledgableMeshOperationIds(ackedOpIds, true);
         } finally {
           setIsP2PSyncing(false);
         }
       },
       onPeerAckReceived: async ({ fromPeerId, receivedOperationIds }) => {
-        for (const opId of receivedOperationIds) {
+        // ACKs are operation-scoped: never infer delivery of unrelated pending outbox items
+        // from a peer's acknowledgement of a different batch or snapshot.
+        for (const opId of new Set(receivedOperationIds)) {
           await markDexieOutboxPeerDelivered(opId, fromPeerId);
-        }
-        // Also mark any pending p2p_mesh items whose payload is older than or equal to now as delivered to this peer
-        const currentItems = await listDexieOutboxItems();
-        for (const item of currentItems) {
-          if (
-            item.target === 'p2p_mesh' &&
-            item.status !== 'synced' &&
-            !item.deliveredToPeers.includes(fromPeerId)
-          ) {
-            await markDexieOutboxPeerDelivered(item.operationId, fromPeerId);
-          }
         }
         await refreshOutboxAndLogs();
       },
@@ -653,6 +745,8 @@ export function useLocalFirstMeshSync() {
         salesOrders.length,
         subcontractJobs.length,
         rbacOperators.length,
+        trackedWarehouseTransfers.length,
+        JSON.stringify(trackedWarehouseTransfers),
       ].join('|'),
     [
       profile.companyName,
@@ -673,6 +767,7 @@ export function useLocalFirstMeshSync() {
       salesOrders,
       subcontractJobs,
       rbacOperators,
+      trackedWarehouseTransfers,
     ]
   );
 
@@ -745,6 +840,7 @@ export function useLocalFirstMeshSync() {
     return () => window.clearTimeout(timer);
   }, [
     stateRevisionSignal,
+    trackedWarehouseTransfers,
     accounts,
     vouchers,
     invoices,
@@ -757,6 +853,7 @@ export function useLocalFirstMeshSync() {
     buildTaggedSnapshot,
     writeSnapshotToLocalFolder,
     refreshOutboxAndLogs,
+    trackedWarehouseTransfers,
   ]);
 
   // ==================== USER ACTIONS ====================
@@ -781,20 +878,32 @@ export function useLocalFirstMeshSync() {
 
       dirHandleRef.current = res.handle;
       const built = buildTaggedSnapshot();
-      const writeRes = await writeMirrorToSelectedFolder(res.handle, built.snapshotJson);
+      const writeOk = await writeSnapshotToLocalFolder(
+        built.snapshotJson,
+        built.payloadHash,
+        true
+      );
 
-      setLocalFolderStatus({
+      setLocalFolderStatus((prev) => ({
+        ...prev,
         supported: true,
         configured: true,
-        folderName: res.folderName || res.handle.name || 'Holoo_Data',
-        permission: 'granted',
-        lastMirroredAt: writeRes.mirroredAt || new Date().toISOString(),
-        lastDailySnapshotFile: writeRes.dailySnapshotFile || null,
-        lastError: writeRes.ok ? null : writeRes.error || null,
+        folderName: res.folderName || res.handle!.name || 'Holoo_Data',
+        permission: writeOk ? 'granted' : prev.permission,
+        lastMirroredAt: writeOk ? new Date().toISOString() : prev.lastMirroredAt,
+        lastError: writeOk ? null : prev.lastError || 'نوشتن فایل زنده در پوشه انتخابی ناموفق بود.',
         fallbackMode: false,
-      });
+      }));
 
-      // Mark any pending local_folder outbox items as synced
+      if (!writeOk) {
+        // The helper queues permission-blocked writes; never mark them delivered.
+        playErrorTone();
+        showToast('پوشه انتخاب شد، اما نوشتن فایل زنده کامل نشد؛ عملیات در صف باقی ماند.');
+        await refreshOutboxAndLogs();
+        return false;
+      }
+
+      // Mark pending local_folder outbox items as synced only after a confirmed write.
       const items = await listDexieOutboxItems();
       for (const item of items) {
         if (item.target === 'local_folder' && item.status !== 'synced') {
@@ -925,7 +1034,7 @@ export function useLocalFirstMeshSync() {
 
       isRemoteUpdateRef.current = true;
       try {
-        const imported = latestImportRef.current(merged.mergedSnapshotJson);
+        const imported = await latestDurableImportRef.current(merged.mergedSnapshotJson);
         if (!imported) {
           playErrorTone();
           showToast('ساختار فایل داخل پوشه انتخابی برای بازیابی معتبر نیست.');
@@ -1027,9 +1136,9 @@ export function useLocalFirstMeshSync() {
   const updateMeshPassphrase = useCallback(
     (passphrase: string) => {
       const clean = passphrase.trim();
-      if (clean.length < 4) {
+      if (clean.length < 16) {
         playWarningTone();
-        showToast('کلید امنیتی شبکه ۳ دستگاه باید حداقل ۴ کاراکتر باشد.');
+        showToast('کلید امنیتی شبکه ۳ دستگاه باید حداقل ۱۶ نویسه باشد.');
         return false;
       }
       saveMeshPassphrase(clean);
@@ -1179,7 +1288,7 @@ export function useLocalFirstMeshSync() {
         if (choice === 'restore_remote') {
           isRemoteUpdateRef.current = true;
           try {
-            const ok = latestImportRef.current(pendingMeshConflict.remoteSnapshotJson);
+            const ok = await latestDurableImportRef.current(pendingMeshConflict.remoteSnapshotJson);
             if (!ok) {
               playErrorTone();
               showToast('بازگردانی نسخه همتا ناموفق بود.');

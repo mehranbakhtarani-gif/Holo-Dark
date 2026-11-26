@@ -32,10 +32,19 @@ service cloud.firestore {
       return isVerified() && request.auth.uid == uid;
     }
 
+
+    // Freeze legacy client writes to core collections during final snapshot reconciliation.
+    function coreWritesOpen(uid) {
+      return !exists(/databases/$(database)/documents/workspaceMigrations/$(uid))
+        || get(/databases/$(database)/documents/workspaceMigrations/$(uid)).data.coreWritesFrozen != true;
+    }
+
     function isAdmin() {
+      // Admin status must come from a server-managed custom claim or a server-provisioned
+      // admins/{uid} document. A hard-coded email address is not an authorization source.
       return isVerified() && (
-        exists(/databases/$(database)/documents/admins/$(request.auth.uid)) ||
-        request.auth.token.email == 'mehranbakhtarani@gmail.com'
+        (('admin' in request.auth.token) && request.auth.token.admin == true) ||
+        exists(/databases/$(database)/documents/admins/$(request.auth.uid))
       );
     }
 
@@ -72,14 +81,36 @@ service cloud.firestore {
 
     function isValidWorkspaceCounter(data) {
       return data.keys().hasAll(['ownerId', 'lastVoucherNumber', 'createdAt', 'updatedAt'])
-        && data.keys().hasOnly(['ownerId', 'lastVoucherNumber', 'lastInvoiceSeq', 'updatedByDevice', 'createdAt', 'updatedAt'])
+        && data.keys().hasOnly(['ownerId', 'lastVoucherNumber', 'lastInvoiceSeq', 'lastInventorySequence', 'updatedByDevice', 'createdAt', 'updatedAt'])
         && data.ownerId == request.auth.uid
         && isValidId(data.ownerId)
         && data.lastVoucherNumber is number && data.lastVoucherNumber >= 0
         && (!('lastInvoiceSeq' in data) || (data.lastInvoiceSeq is number && data.lastInvoiceSeq >= 0))
+        && (!('lastInventorySequence' in data) || (data.lastInventorySequence is int && data.lastInventorySequence >= 0))
         && isOptionalString(data, 'updatedByDevice', 64)
         && data.createdAt is timestamp
         && data.updatedAt is timestamp;
+    }
+
+    // Client-created online invoices must reserve their sequence in the same atomic
+    // write as the counter update. Offline invoices omit both fields; the trusted
+    // Firestore trigger assigns their sequence after synchronization.
+    function hasOnlineInventorySequence(data) {
+      let counterPath = /databases/$(database)/documents/counters/$(request.auth.uid);
+      return (
+        !('eventSequence' in data) && !('eventSequenceSource' in data)
+      ) || (
+        ('eventSequence' in data)
+        && ('eventSequenceSource' in data)
+        && data.eventSequenceSource == 'online'
+        && existsAfter(counterPath)
+        && getAfter(counterPath).data.lastInventorySequence == data.eventSequence
+        && (
+          !exists(counterPath)
+          || !('lastInventorySequence' in get(counterPath).data)
+          || get(counterPath).data.lastInventorySequence < data.eventSequence
+        )
+      );
     }
 
     function isValidAccount(data) {
@@ -124,7 +155,7 @@ service cloud.firestore {
 
     function isValidProduct(data) {
       return data.keys().hasAll(['ownerId', 'sku', 'name', 'category', 'warehouse', 'unit', 'buyPrice', 'sellPrice', 'stock', 'reorderPoint', 'vatExempt', 'createdAt', 'updatedAt'])
-        && data.keys().hasOnly(['ownerId', 'sku', 'name', 'category', 'warehouse', 'unit', 'secondaryUnit', 'kgPerCarton', 'bobbinUnit', 'bobbinsPerCarton', 'yarnCount', 'lotNumber', 'originCountry', 'buyPrice', 'sellPrice', 'stock', 'reorderPoint', 'vatExempt', '_version', 'updatedByDevice', 'createdAt', 'updatedAt'])
+        && data.keys().hasOnly(['ownerId', 'sku', 'name', 'category', 'warehouse', 'unit', 'secondaryUnit', 'kgPerCarton', 'bobbinUnit', 'bobbinsPerCarton', 'yarnCount', 'lotNumber', 'originCountry', 'buyPrice', 'sellPrice', 'stock', 'reorderPoint', 'vatExempt', 'costingMethod', 'costLayers', 'inventoryValueIrr', '_version', 'updatedByDevice', 'createdAt', 'updatedAt'])
         && data.ownerId == request.auth.uid
         && isValidId(data.ownerId)
         && isNonEmptyString(data.sku, 48)
@@ -144,6 +175,25 @@ service cloud.firestore {
         && data.stock is number
         && data.reorderPoint is number && data.reorderPoint >= 0
         && data.vatExempt is bool
+        && (!('costingMethod' in data) || data.costingMethod in ['fifo', 'moving_average', 'periodic_average'])
+        && (!('inventoryValueIrr' in data) || (data.inventoryValueIrr is number && data.inventoryValueIrr >= 0))
+        && (!('costLayers' in data) || (
+          data.costLayers is list
+          && data.costLayers.size() <= 200
+          && (data.costLayers.size() == 0 || (
+            data.costLayers[0] is map
+            && data.costLayers[0].keys().hasAll(['layerId', 'date', 'sourceRef', 'originalQty', 'remainingQty', 'unitCostIrr', 'totalCostIrr'])
+            && isNonEmptyString(data.costLayers[0].layerId, 128)
+            && isNonEmptyString(data.costLayers[0].date, 20)
+            && isNonEmptyString(data.costLayers[0].sourceRef, 128)
+            && data.costLayers[0].originalQty is number && data.costLayers[0].originalQty > 0
+            && data.costLayers[0].remainingQty is number && data.costLayers[0].remainingQty >= 0
+            && data.costLayers[0].remainingQty <= data.costLayers[0].originalQty
+            && data.costLayers[0].unitCostIrr is number && data.costLayers[0].unitCostIrr >= 0
+            && data.costLayers[0].totalCostIrr is number && data.costLayers[0].totalCostIrr >= 0
+            && isOptionalString(data.costLayers[0], 'warehouse', 80)
+          ))
+        ))
         && isOptionalVersion(data)
         && data.createdAt is timestamp
         && data.updatedAt is timestamp;
@@ -151,7 +201,7 @@ service cloud.firestore {
 
     function isValidVoucher(data) {
       return data.keys().hasAll(['ownerId', 'voucherNumber', 'date', 'description', 'voucherType', 'status', 'totalDebit', 'totalCredit', 'lines', 'createdAt', 'updatedAt'])
-        && data.keys().hasOnly(['ownerId', 'voucherNumber', 'date', 'description', 'voucherType', 'status', 'totalDebit', 'totalCredit', 'currencyCode', 'exchangeRate', 'foreignTotalDebit', 'foreignTotalCredit', 'referenceId', 'lines', '_version', 'updatedByDevice', 'createdAt', 'updatedAt'])
+        && data.keys().hasOnly(['ownerId', 'voucherNumber', 'date', 'description', 'voucherType', 'status', 'totalDebit', 'totalCredit', 'currencyCode', 'exchangeRate', 'foreignTotalDebit', 'foreignTotalCredit', 'referenceId', 'reversalOfVoucherId', 'fiscalYear', 'integrityHash', 'lines', '_version', 'updatedByDevice', 'createdAt', 'updatedAt'])
         && data.ownerId == request.auth.uid
         && isValidId(data.ownerId)
         && data.voucherNumber is number && data.voucherNumber >= 1
@@ -167,19 +217,213 @@ service cloud.firestore {
         && (!('foreignTotalDebit' in data) || (data.foreignTotalDebit is number && data.foreignTotalDebit >= 0))
         && (!('foreignTotalCredit' in data) || (data.foreignTotalCredit is number && data.foreignTotalCredit >= 0))
         && isOptionalString(data, 'referenceId', 128)
+        && isOptionalString(data, 'reversalOfVoucherId', 128)
+        && isOptionalString(data, 'fiscalYear', 4)
+        && (!('integrityHash' in data) || (data.integrityHash is string && data.integrityHash.matches('^vseal_[0-9a-f]{16}$')))
+        && (data.status != 'permanent' || ('integrityHash' in data && data.integrityHash is string && data.integrityHash.matches('^vseal_[0-9a-f]{16}$')))
         && data.lines is list && data.lines.size() >= 2 && data.lines.size() <= 100 && data.lines[0] is map
+        && data.lines[0].keys().hasAll(['accountCode', 'debit', 'credit'])
+        && isNonEmptyString(data.lines[0].accountCode, 32)
+        && data.lines[0].debit is number && data.lines[0].debit >= 0
+        && data.lines[0].credit is number && data.lines[0].credit >= 0
+        && !(data.lines[0].debit > 0 && data.lines[0].credit > 0)
         && isOptionalVersion(data)
         && data.createdAt is timestamp
         && data.updatedAt is timestamp;
     }
+    function isPairedReturnMutation(sourceInvoiceId, returnInvoiceId, sourceBefore, sourceAfter, countDelta) {
+      let returnPath = /databases/$(database)/documents/invoices/$(returnInvoiceId);
+      let returnBefore = get(returnPath).data;
+      let returnAfter = getAfter(returnPath).data;
+      return existsAfter(returnPath)
+        && returnAfter.sourceInvoiceId == sourceInvoiceId
+        && returnAfter.ownerId == sourceBefore.ownerId
+        && returnAfter.partyId == sourceBefore.partyId
+        && (
+          (sourceBefore.invoiceType == 'sale' && returnAfter.invoiceType == 'sale_return')
+          || (sourceBefore.invoiceType == 'purchase' && returnAfter.invoiceType == 'purchase_return')
+        )
+        && (
+          (countDelta == 1 && !exists(returnPath) && returnAfter.status != 'cancelled')
+          || (countDelta == -1 && exists(returnPath) && returnBefore.status != 'cancelled' && returnAfter.status == 'cancelled')
+        );
+    }
+
+    function hasSourceCounterBump(sourceInvoiceId, returnInvoiceId, ownerId, partyId, sourceType, countDelta) {
+      let sourcePath = /databases/$(database)/documents/invoices/$(sourceInvoiceId);
+      let sourceBefore = get(sourcePath).data;
+      let sourceAfter = getAfter(sourcePath).data;
+      return sourceBefore.ownerId == ownerId
+        && sourceBefore.partyId == partyId
+        && sourceBefore.invoiceType == sourceType
+        && sourceBefore.status != 'cancelled'
+        && sourceBefore.activeReturnCount is int
+        && sourceBefore.returnRevision is int
+        && sourceAfter.ownerId == sourceBefore.ownerId
+        && sourceAfter.partyId == sourceBefore.partyId
+        && sourceAfter.invoiceType == sourceBefore.invoiceType
+        && sourceAfter.status == sourceBefore.status
+        && sourceAfter.activeReturnCount == sourceBefore.activeReturnCount + countDelta
+        && sourceAfter.returnRevision == sourceBefore.returnRevision + 1
+        && sourceAfter.lastReturnMutationId == returnInvoiceId;
+    }
+
+    function isValidReturnSourceDocument(data) {
+      let sourcePath = /databases/$(database)/documents/invoices/$(data.sourceInvoiceId);
+      let sourceSnapshot = get(sourcePath);
+      let source = sourceSnapshot.data;
+      return ('sourceInvoiceId' in data)
+        && isNonEmptyString(data.sourceInvoiceId, 128)
+        && exists(sourcePath)
+        && source.ownerId == data.ownerId
+        && source.status != 'cancelled'
+        && source.activeReturnCount is int
+        && source.returnRevision is int
+        && source.partyId == data.partyId
+        && (
+          (data.invoiceType == 'sale_return' && source.invoiceType == 'sale')
+          || (data.invoiceType == 'purchase_return' && source.invoiceType == 'purchase')
+        );
+    }
+
+    function isValidReturnSource(data) {
+      return !(data.invoiceType in ['sale_return', 'purchase_return'])
+        || (('sourceInvoiceId' in data) && isValidReturnSourceDocument(data));
+    }
+
+    function hasReturnCounterIncrement(sourceInvoiceId, returnInvoiceId, countDelta) {
+      let sourcePath = /databases/$(database)/documents/invoices/$(sourceInvoiceId);
+      let sourceBefore = get(sourcePath);
+      let sourceAfter = getAfter(sourcePath).data;
+      return exists(sourcePath)
+        && existsAfter(sourcePath)
+        && sourceBefore.data.activeReturnCount is int
+        && sourceBefore.data.returnRevision is int
+        && sourceAfter.activeReturnCount == sourceBefore.data.activeReturnCount + countDelta
+        && sourceAfter.returnRevision == sourceBefore.data.returnRevision + 1
+        && sourceAfter.lastReturnMutationId == returnInvoiceId;
+    }
+
+    function isValidProformaConversion(before, after, changed) {
+      return before.invoiceType == 'proforma'
+        && after.invoiceType == 'sale'
+        && changed.hasOnly(['invoiceNumber', 'invoiceType', 'date', 'status', 'voucherId', 'items', 'returnRevision', 'activeReturnCount', '_version', 'updatedByDevice', 'updatedAt'])
+        && after.invoiceNumber is string
+        && after.invoiceNumber.size() > 0
+        && after.date is string
+        && after.status in ['issued', 'settled']
+        && isOptionalString(after, 'voucherId', 128)
+        && after.items is list
+        && after.items.size() > 0
+        && after.items.size() <= 100
+        && after.items[0] is map
+        && after.returnRevision == 0
+        && after.activeReturnCount == 0
+        && !('lastReturnMutationId' in after);
+    }
+
+    function isValidInvoiceUpdate(invoiceId) {
+      let before = existing();
+      let after = incoming();
+      let changed = after.diff(before).affectedKeys();
+      return before.ownerId == request.auth.uid
+        && before.status != 'cancelled'
+        && after.ownerId == before.ownerId
+        && after.createdAt == before.createdAt
+        && after.updatedAt == request.time
+        && !changed.hasAny(['eventSequence', 'eventSequenceSource'])
+        && (
+          !changed.hasAny(['returnRevision', 'activeReturnCount', 'lastReturnMutationId'])
+          || (
+            before.invoiceType == 'proforma'
+            && after.invoiceType == 'sale'
+            && after.returnRevision == 0
+            && after.activeReturnCount == 0
+            && !('lastReturnMutationId' in after)
+            && isValidProformaConversion(before, after, changed)
+          )
+          || (
+            ('activeReturnCount' in before)
+            && ('returnRevision' in before)
+            && ('activeReturnCount' in after)
+            && ('returnRevision' in after)
+            && after.lastReturnMutationId is string
+            && (
+              after.activeReturnCount == before.activeReturnCount + 1
+              || after.activeReturnCount == before.activeReturnCount - 1
+            )
+            && isPairedReturnMutation(
+              invoiceId,
+              after.lastReturnMutationId,
+              before,
+              after,
+              after.activeReturnCount - before.activeReturnCount
+            )
+          )
+        )
+        && (
+          !(before.invoiceType in ['sale', 'purchase'])
+          || (
+            ('activeReturnCount' in before)
+            && before.activeReturnCount is int
+            && before.activeReturnCount == 0
+            && ('returnRevision' in before)
+            && before.returnRevision is int
+          )
+          || after.status != 'cancelled'
+        )
+        && (
+          !changed.hasAny(['returnRevision'])
+          || (
+            before.invoiceType == 'proforma'
+            && after.invoiceType == 'sale'
+            && after.returnRevision == 0
+          )
+          || (
+            after.returnRevision == (('returnRevision' in before) ? before.returnRevision : 0) + 1
+            && after.status == before.status
+          )
+        )
+        && (
+          (
+            before.invoiceType in ['sale_return', 'purchase_return']
+            && after.status == 'cancelled'
+            && before.status != 'cancelled'
+            && hasReturnCounterIncrement(
+              before.sourceInvoiceId,
+              invoiceId,
+              -1
+            )
+          )
+          || (
+            !(before.invoiceType in ['sale_return', 'purchase_return'])
+            && (
+              !changed.hasAny(['activeReturnCount'])
+              || (
+                after.activeReturnCount is int
+                && after.activeReturnCount >= 0
+                && after.returnRevision is int
+              )
+            )
+          )
+        );
+    }
 
     function isValidInvoice(data) {
       return data.keys().hasAll(['ownerId', 'invoiceNumber', 'invoiceType', 'date', 'partyId', 'partyName', 'warehouse', 'subtotal', 'discount', 'vatAmount', 'grandTotal', 'paidCash', 'paidBank', 'paidCheque', 'creditAmount', 'status', 'items', 'createdAt', 'updatedAt'])
-        && data.keys().hasOnly(['ownerId', 'invoiceNumber', 'taxSerial', 'invoiceType', 'date', 'partyId', 'partyName', 'intermediaryId', 'intermediaryName', 'warehouse', 'costCenterId', 'currencyCode', 'exchangeRate', 'foreignSubtotal', 'foreignDiscount', 'foreignVatAmount', 'foreignGrandTotal', 'subtotal', 'discount', 'vatAmount', 'grandTotal', 'paidCash', 'paidBank', 'paidCheque', 'creditAmount', 'status', 'voucherId', 'items', '_version', 'updatedByDevice', 'createdAt', 'updatedAt'])
+        && data.keys().hasOnly(['ownerId', 'invoiceNumber', 'taxSerial', 'invoiceType', 'sourceInvoiceId', 'returnRevision', 'activeReturnCount', 'lastReturnMutationId', 'eventSequence', 'eventSequenceSource', 'date', 'partyId', 'partyName', 'intermediaryId', 'intermediaryName', 'warehouse', 'costCenterId', 'currencyCode', 'exchangeRate', 'foreignSubtotal', 'foreignDiscount', 'foreignVatAmount', 'foreignGrandTotal', 'subtotal', 'discount', 'vatAmount', 'grandTotal', 'paidCash', 'paidBank', 'paidCheque', 'creditAmount', 'status', 'voucherId', 'items', '_version', 'updatedByDevice', 'createdAt', 'updatedAt'])
         && data.ownerId == request.auth.uid
         && isValidId(data.ownerId)
         && isNonEmptyString(data.invoiceNumber, 48)
         && isOptionalString(data, 'taxSerial', 64)
+        && isOptionalString(data, 'sourceInvoiceId', 128)
+        && (!('returnRevision' in data) || (data.returnRevision is int && data.returnRevision >= 0))
+        && (!('activeReturnCount' in data) || (data.activeReturnCount is int && data.activeReturnCount >= 0))
+        && (!('eventSequence' in data) || (data.eventSequence is int && data.eventSequence > 0))
+        && (!('eventSequenceSource' in data) || data.eventSequenceSource in ['online', 'sync'])
+        && hasOnlineInventorySequence(data)
+        && isOptionalString(data, 'lastReturnMutationId', 128)
+        && (!(data.invoiceType in ['sale_return', 'purchase_return']) || (!('returnRevision' in data) && !('activeReturnCount' in data) && !('lastReturnMutationId' in data)))
         && data.invoiceType in ['sale', 'purchase', 'proforma', 'sale_return', 'purchase_return', 'waste']
         && isNonEmptyString(data.date, 20)
         && isNonEmptyString(data.partyId, 128)
@@ -402,16 +646,30 @@ service cloud.firestore {
         && data.updatedAt is timestamp;
     }
 
+    function isValidRbacPermissions(permissions) {
+      return permissions is map
+        && permissions.keys().hasAll(['canCreateVoucher', 'canFinalizeVoucher', 'canIssueInvoice', 'canEditInventory', 'canManageTreasury', 'canManageCurrencies', 'canManageSettings', 'canDeleteRecords'])
+        && permissions.keys().hasOnly(['canCreateVoucher', 'canFinalizeVoucher', 'canIssueInvoice', 'canEditInventory', 'canManageTreasury', 'canManageCurrencies', 'canManageSettings', 'canDeleteRecords'])
+        && permissions.canCreateVoucher is bool
+        && permissions.canFinalizeVoucher is bool
+        && permissions.canIssueInvoice is bool
+        && permissions.canEditInventory is bool
+        && permissions.canManageTreasury is bool
+        && permissions.canManageCurrencies is bool
+        && permissions.canManageSettings is bool
+        && permissions.canDeleteRecords is bool;
+    }
+
     function isValidRbacOperator(data) {
       return data.keys().hasAll(['ownerId', 'fullName', 'role', 'active', 'permissions', 'createdAt', 'updatedAt'])
         && data.keys().hasOnly(['ownerId', 'fullName', 'role', 'email', 'active', 'permissions', 'createdAt', 'updatedAt'])
         && data.ownerId == request.auth.uid
         && isValidId(data.ownerId)
         && isNonEmptyString(data.fullName, 140)
-        && data.role in ['finance_manager', 'accountant', 'warehouse_keeper', 'sales_officer', 'auditor']
+        && data.role in ['finance_manager', 'accountant', 'warehouse_keeper', 'sales_officer', 'treasurer', 'auditor_readonly']
         && isOptionalString(data, 'email', 200)
         && data.active is bool
-        && data.permissions is map
+        && isValidRbacPermissions(data.permissions)
         && data.createdAt is timestamp
         && data.updatedAt is timestamp;
     }
@@ -423,7 +681,7 @@ service cloud.firestore {
         && isValidId(data.ownerId)
         && isNonEmptyString(data.timestamp, 40)
         && isNonEmptyString(data.operatorName, 120)
-        && data.operatorRole in ['finance_manager', 'accountant', 'warehouse_keeper', 'sales_officer', 'auditor']
+        && data.operatorRole in ['finance_manager', 'accountant', 'warehouse_keeper', 'sales_officer', 'treasurer', 'auditor_readonly']
         && isNonEmptyString(data.module, 80)
         && isNonEmptyString(data.action, 160)
         && isNonEmptyString(data.details, 400)
@@ -459,6 +717,7 @@ service cloud.firestore {
           'volumeDiscountRules',
           'moadianLinks',
           'fiscalArchives',
+          'trackedWarehouseTransfers',
           '_version',
           'updatedByDevice',
           'createdAt',
@@ -480,6 +739,7 @@ service cloud.firestore {
         && isOptionalMapList(data, 'volumeDiscountRules', 50)
         && (!('moadianLinks' in data) || (data.moadianLinks is map && data.moadianLinks.size() <= 500))
         && isOptionalMapList(data, 'fiscalArchives', 25)
+        && isOptionalMapList(data, 'trackedWarehouseTransfers', 100)
         && isOptionalVersion(data)
         && data.createdAt is timestamp
         && data.updatedAt is timestamp;
@@ -564,7 +824,11 @@ service cloud.firestore {
           && incoming().createdAt == existing().createdAt
           && incoming().updatedAt == request.time
           && incoming().lastVoucherNumber >= existing().lastVoucherNumber
-          && incoming().diff(existing()).affectedKeys().hasOnly(['lastVoucherNumber', 'lastInvoiceSeq', 'updatedByDevice', 'updatedAt'])
+          && (!('lastInventorySequence' in existing()) || (
+            ('lastInventorySequence' in incoming())
+            && incoming().lastInventorySequence >= existing().lastInventorySequence
+          ))
+          && incoming().diff(existing()).affectedKeys().hasOnly(['lastVoucherNumber', 'lastInvoiceSeq', 'lastInventorySequence', 'updatedByDevice', 'updatedAt'])
         )
       );
       allow delete: if false;
@@ -573,11 +837,11 @@ service cloud.firestore {
     match /accounts/{accountId} {
       allow get: if isValidId(accountId) && isVerified() && (existing().ownerId == request.auth.uid || isAdmin());
       allow list: if isVerified() && resource.data.ownerId == request.auth.uid;
-      allow create: if isValidId(accountId) && isVerified()
+      allow create: if isValidId(accountId) && isVerified() && coreWritesOpen(request.auth.uid)
         && isValidAccount(incoming())
         && incoming().createdAt == request.time
         && incoming().updatedAt == request.time;
-      allow update: if isValidId(accountId) && isVerified() && isValidAccount(incoming()) && (
+      allow update: if isValidId(accountId) && isVerified() && coreWritesOpen(request.auth.uid) && isValidAccount(incoming()) && (
         isAdmin() || (
           existing().ownerId == request.auth.uid
           && incoming().ownerId == existing().ownerId
@@ -586,7 +850,7 @@ service cloud.firestore {
           && incoming().diff(existing()).affectedKeys().hasOnly(['title', 'parentCode', 'category', 'nature', 'updatedAt'])
         )
       );
-      allow delete: if isValidId(accountId) && isVerified() && (
+      allow delete: if isValidId(accountId) && isVerified() && coreWritesOpen(request.auth.uid) && (
         isAdmin() || (existing().ownerId == request.auth.uid && existing().isSystem == false)
       );
     }
@@ -613,11 +877,11 @@ service cloud.firestore {
     match /products/{productId} {
       allow get: if isValidId(productId) && isVerified() && (existing().ownerId == request.auth.uid || isAdmin());
       allow list: if isVerified() && resource.data.ownerId == request.auth.uid;
-      allow create: if isValidId(productId) && isVerified()
+      allow create: if isValidId(productId) && isVerified() && coreWritesOpen(request.auth.uid)
         && isValidProduct(incoming())
         && incoming().createdAt == request.time
         && incoming().updatedAt == request.time;
-      allow update: if isValidId(productId) && isVerified() && isValidProduct(incoming()) && (
+      allow update: if isValidId(productId) && isVerified() && coreWritesOpen(request.auth.uid) && isValidProduct(incoming()) && (
         isAdmin() || (
           existing().ownerId == request.auth.uid
           && incoming().ownerId == existing().ownerId
@@ -625,13 +889,16 @@ service cloud.firestore {
           && incoming().updatedAt == request.time
           && (
             incoming().diff(existing()).affectedKeys().hasOnly(['stock', '_version', 'updatedByDevice', 'updatedAt']) ||
+            incoming().diff(existing()).affectedKeys().hasOnly(['stock', 'buyPrice', 'costingMethod', 'costLayers', 'inventoryValueIrr', '_version', 'updatedByDevice', 'updatedAt']) ||
+            incoming().diff(existing()).affectedKeys().hasOnly(['stock', 'costingMethod', 'costLayers', 'inventoryValueIrr', '_version', 'updatedByDevice', 'updatedAt']) ||
+            incoming().diff(existing()).affectedKeys().hasOnly(['warehouse', 'stock', 'costLayers', 'inventoryValueIrr', '_version', 'updatedByDevice', 'updatedAt']) ||
             incoming().diff(existing()).affectedKeys().hasOnly(['stock', 'buyPrice', 'lotNumber', '_version', 'updatedByDevice', 'updatedAt']) ||
             incoming().diff(existing()).affectedKeys().hasOnly(['warehouse', '_version', 'updatedByDevice', 'updatedAt']) ||
             incoming().diff(existing()).affectedKeys().hasOnly(['name', 'category', 'warehouse', 'unit', 'secondaryUnit', 'kgPerCarton', 'bobbinUnit', 'bobbinsPerCarton', 'yarnCount', 'lotNumber', 'originCountry', 'buyPrice', 'sellPrice', 'stock', 'reorderPoint', 'vatExempt', '_version', 'updatedByDevice', 'updatedAt'])
           )
         )
       );
-      allow delete: if isValidId(productId) && isVerified() && (existing().ownerId == request.auth.uid || isAdmin());
+      allow delete: if isValidId(productId) && isVerified() && coreWritesOpen(request.auth.uid) && (existing().ownerId == request.auth.uid || isAdmin());
     }
 
     match /vouchers/{voucherId} {
@@ -651,7 +918,7 @@ service cloud.firestore {
             incoming().diff(existing()).affectedKeys().hasOnly(['voucherNumber', 'updatedAt']) ||
             (
               existing().status != 'permanent' && (
-                incoming().diff(existing()).affectedKeys().hasOnly(['status', '_version', 'updatedByDevice', 'updatedAt']) ||
+                incoming().diff(existing()).affectedKeys().hasOnly(['status', 'fiscalYear', 'integrityHash', '_version', 'updatedByDevice', 'updatedAt']) ||
                 incoming().diff(existing()).affectedKeys().hasOnly(['date', 'description', 'voucherType', 'lines', 'totalDebit', 'totalCredit', 'currencyCode', 'exchangeRate', 'foreignTotalDebit', 'foreignTotalCredit', 'status', '_version', 'updatedByDevice', 'updatedAt'])
               )
             )
@@ -668,25 +935,33 @@ service cloud.firestore {
       allow list: if isVerified() && resource.data.ownerId == request.auth.uid;
       allow create: if isValidId(invoiceId) && isVerified()
         && isValidInvoice(incoming())
-        && incoming().createdAt == request.time
-        && incoming().updatedAt == request.time;
-      allow update: if isValidId(invoiceId) && isVerified() && isValidInvoice(incoming()) && (
-        isAdmin() || (
-          existing().ownerId == request.auth.uid
-          && existing().status != 'cancelled'
-          && incoming().ownerId == existing().ownerId
-          && incoming().createdAt == existing().createdAt
-          && incoming().updatedAt == request.time
-          && (
-            incoming().diff(existing()).affectedKeys().hasOnly(['status', '_version', 'updatedByDevice', 'updatedAt']) ||
-            incoming().diff(existing()).affectedKeys().hasOnly(['paidCash', 'paidBank', 'paidCheque', 'creditAmount', 'status', '_version', 'updatedByDevice', 'updatedAt']) ||
-            (
-              existing().invoiceType == 'proforma'
-              && incoming().diff(existing()).affectedKeys().hasOnly(['invoiceNumber', 'invoiceType', 'status', 'voucherId', 'items', '_version', 'updatedByDevice', 'updatedAt'])
-            )
+        && (
+          (
+            incoming().invoiceType in ['sale', 'purchase']
+            && ('returnRevision' in incoming())
+            && ('activeReturnCount' in incoming())
+            && incoming().returnRevision == 0
+            && incoming().activeReturnCount == 0
+            && !('lastReturnMutationId' in incoming())
+          )
+          || (
+            !(incoming().invoiceType in ['sale', 'purchase'])
+            && !('returnRevision' in incoming())
+            && !('activeReturnCount' in incoming())
+            && !('lastReturnMutationId' in incoming())
           )
         )
-      );
+        && (
+          !(incoming().invoiceType in ['sale_return', 'purchase_return'])
+          || hasReturnCounterIncrement(
+            incoming().sourceInvoiceId,
+            invoiceId,
+            1
+          )
+        )
+        && incoming().createdAt == request.time
+        && incoming().updatedAt == request.time;
+      allow update: if isValidId(invoiceId) && isVerified() && isValidInvoiceUpdate(invoiceId);
       allow delete: if isValidId(invoiceId) && isVerified() && (isAdmin() || (existing().ownerId == request.auth.uid && existing().invoiceType == 'proforma'));
     }
 
@@ -962,6 +1237,7 @@ service cloud.firestore {
             'volumeDiscountRules',
             'moadianLinks',
             'fiscalArchives',
+            'trackedWarehouseTransfers',
             '_version',
             'updatedByDevice',
             'updatedAt'

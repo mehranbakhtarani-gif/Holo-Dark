@@ -1,4 +1,11 @@
 import assert from 'node:assert/strict';
+import {
+  appendProcessedSyncOperation,
+  hasProcessedSyncOperation,
+  hasSupabaseRevisionConflict,
+  resolveVerifiedFirebaseIdentity,
+} from '../server/authPolicy';
+import { createSyncOperationId, fingerprintWorkspacePayload } from '../src/lib/syncFingerprint';
 import crypto from 'node:crypto';
 import { createHolooSeedData } from '../src/data/holooSeed';
 import {
@@ -14,11 +21,13 @@ import {
   computeVoucherIntegrityHash,
   filterVouchersForReport,
   planAtomicInvoiceCommit,
+  planInvoiceCancellation,
   planChequeStatusTransition,
   planYearEndClosing,
   validateVoucherPayload,
 } from '../src/lib/accountingEngine';
 import {
+  applyInventoryMovementStep,
   normalizeProductCostState,
   planWarehouseTransfer,
   recalculateInventoryLedger,
@@ -45,6 +54,88 @@ const tests: TestCase[] = [];
 function test(name: string, fn: () => void | Promise<void>) {
   tests.push({ name, fn });
 }
+
+test('Supabase first-write-wins detects stale revisions even when tabs share one device ID', () => {
+  assert.equal(hasSupabaseRevisionConflict(12, 11), true);
+  assert.equal(hasSupabaseRevisionConflict(12, 12), false);
+  assert.equal(hasSupabaseRevisionConflict(11, 12), false);
+});
+
+test('Sync SHA-256 fingerprint ignores exportedAt but detects content changes', async () => {
+  const first = await fingerprintWorkspacePayload(
+    JSON.stringify({ exportedAt: '2026-11-26T10:00:00.000Z', vouchers: [{ id: 'v1', debit: 100 }] })
+  );
+  const sameContent = await fingerprintWorkspacePayload(
+    JSON.stringify({ exportedAt: '2026-11-27T10:00:00.000Z', vouchers: [{ id: 'v1', debit: 100 }] })
+  );
+  const changedContent = await fingerprintWorkspacePayload(
+    JSON.stringify({ exportedAt: '2026-11-27T10:00:00.000Z', vouchers: [{ id: 'v1', debit: 101 }] })
+  );
+  assert.equal(first, sameContent);
+  assert.notEqual(first, changedContent);
+  assert.match(first, /^\d+_[0-9a-f]{64}$/);
+});
+
+test('Sync operation IDs are deterministic across reloads and scoped to the exact sync base', async () => {
+  const identity = {
+    target: 'supabase' as const,
+    workspaceId: 'workspace_1',
+    deviceId: 'device_1',
+    clientRevision: 7,
+    payloadHash: 'payload-sha256',
+  };
+  const first = await createSyncOperationId(identity);
+  const afterReload = await createSyncOperationId({ ...identity });
+  const changedRevision = await createSyncOperationId({ ...identity, clientRevision: 8 });
+  const changedPayload = await createSyncOperationId({ ...identity, payloadHash: 'other-payload' });
+  assert.equal(first, afterReload);
+  assert.notEqual(first, changedRevision);
+  assert.notEqual(first, changedPayload);
+  assert.match(first, /^op_[0-9a-f]{64}$/);
+});
+
+test('Supabase durable idempotency remembers older operations within its bounded replay window', () => {
+  const withHistory = appendProcessedSyncOperation(
+    { lastOperationId: 'op_previous', recentOperationIds: ['op_older', 'op_previous'] },
+    'op_current'
+  );
+  assert.equal(hasProcessedSyncOperation(withHistory, 'op_older'), true);
+  assert.equal(hasProcessedSyncOperation(withHistory, 'op_previous'), true);
+  assert.equal(hasProcessedSyncOperation(withHistory, 'op_current'), true);
+  assert.equal(hasProcessedSyncOperation(withHistory, 'op_unknown'), false);
+
+  const legacyOnly = appendProcessedSyncOperation({ lastOperationId: 'op_legacy' }, 'op_next');
+  assert.equal(hasProcessedSyncOperation(legacyOnly, 'op_legacy'), true);
+  assert.equal(hasProcessedSyncOperation(legacyOnly, 'op_next'), true);
+
+  const bounded = appendProcessedSyncOperation(
+    { recentOperationIds: Array.from({ length: 300 }, (_, index) => `op_${index}`) },
+    'op_latest'
+  );
+  assert.equal((bounded.recentOperationIds as string[]).length, 256);
+  assert.equal(hasProcessedSyncOperation(bounded, 'op_0'), false);
+  assert.equal(hasProcessedSyncOperation(bounded, 'op_latest'), true);
+});
+
+test('Server auth policy rejects Firebase accounts without verified email', () => {
+  assert.deepEqual(
+    resolveVerifiedFirebaseIdentity({
+      users: [{ localId: 'verified_uid', email: 'verified@example.com', emailVerified: true }],
+    }),
+    { uid: 'verified_uid', email: 'verified@example.com' }
+  );
+  assert.equal(
+    resolveVerifiedFirebaseIdentity({
+      users: [{ localId: 'unverified_uid', email: 'unverified@example.com', emailVerified: false }],
+    }),
+    null
+  );
+  assert.equal(
+    resolveVerifiedFirebaseIdentity({ users: [{ localId: 'missing_flag_uid', email: 'user@example.com' }] }),
+    null
+  );
+  assert.equal(resolveVerifiedFirebaseIdentity({ users: [] }), null);
+});
 
 // ============================================================================
 // 1. ACCOUNTING ENGINE TESTS
@@ -370,6 +461,78 @@ test('Atomic Invoice Commit: Rejects completely on insufficient stock, settlemen
   );
 });
 
+test('Atomic Invoice Commit: rejects line arithmetic mismatch and negative settlement components', () => {
+  const seed = createHolooSeedData('test_owner');
+  const product = seed.products[0];
+  const party = seed.parties[0];
+  const unitPrice = Math.max(1_000, Math.round(product.sellPrice));
+  const common = {
+    invoiceNumber: 'SL-ARITH-1',
+    invoiceType: 'sale' as const,
+    date: '1405/07/10',
+    partyId: party.id,
+    partyName: party.name,
+    warehouse: product.warehouse,
+    discount: 0,
+    vatAmount: 0,
+    status: 'issued' as const,
+    items: [{
+      productId: product.id,
+      sku: product.sku,
+      productName: product.name,
+      unit: product.unit,
+      quantity: 1,
+      unitPrice,
+      discount: 0,
+      vatAmount: 0,
+      lineTotal: unitPrice + 2,
+    }],
+  };
+
+  assert.throws(
+    () => planAtomicInvoiceCommit({
+      invoiceId: 'inv_bad_line_math',
+      voucherId: 'vch_bad_line_math',
+      nextVoucherNumber: 905,
+      ownerId: 'test_owner',
+      deviceId: 'dev_test',
+      payload: {
+        ...common,
+        subtotal: unitPrice + 2,
+        grandTotal: unitPrice + 2,
+        paidCash: unitPrice + 2,
+        paidBank: 0,
+        paidCheque: 0,
+        creditAmount: 0,
+      },
+      products: seed.products,
+    }),
+    /مبلغ ناخالص ردیف/
+  );
+
+  assert.throws(
+    () => planAtomicInvoiceCommit({
+      invoiceId: 'inv_negative_settlement',
+      voucherId: 'vch_negative_settlement',
+      nextVoucherNumber: 906,
+      ownerId: 'test_owner',
+      deviceId: 'dev_test',
+      payload: {
+        ...common,
+        subtotal: unitPrice,
+        grandTotal: unitPrice,
+        paidCash: -1,
+        paidBank: 0,
+        paidCheque: 0,
+        creditAmount: unitPrice + 1,
+        items: [{ ...common.items[0], lineTotal: unitPrice }],
+      },
+      products: seed.products,
+    }),
+    /مبالغ تسویه باید عددی معتبر و غیرمنفی باشند/
+  );
+});
+
 // ============================================================================
 // 2. 100% LOCAL SMALL LANGUAGE MODEL (ZERO CLOUD EGRESS) TESTS
 // ============================================================================
@@ -574,6 +737,82 @@ test('Stage 10 [Scenario 5]: Moving & Periodic Weighted Average — Buy 100@100k
   assert.equal(pwa.conservationDeltaIrr, 0);
 });
 
+test('Periodic Weighted Average: rejects purchase returns that create chronological negative stock even if later purchases replenish it', () => {
+  assert.throws(
+    () =>
+      recalculateInventoryLedger({
+        productId: 'prd_periodic_return_guard',
+        costingMethod: 'periodic_average',
+        movements: [
+          { id: 'open', date: '1405/01/01', sequence: 1, kind: 'opening', productId: 'prd_periodic_return_guard', qty: 10, totalCostIrr: 10_000_000 },
+          { id: 'sale', date: '1405/01/02', sequence: 2, kind: 'sale', productId: 'prd_periodic_return_guard', qty: 8 },
+          { id: 'return', date: '1405/01/03', sequence: 3, kind: 'purchase_return', productId: 'prd_periodic_return_guard', qty: 5, totalCostIrr: 5_000_000 },
+          { id: 'later_purchase', date: '1405/01/04', sequence: 4, kind: 'purchase', productId: 'prd_periodic_return_guard', qty: 10, totalCostIrr: 10_000_000 },
+        ],
+      }),
+    /موجودی انبار.*برگشت از خرید کافی نیست/
+  );
+});
+
+test('Periodic Weighted Average: rejects cumulative linked sales returns beyond the original sale quantity', () => {
+  assert.throws(
+    () => recalculateInventoryLedger({
+      productId: 'prd_periodic_return_limit',
+      costingMethod: 'periodic_average',
+      movements: [
+        { id: 'buy_periodic_return_limit', date: '1405/01/01', kind: 'purchase', productId: 'prd_periodic_return_limit', qty: 10, totalCostIrr: 10_000 },
+        { id: 'sale_periodic_return_limit', date: '1405/01/02', kind: 'sale', productId: 'prd_periodic_return_limit', qty: 5 },
+        { id: 'return_periodic_a', date: '1405/01/03', kind: 'sale_return', productId: 'prd_periodic_return_limit', qty: 3, sourceRefId: 'sale_periodic_return_limit' },
+        { id: 'return_periodic_b', date: '1405/01/04', kind: 'sale_return', productId: 'prd_periodic_return_limit', qty: 3, sourceRefId: 'sale_periodic_return_limit' },
+      ],
+    }),
+    /مقدار برگشت از فروش از مقدار فروش‌رفتهٔ باقی‌مانده بیشتر است/
+  );
+});
+
+test('Periodic Weighted Average: rejects cumulative linked purchase returns beyond the original purchase quantity', () => {
+  assert.throws(
+    () => recalculateInventoryLedger({
+      productId: 'prd_periodic_purchase_return_limit',
+      costingMethod: 'periodic_average',
+      movements: [
+        { id: 'purchase_periodic_limit', date: '1405/01/01', kind: 'purchase', productId: 'prd_periodic_purchase_return_limit', qty: 5, totalCostIrr: 5_000 },
+        { id: 'purchase_return_periodic_a', date: '1405/01/02', kind: 'purchase_return', productId: 'prd_periodic_purchase_return_limit', qty: 3, totalCostIrr: 3_000, sourceRefId: 'purchase_periodic_limit' },
+        { id: 'purchase_return_periodic_b', date: '1405/01/03', kind: 'purchase_return', productId: 'prd_periodic_purchase_return_limit', qty: 3, totalCostIrr: 3_000, sourceRefId: 'purchase_periodic_limit' },
+      ],
+    }),
+    /مقدار برگشت از خرید از مقدار خریداری‌شدهٔ باقی‌مانده بیشتر است/
+  );
+});
+
+test('Periodic Weighted Average: rejects linked purchase returns when the original purchase is missing', () => {
+  assert.throws(
+    () => recalculateInventoryLedger({
+      productId: 'prd_periodic_missing_purchase',
+      costingMethod: 'periodic_average',
+      movements: [
+        { id: 'purchase_periodic_missing', date: '1405/01/01', kind: 'purchase', productId: 'prd_periodic_missing_purchase', qty: 5, totalCostIrr: 5_000 },
+        { id: 'return_periodic_missing_purchase', date: '1405/01/02', kind: 'purchase_return', productId: 'prd_periodic_missing_purchase', qty: 1, totalCostIrr: 1_000, sourceRefId: 'missing_periodic_purchase' },
+      ],
+    }),
+    /فاکتور خرید مرجع برای برگشت از خرید یافت نشد/
+  );
+});
+
+test('Periodic Weighted Average: rejects linked sales returns when the original sale is missing', () => {
+  assert.throws(
+    () => recalculateInventoryLedger({
+      productId: 'prd_periodic_missing_sale',
+      costingMethod: 'periodic_average',
+      movements: [
+        { id: 'buy_periodic_missing_sale', date: '1405/01/01', kind: 'purchase', productId: 'prd_periodic_missing_sale', qty: 10, totalCostIrr: 10_000 },
+        { id: 'return_periodic_missing_sale', date: '1405/01/02', kind: 'sale_return', productId: 'prd_periodic_missing_sale', qty: 1, sourceRefId: 'missing_periodic_sale' },
+      ],
+    }),
+    /فاکتور فروش مرجع برای برگشت از فروش یافت نشد/
+  );
+});
+
 test('Stage 10 [Scenarios 6 & 7]: Sales Return (10 units historical cost recovery) & Purchase Return (20 units + variance)', () => {
   const res = recalculateInventoryLedger({
     productId: 'prd_ret_test',
@@ -594,6 +833,432 @@ test('Stage 10 [Scenarios 6 & 7]: Sales Return (10 units historical cost recover
   assert.equal(res.finalState.stockQty, 70, 'Final stock must be 70 units');
   assert.equal(res.finalState.totalValueIrr, 105_000_000, 'Ending inventory value must equal 105,000,000 IRR');
   assert.equal(res.conservationDeltaIrr, 0, 'Exact inventory conservation after both returns');
+});
+
+test('FIFO partial sales returns restore successive original consumed layers without duplicating the latest layer', () => {
+  const result = recalculateInventoryLedger({
+    productId: 'prd_partial_fifo_returns',
+    costingMethod: 'fifo',
+    movements: [
+      { id: 'buy_a', date: '1405/01/01', sequence: 1, kind: 'purchase', productId: 'prd_partial_fifo_returns', qty: 5, totalCostIrr: 500 },
+      { id: 'buy_b', date: '1405/01/02', sequence: 2, kind: 'purchase', productId: 'prd_partial_fifo_returns', qty: 5, totalCostIrr: 1_000 },
+      { id: 'buy_c', date: '1405/01/03', sequence: 3, kind: 'purchase', productId: 'prd_partial_fifo_returns', qty: 5, totalCostIrr: 1_500 },
+      { id: 'sale_all', date: '1405/01/04', sequence: 4, kind: 'sale', productId: 'prd_partial_fifo_returns', qty: 15 },
+      { id: 'return_latest', date: '1405/01/05', sequence: 5, kind: 'sale_return', productId: 'prd_partial_fifo_returns', qty: 5, sourceRefId: 'sale_all' },
+      { id: 'return_previous', date: '1405/01/06', sequence: 6, kind: 'sale_return', productId: 'prd_partial_fifo_returns', qty: 5, sourceRefId: 'sale_all' },
+    ],
+  });
+
+  const firstReturn = result.kardex.find((entry) => entry.movementId === 'return_latest');
+  const secondReturn = result.kardex.find((entry) => entry.movementId === 'return_previous');
+  assert.equal(firstReturn?.cogsOrCostIrr, 1_500, 'First return restores the last consumed 5-unit layer');
+  assert.equal(secondReturn?.cogsOrCostIrr, 1_000, 'Second return restores the next unreturned 5-unit layer');
+  assert.equal(result.finalState.stockQty, 10);
+  assert.equal(result.finalState.totalValueIrr, 2_500);
+  assert.equal(result.conservationDeltaIrr, 0);
+});
+
+test('FIFO linked purchase return consumes all split layers from its source purchase only', () => {
+  const state = {
+    productId: 'prd_split_purchase_source',
+    costingMethod: 'fifo' as const,
+    stockQty: 9,
+    totalValueIrr: 1_500,
+    weightedAvgUnitCostIrr: 167,
+    layers: [
+      {
+        layerId: 'source_part_a',
+        date: '1405/01/01',
+        sourceRef: 'purchase_split',
+        warehouse: 'A',
+        originalQty: 2,
+        remainingQty: 2,
+        unitCostIrr: 100,
+        totalCostIrr: 200,
+      },
+      {
+        layerId: 'source_part_b',
+        date: '1405/01/02',
+        sourceRef: 'purchase_split',
+        warehouse: 'B',
+        originalQty: 3,
+        remainingQty: 3,
+        unitCostIrr: 100,
+        totalCostIrr: 300,
+      },
+      {
+        layerId: 'unrelated',
+        date: '1405/01/03',
+        sourceRef: 'purchase_other',
+        warehouse: 'A',
+        originalQty: 4,
+        remainingQty: 4,
+        unitCostIrr: 250,
+        totalCostIrr: 1_000,
+      },
+    ],
+  };
+  const result = applyInventoryMovementStep(state, {
+    id: 'return_split_source',
+    date: '1405/01/04',
+    kind: 'purchase_return',
+    productId: 'prd_split_purchase_source',
+    qty: 4,
+    totalCostIrr: 400,
+    sourceRefId: 'purchase_split',
+  });
+  assert.equal(result.cogsOrCostIrr, 400);
+  assert.equal(result.nextState.stockQty, 5);
+  assert.equal(result.nextState.totalValueIrr, 1_100);
+  assert.deepEqual(
+    result.nextState.layers.map((layer) => [layer.layerId, layer.remainingQty, layer.totalCostIrr]),
+    [['source_part_b', 1, 100], ['unrelated', 4, 1_000]],
+    'Only the originating purchase descendants may be consumed'
+  );
+});
+
+test('FIFO linked purchase return cannot consume stock from a different purchase layer', () => {
+  assert.throws(
+    () => recalculateInventoryLedger({
+      productId: 'prd_purchase_return_source_guard',
+      costingMethod: 'fifo',
+      movements: [
+        { id: 'purchase_original', date: '1405/01/01', sequence: 1, kind: 'purchase', productId: 'prd_purchase_return_source_guard', qty: 5, totalCostIrr: 500, sourceRefId: 'purchase_original' },
+        { id: 'purchase_other', date: '1405/01/02', sequence: 2, kind: 'purchase', productId: 'prd_purchase_return_source_guard', qty: 5, totalCostIrr: 2_000, sourceRefId: 'purchase_other' },
+        { id: 'sale_original_stock', date: '1405/01/03', sequence: 3, kind: 'sale', productId: 'prd_purchase_return_source_guard', qty: 5 },
+        { id: 'return_original_purchase', date: '1405/01/04', sequence: 4, kind: 'purchase_return', productId: 'prd_purchase_return_source_guard', qty: 1, totalCostIrr: 100, sourceRefId: 'purchase_original' },
+      ],
+    }),
+    /موجودی باقی‌مانده از خرید مرجع برای برگشت کافی نیست/
+  );
+});
+
+test('Inventory ledger rejects cumulative sales returns beyond the original sale quantity', () => {
+  assert.throws(
+    () => recalculateInventoryLedger({
+      productId: 'prd_return_limit',
+      costingMethod: 'fifo',
+      movements: [
+        { id: 'buy_return_limit', date: '1405/01/01', kind: 'purchase', productId: 'prd_return_limit', qty: 10, totalCostIrr: 10_000 },
+        { id: 'sale_return_limit', date: '1405/01/02', kind: 'sale', productId: 'prd_return_limit', qty: 5 },
+        { id: 'return_a', date: '1405/01/03', kind: 'sale_return', productId: 'prd_return_limit', qty: 3, sourceRefId: 'sale_return_limit' },
+        { id: 'return_b', date: '1405/01/04', kind: 'sale_return', productId: 'prd_return_limit', qty: 3, sourceRefId: 'sale_return_limit' },
+      ],
+    }),
+    /مقدار برگشت از فروش از مقدار فروش‌رفتهٔ باقی‌مانده بیشتر است/
+  );
+});
+
+test('Inventory ledger rejects a linked sales return when its original sale is missing', () => {
+  assert.throws(
+    () => recalculateInventoryLedger({
+      productId: 'prd_missing_sale_ref',
+      costingMethod: 'fifo',
+      movements: [
+        { id: 'buy_missing_sale_ref', date: '1405/01/01', kind: 'purchase', productId: 'prd_missing_sale_ref', qty: 10, totalCostIrr: 10_000 },
+        { id: 'return_missing_sale_ref', date: '1405/01/02', kind: 'sale_return', productId: 'prd_missing_sale_ref', qty: 1, sourceRefId: 'missing_sale' },
+      ],
+    }),
+    /فاکتور فروش مرجع برای برگشت از فروش یافت نشد/
+  );
+});
+
+test('Invoice cancellation: cancelling a FIFO sales return removes only its restored layer and preserves original FIFO layers', () => {
+  const seed = createHolooSeedData('test_owner');
+  const product: Product = {
+    ...seed.products[0],
+    id: 'prd_cancel_sale_return',
+    stock: 90,
+    buyPrice: 1_500_000,
+    costingMethod: 'fifo',
+    inventoryValueIrr: 135_000_000,
+    costLayers: [
+      {
+        layerId: 'lyr_purchase_2',
+        date: '1405/01/15',
+        sourceRef: 'inv_purchase_2',
+        warehouse: seed.products[0].warehouse,
+        originalQty: 100,
+        remainingQty: 80,
+        unitCostIrr: 1_500_000,
+        totalCostIrr: 120_000_000,
+      },
+      {
+        layerId: 'ret_inv_sale_return_1_0',
+        date: '1405/01/22',
+        sourceRef: 'inv_original_sale',
+        warehouse: seed.products[0].warehouse,
+        originalQty: 10,
+        remainingQty: 10,
+        unitCostIrr: 1_500_000,
+        totalCostIrr: 15_000_000,
+      },
+    ],
+  };
+  const returnInvoice: Invoice = {
+    id: 'inv_sale_return_1',
+    ownerId: 'test_owner',
+    invoiceNumber: 'SR-1',
+    invoiceType: 'sale_return',
+    date: '1405/01/22',
+    partyId: seed.parties[0].id,
+    partyName: seed.parties[0].name,
+    sourceInvoiceId: 'inv_original_sale',
+    warehouse: product.warehouse,
+    subtotal: 20_000_000,
+    discount: 0,
+    vatAmount: 2_000_000,
+    grandTotal: 22_000_000,
+    paidCash: 0,
+    paidBank: 0,
+    paidCheque: 0,
+    creditAmount: 22_000_000,
+    status: 'settled',
+    items: [
+      {
+        productId: product.id,
+        sku: product.sku,
+        productName: product.name,
+        unit: product.unit,
+        quantity: 10,
+        unitPrice: 2_000_000,
+        unitCostSnapshot: 1_500_000,
+        totalCostIrr: 15_000_000,
+        discount: 0,
+        vatAmount: 2_000_000,
+        lineTotal: 22_000_000,
+        consumedLayers: [
+          {
+            layerId: 'lyr_purchase_2',
+            qty: 10,
+            unitCostIrr: 1_500_000,
+            totalCostIrr: 15_000_000,
+          },
+        ],
+      },
+    ],
+  };
+
+  const originalSale: Invoice = {
+    ...returnInvoice,
+    id: 'inv_original_sale',
+    invoiceNumber: 'S-ORIGINAL',
+    invoiceType: 'sale',
+    sourceInvoiceId: undefined,
+  };
+  assert.throws(
+    () =>
+      planInvoiceCancellation({
+        invoice: originalSale,
+        cancellationDate: '1405/01/23',
+        products: [product],
+        vouchers: [],
+        cheques: [],
+        existingInvoices: [returnInvoice],
+        costingMethod: 'fifo',
+        ownerId: 'test_owner',
+        reversalVoucherId: 'vch_cancel_original_sale',
+        nextVoucherNumber: 89,
+        deviceId: 'dev_test',
+      }),
+    /ابتدا .* فاکتور برگشت فعال مرتبط را ابطال کنید/
+  );
+
+  const plan = planInvoiceCancellation({
+    invoice: returnInvoice,
+    cancellationDate: '1405/01/23',
+    products: [product],
+    vouchers: [],
+    cheques: [],
+    costingMethod: 'fifo',
+    ownerId: 'test_owner',
+    reversalVoucherId: 'vch_cancel_sale_return_1',
+    nextVoucherNumber: 90,
+    deviceId: 'dev_test',
+  });
+
+  const restoredProduct = plan.updatedProducts[0];
+  assert.ok(restoredProduct, 'cancellation plan must include the affected product');
+  assert.equal(restoredProduct.stock, 80);
+  assert.equal(restoredProduct.inventoryValueIrr, 120_000_000);
+  const restoredLayers = restoredProduct.costLayers ?? [];
+  assert.equal(restoredLayers.length, 1);
+  assert.equal(restoredLayers[0].layerId, 'lyr_purchase_2');
+  assert.equal(restoredLayers[0].remainingQty, 80);
+  assert.equal(restoredLayers[0].totalCostIrr, 120_000_000);
+});
+
+test('Invoice cancellation restores sale stock to the invoice warehouse, not the product default warehouse', () => {
+  const seed = createHolooSeedData('test_owner');
+  const product: Product = {
+    ...seed.products[0],
+    id: 'prd_cancel_multiwarehouse',
+    warehouse: 'انبار ب',
+    stock: 6,
+    buyPrice: 100,
+    costingMethod: 'fifo',
+    inventoryValueIrr: 600,
+    costLayers: [
+      {
+        layerId: 'layer_a',
+        date: '1405/01/01',
+        sourceRef: 'purchase_a',
+        warehouse: 'انبار الف',
+        originalQty: 5,
+        remainingQty: 3,
+        unitCostIrr: 100,
+        totalCostIrr: 300,
+      },
+      {
+        layerId: 'layer_b',
+        date: '1405/01/02',
+        sourceRef: 'purchase_b',
+        warehouse: 'انبار ب',
+        originalQty: 3,
+        remainingQty: 3,
+        unitCostIrr: 100,
+        totalCostIrr: 300,
+      },
+    ],
+  };
+  const sale: Invoice = {
+    id: 'inv_sale_cancel_multiwarehouse',
+    ownerId: 'test_owner',
+    invoiceNumber: 'S-MW-1',
+    invoiceType: 'sale',
+    date: '1405/01/03',
+    partyId: seed.parties[0].id,
+    partyName: seed.parties[0].name,
+    warehouse: 'انبار الف',
+    subtotal: 200,
+    discount: 0,
+    vatAmount: 0,
+    grandTotal: 200,
+    paidCash: 200,
+    paidBank: 0,
+    paidCheque: 0,
+    creditAmount: 0,
+    status: 'settled',
+    items: [{
+      productId: product.id,
+      sku: product.sku,
+      productName: product.name,
+      unit: product.unit,
+      quantity: 2,
+      unitPrice: 100,
+      unitCostSnapshot: 100,
+      totalCostIrr: 200,
+      discount: 0,
+      vatAmount: 0,
+      lineTotal: 200,
+      consumedLayers: [{ layerId: 'layer_a', qty: 2, unitCostIrr: 100, totalCostIrr: 200 }],
+    }],
+  };
+
+  const plan = planInvoiceCancellation({
+    invoice: sale,
+    cancellationDate: '1405/01/04',
+    products: [product],
+    vouchers: [],
+    cheques: [],
+    costingMethod: 'fifo',
+    ownerId: 'test_owner',
+    reversalVoucherId: 'vch_cancel_multiwarehouse',
+    nextVoucherNumber: 91,
+    deviceId: 'dev_test',
+  });
+  const restored = plan.updatedProducts[0];
+  assert.ok(restored);
+  const qtyByWarehouse = new Map<string, number>();
+  for (const layer of restored.costLayers ?? []) {
+    const warehouse = layer.warehouse ?? restored.warehouse;
+    qtyByWarehouse.set(warehouse, (qtyByWarehouse.get(warehouse) ?? 0) + layer.remainingQty);
+  }
+  assert.equal(restored.stock, 8);
+  assert.equal(qtyByWarehouse.get('انبار الف'), 5);
+  assert.equal(qtyByWarehouse.get('انبار ب'), 3);
+});
+
+test('Purchase cancellation fails closed when the originating layer is insufficient instead of consuming another warehouse', () => {
+  const seed = createHolooSeedData('test_owner');
+  const product: Product = {
+    ...seed.products[0],
+    id: 'prd_cancel_purchase_multiwarehouse',
+    warehouse: 'انبار ب',
+    stock: 10,
+    buyPrice: 100,
+    costingMethod: 'fifo',
+    inventoryValueIrr: 1_000,
+    costLayers: [
+      {
+        layerId: 'layer_purchase_partial',
+        date: '1405/01/01',
+        sourceRef: 'inv_purchase_to_cancel',
+        warehouse: 'انبار الف',
+        originalQty: 5,
+        remainingQty: 3,
+        unitCostIrr: 100,
+        totalCostIrr: 300,
+      },
+      {
+        layerId: 'layer_other_warehouse',
+        date: '1405/01/02',
+        sourceRef: 'other_purchase',
+        warehouse: 'انبار ب',
+        originalQty: 7,
+        remainingQty: 7,
+        unitCostIrr: 100,
+        totalCostIrr: 700,
+      },
+    ],
+  };
+  const purchase: Invoice = {
+    id: 'inv_purchase_to_cancel',
+    ownerId: 'test_owner',
+    invoiceNumber: 'P-MW-1',
+    invoiceType: 'purchase',
+    date: '1405/01/01',
+    partyId: seed.parties[1].id,
+    partyName: seed.parties[1].name,
+    warehouse: 'انبار الف',
+    subtotal: 500,
+    discount: 0,
+    vatAmount: 0,
+    grandTotal: 500,
+    paidCash: 0,
+    paidBank: 0,
+    paidCheque: 0,
+    creditAmount: 500,
+    status: 'settled',
+    items: [{
+      productId: product.id,
+      sku: product.sku,
+      productName: product.name,
+      unit: product.unit,
+      quantity: 5,
+      unitPrice: 100,
+      unitCostSnapshot: 100,
+      totalCostIrr: 500,
+      discount: 0,
+      vatAmount: 0,
+      lineTotal: 500,
+    }],
+  };
+  assert.throws(
+    () => planInvoiceCancellation({
+      invoice: purchase,
+      cancellationDate: '1405/01/04',
+      products: [product],
+      vouchers: [],
+      cheques: [],
+      costingMethod: 'fifo',
+      ownerId: 'test_owner',
+      reversalVoucherId: 'vch_cancel_purchase_multiwarehouse',
+      nextVoucherNumber: 92,
+      deviceId: 'dev_test',
+    }),
+    /لایه‌های بهای تمام‌شدهٔ همان فاکتور/
+  );
 });
 
 test('Stage 10 [Scenario 8]: Mixed Settlement Sale (Cash + Bank + Cheque + Credit + 10% VAT) & Negative Stock Guard', () => {
@@ -1010,6 +1675,8 @@ test('Stage 10 [Scenario 12]: End-to-End Full Reconciliation (TB, BS, P&L, Cash 
   vouchers.push(sal1.voucher!);
   invoices.push(sal1.invoice);
   cheques.push(sal1.cheque!);
+  assert.equal(sal1.invoice.returnRevision, 0, 'New source invoices start with a return revision');
+  assert.equal(sal1.invoice.activeReturnCount, 0, 'New source invoices start with an explicit zero active-return count');
 
   // 4) Sale Return 10 units linked to sal1 (net 20M + 2M VAT = 22M credited to customer AR)
   const sret1 = planAtomicInvoiceCommit({
@@ -1044,6 +1711,42 @@ test('Stage 10 [Scenario 12]: End-to-End Full Reconciliation (TB, BS, P&L, Cash 
   products = sret1.updatedProducts;
   vouchers.push(sret1.voucher!);
   invoices.push(sret1.invoice);
+
+  // A second return cannot exceed the 120 units sold after 10 units were already returned.
+  assert.throws(
+    () =>
+      planAtomicInvoiceCommit({
+        invoiceId: 'inv_e2e_sr2',
+        voucherId: 'vch_e2e_sr2',
+        nextVoucherNumber: 6,
+        ownerId: 'test_owner',
+        deviceId: 'dev_e2e_2',
+        defaultCostingMethod: 'fifo',
+        originalInvoice: sal1.invoice,
+        existingInvoices: invoices,
+        products,
+        payload: {
+          invoiceNumber: 'E2E-SR2-OVER',
+          invoiceType: 'sale_return',
+          sourceInvoiceId: sal1.invoice.id,
+          date: '1405/01/23',
+          partyId: cust.id,
+          partyName: cust.name,
+          warehouse: sku.warehouse,
+          subtotal: 222_000_000,
+          discount: 0,
+          vatAmount: 22_200_000,
+          grandTotal: 244_200_000,
+          paidCash: 0,
+          paidBank: 0,
+          paidCheque: 0,
+          creditAmount: 244_200_000,
+          status: 'settled',
+          items: [{ productId: sku.id, sku: sku.sku, productName: sku.name, unit: sku.unit, quantity: 111, unitPrice: 2_000_000, discount: 0, vatAmount: 22_200_000, lineTotal: 244_200_000 }],
+        },
+      }),
+    /مقدار برگشت.*از مقدار فاکتور اصلی بیشتر است/
+  );
 
   // 5) Internal Cash -> Bank Transfer (100M) — must NOT inflate Cash Flow Statement!
   const trfBase: Voucher = {
@@ -1206,6 +1909,75 @@ test('Inter-Warehouse Transfer preserves FIFO layers with strictly ZERO P&L impa
   assert.equal(plan.remainingSourceLayers.reduce((s, l) => s + l.totalCostIrr, 0), 75_000_000);
 });
 
+test('Warehouse transfer consumes only layers belonging to the selected source warehouse', () => {
+  const state = normalizeProductCostState(
+    {
+      id: 'prd_trf_warehouse_scope',
+      stock: 100,
+      buyPrice: 1_900_000,
+      warehouse: 'انبار مرکزی',
+      costingMethod: 'fifo',
+      costLayers: [
+        { layerId: 'CENTRAL', date: '1405/01/01', sourceRef: 'central_buy', warehouse: 'انبار مرکزی', originalQty: 10, remainingQty: 10, unitCostIrr: 1_000_000, totalCostIrr: 10_000_000 },
+        { layerId: 'BRANCH', date: '1405/01/02', sourceRef: 'branch_buy', warehouse: 'انبار شعبه', originalQty: 90, remainingQty: 90, unitCostIrr: 2_000_000, totalCostIrr: 180_000_000 },
+      ],
+      inventoryValueIrr: 190_000_000,
+    },
+    'fifo'
+  );
+
+  const plan = planWarehouseTransfer({
+    state,
+    fromWarehouse: 'انبار مرکزی',
+    toWarehouse: 'انبار مقصد',
+    qty: 5,
+    transferId: 'trf_scope',
+    date: '1405/02/01',
+  });
+
+  assert.equal(plan.transferredCostIrr, 5_000_000);
+  assert.equal(plan.transferredLayers.reduce((sum, layer) => sum + layer.remainingQty, 0), 5);
+  assert.equal(
+    plan.remainingSourceLayers.find((layer) => layer.layerId === 'BRANCH')?.remainingQty,
+    90,
+    'Layers held by another warehouse must remain unchanged'
+  );
+  assert.equal(
+    plan.remainingSourceLayers.find((layer) => layer.layerId === 'CENTRAL')?.remainingQty,
+    5
+  );
+});
+
+test('Warehouse transfer rejects quantity available only in other warehouses', () => {
+  const state = normalizeProductCostState(
+    {
+      id: 'prd_trf_source_guard',
+      stock: 100,
+      buyPrice: 1_900_000,
+      warehouse: 'انبار مرکزی',
+      costingMethod: 'fifo',
+      costLayers: [
+        { layerId: 'CENTRAL', date: '1405/01/01', sourceRef: 'central_buy', warehouse: 'انبار مرکزی', originalQty: 10, remainingQty: 10, unitCostIrr: 1_000_000, totalCostIrr: 10_000_000 },
+        { layerId: 'BRANCH', date: '1405/01/02', sourceRef: 'branch_buy', warehouse: 'انبار شعبه', originalQty: 90, remainingQty: 90, unitCostIrr: 2_000_000, totalCostIrr: 180_000_000 },
+      ],
+      inventoryValueIrr: 190_000_000,
+    },
+    'fifo'
+  );
+
+  assert.throws(
+    () => planWarehouseTransfer({
+      state,
+      fromWarehouse: 'انبار مرکزی',
+      toWarehouse: 'انبار مقصد',
+      qty: 11,
+      transferId: 'trf_source_guard',
+      date: '1405/02/01',
+    }),
+    /موجودی کافی برای انتقال از/
+  );
+});
+
 test('Iran Statutory Payroll Engine: Applies 1404 vs 1405 Budget Law progressive brackets & validates custom overrides', () => {
   const emp: Employee = {
     id: 'emp_stat_1',
@@ -1233,6 +2005,22 @@ test('Iran Statutory Payroll Engine: Applies 1404 vs 1405 Budget Law progressive
   const p1405 = getStatutoryParamsForYear('1405');
   assert.equal(validateStatutoryParams(p1405).length, 0);
   assert.equal(validateStatutoryParams({ ...p1405, vatRate: 0.9 }).length > 0, true);
+  assert.equal(
+    validateStatutoryParams({ ...p1405, monthlyTaxBrackets: p1405.monthlyTaxBrackets.slice(0, -1) }).length > 0,
+    true,
+    'tax brackets must include a final unbounded rate so income above the last threshold is taxed'
+  );
+  assert.equal(
+    validateStatutoryParams({
+      ...p1405,
+      monthlyTaxBrackets: [{ upToMonthlyIrr: null, rate: 0.1 }, ...p1405.monthlyTaxBrackets.slice(1)],
+    }).length > 0,
+    true,
+    'an unbounded bracket must not appear before the final bracket'
+  );
+  assert.equal(validateStatutoryParams({ ...p1405, childAllowancePerChildIrr: Number.NaN }).length > 0, true);
+  assert.equal(validateStatutoryParams({ ...p1405, overtimeMultiplier: 0 }).length > 0, true);
+  assert.equal(validateStatutoryParams({ ...p1405, monthlyWorkingHoursBase: Number.NaN }).length > 0, true);
 });
 
 test('Smart Audit Engine: Detects permanent voucher tamper-seal breach without mutating original records', () => {
@@ -1287,6 +2075,138 @@ test('Smart Audit Engine: Detects permanent voucher tamper-seal breach without m
   assert.ok(sealCheck.probableCause && sealCheck.suggestedFix, 'Audit check must include probableCause & suggestedFix');
   // Confirm read-only advisory behavior: tampered record was NOT mutated by audit engine
   assert.equal(tampered.totalDebit, 99_000_000, 'Audit engine must remain strictly read-only');
+});
+
+test('Inventory normalization: Rebuilds FIFO layers when quantity matches but valuation drifts from snapshot', () => {
+  const seed = createHolooSeedData('test_owner');
+  const base = seed.products[0];
+  const inconsistent: Product = {
+    ...base,
+    stock: 10,
+    buyPrice: 100,
+    inventoryValueIrr: 1_000,
+    costLayers: [
+      {
+        layerId: 'lyr_stale_value',
+        date: '1405/01/01',
+        sourceRef: 'purchase_stale',
+        warehouse: base.warehouse,
+        originalQty: 10,
+        remainingQty: 10,
+        unitCostIrr: 50,
+        totalCostIrr: 500,
+      },
+    ],
+  };
+
+  const normalized = normalizeProductCostState(inconsistent, 'fifo');
+  assert.equal(normalized.stockQty, 10);
+  assert.equal(normalized.totalValueIrr, 1_000, 'Inventory snapshot value must remain authoritative');
+  assert.equal(
+    normalized.layers.reduce((sum, layer) => sum + layer.totalCostIrr, 0),
+    1_000,
+    'Rebuilt cost layers must reconcile exactly with inventoryValueIrr'
+  );
+  assert.equal(normalized.layers.length, 1);
+  assert.equal(normalized.layers[0].sourceRef, 'opening_balance');
+});
+
+test('Inventory normalization: Rejects non-finite persisted FIFO layer quantities and costs', () => {
+  const seed = createHolooSeedData('test_owner');
+  const base = seed.products[0];
+  const corrupted: Product = {
+    ...base,
+    stock: 10,
+    buyPrice: 100,
+    inventoryValueIrr: 1_000,
+    costLayers: [
+      {
+        layerId: 'lyr_corrupt',
+        date: '1405/01/01',
+        sourceRef: 'purchase_corrupt',
+        warehouse: base.warehouse,
+        originalQty: Number.POSITIVE_INFINITY,
+        remainingQty: 10,
+        unitCostIrr: Number.POSITIVE_INFINITY,
+        totalCostIrr: Number.POSITIVE_INFINITY,
+      },
+      {
+        layerId: 'lyr_nan_qty',
+        date: '1405/01/02',
+        sourceRef: 'purchase_nan',
+        warehouse: base.warehouse,
+        originalQty: 5,
+        remainingQty: Number.NaN,
+        unitCostIrr: 100,
+        totalCostIrr: 500,
+      },
+    ],
+  };
+
+  const normalized = normalizeProductCostState(corrupted, 'fifo');
+  assert.equal(normalized.stockQty, 10);
+  assert.equal(normalized.totalValueIrr, 1_000);
+  assert.equal(normalized.layers.length, 1, 'Layers with non-finite remaining quantity must be discarded');
+  assert.equal(normalized.layers[0].sourceRef, 'opening_balance');
+  assert.equal(normalized.layers[0].totalCostIrr, 1_000);
+  assert.ok(Number.isFinite(normalized.layers[0].unitCostIrr));
+});
+
+test('Inventory normalization: Rebuilds valuation when persisted layer costs are non-finite and snapshot value is absent', () => {
+  const seed = createHolooSeedData('test_owner');
+  const base = seed.products[0];
+  const corrupted: Product = {
+    ...base,
+    stock: 10,
+    buyPrice: 100,
+    inventoryValueIrr: undefined,
+    costLayers: [
+      {
+        layerId: 'lyr_non_finite_value',
+        date: '1405/01/01',
+        sourceRef: 'purchase_corrupt_value',
+        warehouse: base.warehouse,
+        originalQty: 10,
+        remainingQty: 10,
+        unitCostIrr: Number.POSITIVE_INFINITY,
+        totalCostIrr: Number.POSITIVE_INFINITY,
+      },
+    ],
+  };
+
+  const normalized = normalizeProductCostState(corrupted, 'fifo');
+  assert.equal(normalized.stockQty, 10);
+  assert.equal(normalized.totalValueIrr, 1_000);
+  assert.equal(normalized.layers.length, 1);
+  assert.equal(normalized.layers[0].sourceRef, 'opening_balance');
+  assert.equal(normalized.layers[0].totalCostIrr, 1_000);
+});
+
+test('Inventory normalization: Retains persisted FIFO layers when quantity and value both reconcile', () => {
+  const seed = createHolooSeedData('test_owner');
+  const base = seed.products[0];
+  const consistent: Product = {
+    ...base,
+    stock: 10,
+    buyPrice: 100,
+    inventoryValueIrr: 1_000,
+    costLayers: [
+      {
+        layerId: 'lyr_valid',
+        date: '1405/01/01',
+        sourceRef: 'purchase_valid',
+        warehouse: base.warehouse,
+        originalQty: 10,
+        remainingQty: 10,
+        unitCostIrr: 100,
+        totalCostIrr: 1_000,
+      },
+    ],
+  };
+
+  const normalized = normalizeProductCostState(consistent, 'fifo');
+  assert.equal(normalized.totalValueIrr, 1_000);
+  assert.equal(normalized.layers[0].layerId, 'lyr_valid', 'Valid FIFO provenance must be preserved');
 });
 
 // ============================================================================

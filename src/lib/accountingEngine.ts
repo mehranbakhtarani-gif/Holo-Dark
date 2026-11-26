@@ -19,10 +19,12 @@ import {
   applyInventoryMovementStep,
   normalizeProductCostState,
   roundQty,
+  selectUnreturnedSaleAllocations,
 } from './inventoryCostingEngine';
 import {
   calculateIranMonthlyPayrollTax,
   getStatutoryParamsForYear,
+  validateStatutoryParams,
 } from './iranStatutoryParams';
 
 export interface LedgerFilterOptions {
@@ -1157,7 +1159,10 @@ export function computeAuditReport(input: {
   const tamperedIssues: string[] = [];
   const tamperedRefs: string[] = [];
   for (const v of scopedVouchers) {
-    if (v.status === 'permanent' && v.integrityHash) {
+    if (v.status === 'permanent' && !v.integrityHash) {
+      tamperedIssues.push(`سند دائم #${v.voucherNumber} (${v.date}) فاقد مُهر اصالت است.`);
+      tamperedRefs.push(v.id);
+    } else if (v.status === 'permanent' && v.integrityHash) {
       const expected = computeVoucherIntegrityHash(v);
       if (expected !== v.integrityHash) {
         tamperedIssues.push(
@@ -1295,6 +1300,7 @@ export interface PayrollCalculation {
   incomeTax: number;
   netPay: number;
   totalEmployerCost: number;
+  statutoryValidationErrors: string[];
 }
 
 export function calculateEmployeePayroll(
@@ -1303,6 +1309,12 @@ export function calculateEmployeePayroll(
   customStatutoryByYear?: Record<string, IranFiscalYearStatutoryParams>
 ): PayrollCalculation {
   const statutoryParams = getStatutoryParamsForYear(fiscalYear, customStatutoryByYear);
+  const statutoryValidationErrors = validateStatutoryParams(statutoryParams);
+  if (statutoryParams.requiresUserVerification && !statutoryParams.verifiedByUser) {
+    statutoryValidationErrors.unshift(
+      statutoryParams.verificationNote || `پارامترهای قانونی سال ${fiscalYear} هنوز تأیید نشده‌اند.`
+    );
+  }
   const hoursBase = Math.max(1, statutoryParams.monthlyWorkingHoursBase || 220);
   const hourlyRate = emp.baseSalary / hoursBase;
   const overtimePay = Math.round(emp.overtimeHours * hourlyRate * (statutoryParams.overtimeMultiplier || 1.4));
@@ -1342,6 +1354,7 @@ export function calculateEmployeePayroll(
     incomeTax,
     netPay,
     totalEmployerCost,
+    statutoryValidationErrors,
   };
 }
 
@@ -1916,6 +1929,7 @@ export interface AtomicInvoicePlanInput {
   existingVouchers?: Voucher[];
   closedFiscalYears?: string[];
   fxDecimals?: number;
+  eventSequence?: number;
 }
 
 export interface AtomicInvoicePlanResult {
@@ -1998,6 +2012,121 @@ export function planAtomicInvoiceCommit(input: AtomicInvoicePlanInput): AtomicIn
     throw new Error('برای این فاکتور قبلاً سند حسابداری صادر شده است.');
   }
 
+  // Linked returns are capped by the original invoice's unreturned quantity.
+  // The transaction layer serializes concurrent returns by touching the source invoice.
+  if (payload.invoiceType === 'sale_return' || payload.invoiceType === 'purchase_return') {
+    if (payload.sourceInvoiceId) {
+      const expectedOriginalType = payload.invoiceType === 'sale_return' ? 'sale' : 'purchase';
+      if (
+        !originalInvoice ||
+        originalInvoice.id !== payload.sourceInvoiceId ||
+        originalInvoice.invoiceType !== expectedOriginalType ||
+        originalInvoice.status === 'cancelled'
+      ) {
+        throw new Error('فاکتور مرجع برگشت معتبر نیست یا ابطال شده است.');
+      }
+      if (originalInvoice.partyId !== payload.partyId) {
+        throw new Error('طرف حساب فاکتور برگشت باید با فاکتور اصلی یکسان باشد.');
+      }
+
+      const originalQtyByProduct = new Map<string, number>();
+      for (const item of originalInvoice.items) {
+        originalQtyByProduct.set(
+          item.productId,
+          roundQty((originalQtyByProduct.get(item.productId) ?? 0) + Number(item.quantity || 0))
+        );
+      }
+      const alreadyReturnedByProduct = new Map<string, number>();
+      for (const existing of existingInvoices) {
+        if (
+          existing.id !== invoiceId &&
+          existing.status !== 'cancelled' &&
+          existing.invoiceType === payload.invoiceType &&
+          existing.sourceInvoiceId === originalInvoice.id
+        ) {
+          for (const item of existing.items) {
+            alreadyReturnedByProduct.set(
+              item.productId,
+              roundQty((alreadyReturnedByProduct.get(item.productId) ?? 0) + Number(item.quantity || 0))
+            );
+          }
+        }
+      }
+      const requestedByProduct = new Map<string, number>();
+      for (const item of payload.items) {
+        requestedByProduct.set(
+          item.productId,
+          roundQty((requestedByProduct.get(item.productId) ?? 0) + Number(item.quantity || 0))
+        );
+      }
+      for (const [productId, requestedQty] of requestedByProduct) {
+        const originalQty = originalQtyByProduct.get(productId) ?? 0;
+        const alreadyReturned = alreadyReturnedByProduct.get(productId) ?? 0;
+        if (originalQty <= 0 || alreadyReturned + requestedQty > originalQty + 0.0001) {
+          const productName = payload.items.find((item) => item.productId === productId)?.productName ?? productId;
+          throw new Error(
+            `مقدار برگشت «${productName}» از مقدار فاکتور اصلی بیشتر است (اصل: ${originalQty}، برگشت قبلی: ${alreadyReturned}، درخواست جدید: ${requestedQty}).`
+          );
+        }
+      }
+    }
+  }
+
+  // 1. Validate each invoice line and reconcile line-level totals to the header.
+  // Values are stored in IRR even when the invoice also carries foreign-currency display totals.
+  const lineTotals = payload.items.reduce(
+    (totals, item) => {
+      const qty = Number(item.quantity);
+      const unitPrice = Number(item.unitPrice);
+      const discount = Number(item.discount);
+      const vat = Number(item.vatAmount);
+      const lineTotal = Number(item.lineTotal);
+      if (
+        !Number.isFinite(qty) || qty <= 0 ||
+        !Number.isFinite(unitPrice) || unitPrice < 0 ||
+        !Number.isFinite(discount) || discount < 0 ||
+        !Number.isFinite(vat) || vat < 0 ||
+        !Number.isFinite(lineTotal) || lineTotal < 0
+      ) {
+        throw new Error(`مقادیر مالی یا تعداد ردیف «${item.productName}» نامعتبر است.`);
+      }
+      const gross = Math.round(lineTotal - vat + discount);
+      const expectedGross = Math.round(qty * unitPrice);
+      if (gross < 0 || discount > gross + 1 || Math.abs(gross - expectedGross) > 1) {
+        throw new Error(`مبلغ ناخالص ردیف «${item.productName}» باید با تعداد ضربدر قیمت واحد برابر باشد و تخفیف از آن بیشتر نباشد.`);
+      }
+      totals.subtotal += gross;
+      totals.discount += discount;
+      totals.vat += vat;
+      totals.grandTotal += lineTotal;
+      return totals;
+    },
+    { subtotal: 0, discount: 0, vat: 0, grandTotal: 0 }
+  );
+  const headerAmounts = [payload.subtotal, payload.discount, payload.vatAmount, payload.grandTotal];
+  if (headerAmounts.some((amount) => !Number.isFinite(Number(amount)) || Number(amount) < 0)) {
+    throw new Error('مبالغ سربرگ فاکتور باید عددی، محدود و غیرمنفی باشند.');
+  }
+  if (
+    Math.abs(lineTotals.subtotal - Number(payload.subtotal)) > 1 ||
+    Math.abs(lineTotals.discount - Number(payload.discount)) > 1 ||
+    Math.abs(lineTotals.vat - Number(payload.vatAmount)) > 1 ||
+    Math.abs(lineTotals.grandTotal - Number(payload.grandTotal)) > 1
+  ) {
+    throw new Error('جمع ردیف‌های فاکتور با جمع، تخفیف، مالیات یا مبلغ نهایی سربرگ برابر نیست؛ ثبت متوقف شد.');
+  }
+
+  // Settlement components are required finite, non-negative IRR amounts even for proforma/waste records.
+  const settlementAmounts = [
+    Number(payload.paidCash),
+    Number(payload.paidBank),
+    Number(payload.paidCheque),
+    Number(payload.creditAmount),
+  ];
+  if (settlementAmounts.some((amount) => !Number.isFinite(amount) || amount < 0)) {
+    throw new Error('مبالغ تسویه باید عددی معتبر و غیرمنفی باشند.');
+  }
+
   // 1. Validate arithmetic & settlement totals strictly before any mutation
   if (payload.invoiceType !== 'proforma' && payload.invoiceType !== 'waste') {
     const expectedGrand = Math.max(
@@ -2009,11 +2138,7 @@ export function planAtomicInvoiceCommit(input: AtomicInvoicePlanInput): AtomicIn
         `جمع کل فاکتور (${Math.round(payload.grandTotal).toLocaleString('en-US')}) با (جمع ناخالص − تخفیف + مالیات = ${expectedGrand.toLocaleString('en-US')}) برابر نیست.`
       );
     }
-    const paymentSum =
-      (Number(payload.paidCash) || 0) +
-      (Number(payload.paidBank) || 0) +
-      (Number(payload.paidCheque) || 0) +
-      (Number(payload.creditAmount) || 0);
+    const paymentSum = settlementAmounts.reduce((sum, amount) => sum + amount, 0);
     if (Math.abs(paymentSum - payload.grandTotal) > 1) {
       throw new Error('جمع مبالغ تسویه (نقد + بانک + چک + نسیه) باید دقیقاً برابر جمع کل فاکتور باشد.');
     }
@@ -2136,6 +2261,24 @@ export function planAtomicInvoiceCommit(input: AtomicInvoicePlanInput): AtomicIn
           ? payload.items.find((it) => it.productId === pid && it.unitCostSnapshot && it.unitCostSnapshot > 0)
               ?.unitCostSnapshot
           : undefined;
+      const previouslyReturnedQty =
+        payload.invoiceType === 'sale_return' && (originalInvoice?.id || payload.sourceInvoiceId)
+          ? roundQty(existingInvoices
+              .filter((existing) =>
+                existing.status !== 'cancelled' &&
+                existing.invoiceType === 'sale_return' &&
+                existing.sourceInvoiceId === (originalInvoice?.id || payload.sourceInvoiceId) &&
+                existing.id !== invoiceId
+              )
+              .reduce((sum, existing) =>
+                sum + existing.items
+                  .filter((item) => item.productId === pid)
+                  .reduce((itemSum, item) => itemSum + Number(item.quantity || 0), 0), 0))
+          : 0;
+      const returnAllocations =
+        origSaleItem?.consumedLayers && origSaleItem.consumedLayers.length > 0
+          ? selectUnreturnedSaleAllocations(origSaleItem.consumedLayers, previouslyReturnedQty, info.qty)
+          : origSaleItem?.consumedLayers;
 
       const step = applyInventoryMovementStep(currentState, {
         id: invoiceId,
@@ -2153,7 +2296,7 @@ export function planAtomicInvoiceCommit(input: AtomicInvoicePlanInput): AtomicIn
             ? origSaleItem?.unitCostSnapshot ?? explicitItemUnitCost
             : undefined,
         sourceRefId: originalInvoice?.id ?? payload.sourceInvoiceId,
-        originalConsumedLayers: origSaleItem?.consumedLayers,
+        originalConsumedLayers: returnAllocations,
         allowNegativeStock,
       });
 
@@ -2312,6 +2455,12 @@ export function planAtomicInvoiceCommit(input: AtomicInvoicePlanInput): AtomicIn
     id: invoiceId,
     ownerId,
     voucherId: voucher?.id,
+    ...(payload.invoiceType === 'sale' || payload.invoiceType === 'purchase'
+      ? { returnRevision: 0, activeReturnCount: 0 }
+      : {}),
+    ...(Number.isSafeInteger(input.eventSequence) && Number(input.eventSequence) > 0
+      ? { eventSequence: Number(input.eventSequence) }
+      : {}),
     _version: 1,
     updatedByDevice: deviceId,
   };
@@ -3669,6 +3818,7 @@ export function planInvoiceCancellation(input: {
   products: Product[];
   vouchers: Voucher[];
   cheques: Cheque[];
+  existingInvoices?: Invoice[];
   costingMethod?: InventoryCostingMethod;
   closedFiscalYears?: string[];
   ownerId: string;
@@ -3682,6 +3832,7 @@ export function planInvoiceCancellation(input: {
     products,
     vouchers,
     cheques,
+    existingInvoices = [],
     costingMethod = 'fifo',
     closedFiscalYears = [],
     ownerId,
@@ -3695,6 +3846,19 @@ export function planInvoiceCancellation(input: {
   }
   if (!isValidShamsiDate(cancellationDate)) {
     throw new Error(`تاریخ ابطال فاکتور («${cancellationDate}») فرمت شمسی معتبر ندارد.`);
+  }
+  if (invoice.invoiceType === 'sale' || invoice.invoiceType === 'purchase') {
+    const activeReturns = existingInvoices.filter(
+      (candidate) =>
+        candidate.status !== 'cancelled' &&
+        candidate.sourceInvoiceId === invoice.id &&
+        (candidate.invoiceType === 'sale_return' || candidate.invoiceType === 'purchase_return')
+    );
+    if (activeReturns.length > 0) {
+      throw new Error(
+        `ابطال فاکتور ${invoice.invoiceNumber} مجاز نیست؛ ابتدا ${activeReturns.length} فاکتور برگشت فعال مرتبط را ابطال کنید.`
+      );
+    }
   }
 
   const invFy = extractFiscalYearFromDate(invoice.date);
@@ -3821,7 +3985,7 @@ export function planInvoiceCancellation(input: {
         date: cancellationDate,
         kind: 'sale_return',
         productId: prod.id,
-        warehouse: prod.warehouse,
+        warehouse: invoice.warehouse || prod.warehouse,
         qty: agg.qty,
         totalCostIrr: agg.recordedCostIrr,
         unitCostIrr: agg.weightedUnitCostIrr || prod.buyPrice,
@@ -3843,14 +4007,26 @@ export function planInvoiceCancellation(input: {
       const targetRemovalCostIrr =
         invoice.invoiceType === 'purchase' ? agg.netPurchaseCostIrr : agg.recordedCostIrr;
 
-      const matchingLayers = nextLayers.filter((l) => l.sourceRef === invoice.id);
+      // Purchase receipts are keyed by sourceRef; sale-return layers are keyed by their
+      // return movement ID in layerId while retaining the original sale in sourceRef.
+      const isInvoiceLayer = (layer: InventoryCostLayer) =>
+        invoice.invoiceType === 'sale_return'
+          ? layer.layerId.startsWith(`ret_${invoice.id}_`)
+          : layer.sourceRef === invoice.id;
+      const matchingLayers = nextLayers.filter(isInvoiceLayer);
       const matchingQty = roundQty(matchingLayers.reduce((s, l) => s + l.remainingQty, 0));
 
-      if (matchingQty + 0.001 >= agg.qty) {
+      if (matchingQty + 0.001 < agg.qty) {
+        throw new Error(
+          `ابطال فاکتور ${invoice.invoiceNumber} متوقف شد؛ لایه‌های بهای تمام‌شدهٔ همان فاکتور برای مقدار کامل در انبار قابل تطبیق نیستند. برای جلوگیری از حذف موجودی انبار دیگر، ابتدا کاردکس و لایه‌های کالا را تطبیق دهید.`
+        );
+      }
+
+      {
         let toRemove = agg.qty;
         const rebuilt: InventoryCostLayer[] = [];
         for (const layer of nextLayers) {
-          if (layer.sourceRef === invoice.id && toRemove > 0.0001) {
+          if (isInvoiceLayer(layer) && toRemove > 0.0001) {
             const take = Math.min(layer.remainingQty, toRemove);
             const rem = roundQty(layer.remainingQty - take);
             toRemove = roundQty(toRemove - take);
@@ -3887,26 +4063,6 @@ export function planInvoiceCancellation(input: {
         }
         nextWeightedAvg =
           nextQty > 0 ? Math.round(nextTotalValueIrr / nextQty) : currentState.weightedAvgUnitCostIrr;
-      } else {
-        nextQty = roundQty(currentState.stockQty - agg.qty);
-        nextTotalValueIrr = Math.max(0, currentState.totalValueIrr - targetRemovalCostIrr);
-        nextWeightedAvg =
-          nextQty > 0 ? Math.round(nextTotalValueIrr / nextQty) : currentState.weightedAvgUnitCostIrr;
-        nextLayers =
-          nextQty > 0
-            ? [
-                {
-                  layerId: `lyr_cancel_${invoice.id}_${pid}`,
-                  date: cancellationDate,
-                  sourceRef: `cancel_${invoice.id}`,
-                  warehouse: prod.warehouse,
-                  originalQty: nextQty,
-                  remainingQty: nextQty,
-                  unitCostIrr: nextWeightedAvg,
-                  totalCostIrr: nextTotalValueIrr,
-                },
-              ]
-            : [];
       }
     } else if (invoice.invoiceType === 'purchase_return') {
       const restoreCost = agg.hasRecordedCost ? agg.recordedCostIrr : agg.netPurchaseCostIrr;
@@ -3915,7 +4071,7 @@ export function planInvoiceCancellation(input: {
         date: cancellationDate,
         kind: 'surplus',
         productId: prod.id,
-        warehouse: prod.warehouse,
+        warehouse: invoice.warehouse || prod.warehouse,
         qty: agg.qty,
         totalCostIrr: restoreCost,
         unitCostIrr: agg.qty > 0 ? Math.round(restoreCost / agg.qty) : prod.buyPrice,

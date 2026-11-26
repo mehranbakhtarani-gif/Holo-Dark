@@ -594,6 +594,39 @@ export async function enqueueDexieOutboxItem(
   }
 }
 
+export function isDurableOutboxItemVerified(
+  persisted: Pick<MeshSyncOutboxItem, 'target' | 'payloadHash' | 'snapshotJson' | 'requiredPeers' | 'deliveredToPeers'> | null | undefined,
+  expected: Pick<MeshSyncOutboxItem, 'target' | 'payloadHash' | 'snapshotJson' | 'requiredPeers' | 'deliveredToPeers'>
+): boolean {
+  return Boolean(
+    persisted &&
+    persisted.target === expected.target &&
+    persisted.payloadHash === expected.payloadHash &&
+    persisted.snapshotJson === expected.snapshotJson &&
+    expected.requiredPeers.every((peerId) => persisted.requiredPeers.includes(peerId)) &&
+    expected.deliveredToPeers.every((peerId) => persisted.deliveredToPeers.includes(peerId))
+  );
+}
+
+/**
+ * Strict outbox write used by the mesh receive path. Legacy enqueue remains
+ * best-effort for UI/background callers; inbound relay ACKs require a verified
+ * record in IndexedDB before the operation can be acknowledged upstream.
+ */
+export async function enqueueDexieOutboxItemDurably(
+  item: Omit<MeshSyncOutboxItem, 'id' | 'createdAt' | 'updatedAt'>
+): Promise<MeshSyncOutboxItem> {
+  const db = getMeshDexieDb();
+  if (!db) throw new Error('Mesh IndexedDB is unavailable; outbox operation was not persisted');
+
+  await enqueueDexieOutboxItem(item);
+  const persisted = await db.syncOutbox.where('operationId').equals(item.operationId).first();
+  if (!persisted || !isDurableOutboxItemVerified(persisted, item)) {
+    throw new Error('Mesh outbox persistence verification failed');
+  }
+  return persisted;
+}
+
 export async function listDexieOutboxItems(): Promise<MeshSyncOutboxItem[]> {
   const db = getMeshDexieDb();
   if (!db) return [];
@@ -623,6 +656,13 @@ export async function updateDexieOutboxItem(
   }
 }
 
+export function isAuthorizedOutboxPeerAck(
+  item: Pick<MeshSyncOutboxItem, 'target' | 'requiredPeers'>,
+  peerId: string
+): boolean {
+  return item.target === 'p2p_mesh' && item.requiredPeers.includes(peerId);
+}
+
 export async function markDexieOutboxPeerDelivered(
   operationId: string,
   peerId: string
@@ -631,7 +671,9 @@ export async function markDexieOutboxPeerDelivered(
   if (!db) return false;
   try {
     const existing = await db.syncOutbox.where('operationId').equals(operationId).first();
-    if (!existing || existing.id == null) return false;
+    if (!existing || existing.id == null || !isAuthorizedOutboxPeerAck(existing, peerId)) {
+      return false;
+    }
     const delivered = Array.from(new Set([...(existing.deliveredToPeers || []), peerId]));
     const allDelivered =
       existing.requiredPeers.length === 0 ||
@@ -735,6 +777,7 @@ export const SYNCABLE_WORKSPACE_COLLECTIONS = [
   'subcontractJobs',
   'rbacOperators',
   'auditLogs',
+  'trackedWarehouseTransfers',
 ] as const;
 
 export interface SyncTaggedEntity extends Record<string, unknown> {
@@ -783,10 +826,28 @@ export function tagSnapshotWithSyncMetadata(
         uuid: typeof item.uuid === 'string' && item.uuid.length > 0 ? item.uuid : id,
         deviceId:
           typeof item.deviceId === 'string' && item.deviceId.length > 0 ? item.deviceId : deviceId,
-        updatedAt:
-          typeof item.updatedAt === 'string' && !Number.isNaN(Date.parse(item.updatedAt))
-            ? item.updatedAt
-            : nowIso,
+        updatedAt: (() => {
+          if (typeof item.updatedAt === 'string' && !Number.isNaN(Date.parse(item.updatedAt))) {
+            return item.updatedAt;
+          }
+          const timestamp = item.updatedAt;
+          try {
+            let date: Date | null = null;
+            if (timestamp instanceof Date) {
+              date = timestamp;
+            } else if (
+              timestamp &&
+              typeof timestamp === 'object' &&
+              typeof (timestamp as { toDate?: unknown }).toDate === 'function'
+            ) {
+              date = (timestamp as { toDate: () => Date }).toDate();
+            }
+            if (date && !Number.isNaN(date.getTime())) return date.toISOString();
+            return col === 'trackedWarehouseTransfers' ? '1970-01-01T00:00:00.000Z' : nowIso;
+          } catch {
+            return col === 'trackedWarehouseTransfers' ? '1970-01-01T00:00:00.000Z' : nowIso;
+          }
+        })(),
         isDeleted: Boolean(item.isDeleted),
       };
     });
@@ -861,6 +922,19 @@ export interface LwwMergeStats {
   changed: boolean;
 }
 
+function stableSerializeForLww(value: unknown): string {
+  if (value === null || typeof value !== 'object') {
+    return JSON.stringify(value) ?? String(value);
+  }
+  if (Array.isArray(value)) {
+    return `[${value.map(stableSerializeForLww).join(',')}]`;
+  }
+  const record = value as Record<string, unknown>;
+  return `{${Object.keys(record).sort().map((key) =>
+    `${JSON.stringify(key)}:${stableSerializeForLww(record[key])}`
+  ).join(',')}}`;
+}
+
 function compareLwwWinner(
   a: { updatedAt?: unknown; deviceId?: unknown },
   b: { updatedAt?: unknown; deviceId?: unknown }
@@ -872,7 +946,11 @@ function compareLwwWinner(
   if (safeA !== safeB) return safeA > safeB ? 1 : -1;
   const dA = String(a.deviceId || '');
   const dB = String(b.deviceId || '');
-  return dA.localeCompare(dB);
+  const deviceOrder = dA.localeCompare(dB);
+  if (deviceOrder !== 0) return deviceOrder;
+  // Same-device writes can share a millisecond timestamp. Use canonical payload
+  // ordering as a final tie-break so merge(A, B) and merge(B, A) choose the same winner.
+  return stableSerializeForLww(a).localeCompare(stableSerializeForLww(b));
 }
 
 /**

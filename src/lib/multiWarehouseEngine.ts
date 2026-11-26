@@ -25,7 +25,7 @@ import {
   roundQty,
   WarehouseTransferPlan,
 } from './inventoryCostingEngine';
-import { addIrr, mulQtyByIrr, roundQtyFixed, sumIrr, toExactIrr } from './moneyMath';
+import { addIrr, mulQtyByIrr, roundQtyFixed, subIrr, sumIrr, toExactIrr } from './moneyMath';
 
 export type WarehouseTransferStatus = 'in_transit' | 'received' | 'cancelled';
 
@@ -43,6 +43,11 @@ export interface TrackedWarehouseTransfer {
   transferredCostIrr: number;
   transferredLayers: InventoryCostLayer[];
   status: WarehouseTransferStatus;
+  eventSequence?: number; // Server-allocated dispatch order for same-day Kardex movements
+  eventSequenceSource?: 'online' | 'sync';
+  receivedEventSequence?: number; // Server-allocated receipt order; distinct from dispatch
+  receivedEventSequenceSource?: 'online' | 'sync';
+  updatedAt?: string;
   voucherId?: string;
   operatorName?: string;
   notes?: string;
@@ -85,6 +90,9 @@ export interface WarehouseKardexRow {
   balanceQty: number;
   valueIrr: number;
   notes: string;
+  eventSequence?: number;
+  eventSequenceSource?: 'online' | 'sync';
+  orderIsAmbiguous: boolean;
 }
 
 export interface WarehouseSummaryRow {
@@ -95,6 +103,22 @@ export interface WarehouseSummaryRow {
   totalAvailableQty: number;
   totalInTransitQty: number;
   totalValuationIrr: number;
+}
+
+export interface MultiWarehouseReconciliationRow {
+  productId: string;
+  sku: string;
+  physicalQty: number;
+  inTransitQty: number;
+  accountedQty: number;
+  expectedStockQty: number;
+  quantityDifference: number;
+  physicalValueIrr: number;
+  inTransitValueIrr: number;
+  accountedValueIrr: number;
+  expectedInventoryValueIrr: number;
+  valueDifferenceIrr: number;
+  isBalanced: boolean;
 }
 
 export interface ShortageSurplusCheck {
@@ -145,7 +169,9 @@ export function computeMultiWarehouseMatrix(params: {
 }): {
   positions: WarehouseProductPosition[];
   warehouseSummaries: WarehouseSummaryRow[];
+  reconciliation: MultiWarehouseReconciliationRow[];
   totalPhysicalValuationIrr: number;
+  totalInventoryValuationIrr: number;
 } {
   const {
     products,
@@ -175,12 +201,14 @@ export function computeMultiWarehouseMatrix(params: {
   // 2. Aggregate in-transit quantities (from active in_transit transfers + in_transit/customs import dossiers)
   const inTransitInByKey = new Map<string, number>();
   const inTransitOutByKey = new Map<string, number>();
+  const inTransitValueByKey = new Map<string, number>();
   for (const trf of transfers) {
     if (trf.status !== 'in_transit') continue;
     const inKey = `${trf.toWarehouse}::${trf.productId}`;
     const outKey = `${trf.fromWarehouse}::${trf.productId}`;
     inTransitInByKey.set(inKey, roundQtyFixed((inTransitInByKey.get(inKey) || 0) + trf.qty, 4));
     inTransitOutByKey.set(outKey, roundQtyFixed((inTransitOutByKey.get(outKey) || 0) + trf.qty, 4));
+    inTransitValueByKey.set(inKey, addIrr(inTransitValueByKey.get(inKey) || 0, trf.transferredCostIrr));
   }
   for (const imp of importDossiers) {
     if (imp.status !== 'in_transit' && imp.status !== 'customs') continue;
@@ -200,6 +228,9 @@ export function computeMultiWarehouseMatrix(params: {
     if (state.layers.length > 0) {
       for (const layer of state.layers) {
         const wh = layer.warehouse || p.warehouse || 'انبار مرکزی';
+        // In-transit layers remain part of inventory valuation, but are not physical
+        // stock in either warehouse until the receiving transaction is committed.
+        if (wh.startsWith('در راه → ')) continue;
         const cur = byWh.get(wh) || { qty: 0, valIrr: 0 };
         cur.qty = roundQtyFixed(cur.qty + layer.remainingQty, 4);
         cur.valIrr = addIrr(cur.valIrr, layer.totalCostIrr);
@@ -218,8 +249,13 @@ export function computeMultiWarehouseMatrix(params: {
 
     // Ensure warehouses with pending in-transit inflows appear even if physical stock is 0
     for (const trf of transfers) {
-      if (trf.productId === p.id && trf.status === 'in_transit' && !byWh.has(trf.toWarehouse)) {
+      if (trf.productId !== p.id || trf.status !== 'in_transit') continue;
+      if (!byWh.has(trf.toWarehouse)) {
         byWh.set(trf.toWarehouse, { qty: 0, valIrr: 0 });
+      }
+      // Keep a source position visible even when the transfer depleted its final layer.
+      if (!byWh.has(trf.fromWarehouse)) {
+        byWh.set(trf.fromWarehouse, { qty: 0, valIrr: 0 });
       }
     }
 
@@ -238,11 +274,11 @@ export function computeMultiWarehouseMatrix(params: {
         productName: p.name,
         unit: p.unit,
         costingMethod: state.costingMethod,
-        physicalQty: roundQtyFixed(bucket.qty, 2),
-        reservedQty: roundQtyFixed(reservedQty, 2),
-        availableToSellQty: roundQtyFixed(availableToSellQty, 2),
-        inTransitInQty: roundQtyFixed(inTransitInQty, 2),
-        inTransitOutQty: roundQtyFixed(inTransitOutQty, 2),
+        physicalQty: roundQtyFixed(bucket.qty, 4),
+        reservedQty: roundQtyFixed(reservedQty, 4),
+        availableToSellQty: roundQtyFixed(availableToSellQty, 4),
+        inTransitInQty: roundQtyFixed(inTransitInQty, 4),
+        inTransitOutQty: roundQtyFixed(inTransitOutQty, 4),
         valuationIrr: bucket.valIrr,
         unitCostIrr,
         reorderPoint: p.reorderPoint,
@@ -265,20 +301,62 @@ export function computeMultiWarehouseMatrix(params: {
       totalValuationIrr: 0,
     };
     existing.skuCount += 1;
-    existing.totalPhysicalQty = roundQtyFixed(existing.totalPhysicalQty + pos.physicalQty, 2);
-    existing.totalReservedQty = roundQtyFixed(existing.totalReservedQty + pos.reservedQty, 2);
-    existing.totalAvailableQty = roundQtyFixed(existing.totalAvailableQty + pos.availableToSellQty, 2);
-    existing.totalInTransitQty = roundQtyFixed(existing.totalInTransitQty + pos.inTransitInQty, 2);
+    existing.totalPhysicalQty = roundQtyFixed(existing.totalPhysicalQty + pos.physicalQty, 4);
+    existing.totalReservedQty = roundQtyFixed(existing.totalReservedQty + pos.reservedQty, 4);
+    existing.totalAvailableQty = roundQtyFixed(existing.totalAvailableQty + pos.availableToSellQty, 4);
+    existing.totalInTransitQty = roundQtyFixed(existing.totalInTransitQty + pos.inTransitInQty, 4);
     existing.totalValuationIrr = addIrr(existing.totalValuationIrr, pos.valuationIrr);
     summaryMap.set(pos.warehouse, existing);
   }
 
+  // Attribute in-transit inventory value to its destination summary without counting
+  // it as physical quantity or duplicating it in the source/destination warehouses.
+  for (const [key, valueIrr] of inTransitValueByKey.entries()) {
+    const separator = key.indexOf('::');
+    const warehouse = key.slice(0, separator);
+    const existing = summaryMap.get(warehouse);
+    if (existing) existing.totalValuationIrr = addIrr(existing.totalValuationIrr, valueIrr);
+  }
+
+  const reconciliation: MultiWarehouseReconciliationRow[] = products.map((product) => {
+    const state = normalizeProductCostState(product, defaultCostingMethod);
+    const productPositions = positions.filter((position) => position.productId === product.id);
+    const physicalQty = roundQtyFixed(productPositions.reduce((sum, position) => sum + position.physicalQty, 0), 4);
+    const physicalValueIrr = sumIrr(productPositions.map((position) => position.valuationIrr));
+    const transitLayers = state.layers.filter((layer) => (layer.warehouse || '').startsWith('در راه → '));
+    const inTransitQty = roundQtyFixed(transitLayers.reduce((sum, layer) => sum + layer.remainingQty, 0), 4);
+    const inTransitValueIrr = sumIrr(transitLayers.map((layer) => layer.totalCostIrr));
+    const accountedQty = roundQtyFixed(physicalQty + inTransitQty, 4);
+    const quantityDifference = roundQtyFixed(accountedQty - state.stockQty, 4);
+    const accountedValueIrr = addIrr(physicalValueIrr, inTransitValueIrr);
+    const valueDifferenceIrr = subIrr(accountedValueIrr, state.totalValueIrr);
+    return {
+      productId: product.id,
+      sku: product.sku,
+      physicalQty,
+      inTransitQty,
+      accountedQty,
+      expectedStockQty: state.stockQty,
+      quantityDifference,
+      physicalValueIrr,
+      inTransitValueIrr,
+      accountedValueIrr,
+      expectedInventoryValueIrr: state.totalValueIrr,
+      valueDifferenceIrr,
+      isBalanced: Math.abs(quantityDifference) < 0.0001 && Math.abs(valueDifferenceIrr) <= 1,
+    };
+  });
+
+  const totalInventoryValuationIrr = sumIrr(reconciliation.map((row) => row.expectedInventoryValueIrr));
   return {
     positions,
     warehouseSummaries: Array.from(summaryMap.values()).sort(
       (a, b) => b.totalValuationIrr - a.totalValuationIrr
     ),
-    totalPhysicalValuationIrr: sumIrr(positions.map((p) => p.valuationIrr)),
+    reconciliation,
+    // Backward-compatible alias: this is total inventory asset value, including goods in transit.
+    totalPhysicalValuationIrr: totalInventoryValuationIrr,
+    totalInventoryValuationIrr,
   };
 }
 
@@ -293,10 +371,13 @@ export function executeTrackedWarehouseTransfer(params: {
   qty: number;
   date: string;
   transferNumber: string;
+  transferId?: string;
   mode: 'immediate' | 'in_transit';
   operatorName?: string;
   notes?: string;
   defaultCostingMethod?: InventoryCostingMethod;
+  eventSequence?: number;
+  eventSequenceSource?: 'online' | 'sync';
 }): {
   plan: WarehouseTransferPlan;
   updatedProduct: Product;
@@ -310,10 +391,13 @@ export function executeTrackedWarehouseTransfer(params: {
     qty,
     date,
     transferNumber,
+    transferId: requestedTransferId,
     mode,
     operatorName,
     notes,
     defaultCostingMethod = 'moving_average',
+    eventSequence,
+    eventSequenceSource,
   } = params;
 
   const state = normalizeProductCostState(product, defaultCostingMethod);
@@ -330,7 +414,7 @@ export function executeTrackedWarehouseTransfer(params: {
     layers: sourceLayers,
   };
 
-  const transferId = `trf_${Date.now()}_${Math.random().toString(36).slice(2, 6)}`;
+  const transferId = requestedTransferId || `trf_${Date.now()}_${Math.random().toString(36).slice(2, 10)}`;
   const plan = planWarehouseTransfer({
     state: sourceState,
     fromWarehouse,
@@ -348,7 +432,7 @@ export function executeTrackedWarehouseTransfer(params: {
   }));
 
   const combinedLayers = [...otherLayers, ...plan.remainingSourceLayers, ...movedLayers];
-  const totalQty = roundQtyFixed(combinedLayers.reduce((s, l) => s + l.remainingQty, 0), 2);
+  const totalQty = roundQtyFixed(combinedLayers.reduce((s, l) => s + l.remainingQty, 0), 4);
   const totalValIrr = sumIrr(combinedLayers.map((l) => l.totalCostIrr));
 
   const updatedProduct: Product = {
@@ -376,6 +460,12 @@ export function executeTrackedWarehouseTransfer(params: {
     transferredCostIrr: plan.transferredCostIrr,
     transferredLayers: plan.transferredLayers,
     status: mode === 'immediate' ? 'received' : 'in_transit',
+    ...(Number.isSafeInteger(eventSequence) && Number(eventSequence) > 0
+      ? { eventSequence: Number(eventSequence), ...(eventSequenceSource ? { eventSequenceSource } : {}) }
+      : {}),
+    ...(mode === 'immediate' && Number.isSafeInteger(eventSequence) && Number(eventSequence) > 0
+      ? { receivedEventSequence: Number(eventSequence) }
+      : {}),
     operatorName,
     notes,
   };
@@ -386,6 +476,93 @@ export function executeTrackedWarehouseTransfer(params: {
     transferRecord,
     pnlImpactIrr: 0,
   };
+}
+
+/**
+ * Receives a tracked in-transit transfer without changing total stock or valuation.
+ * Only the exact layer IDs created by the transfer may be moved into the destination.
+ */
+export function receiveTrackedWarehouseTransfer(params: {
+  product: Product;
+  transfer: TrackedWarehouseTransfer;
+  receivedDate: string;
+  eventSequence?: number;
+  eventSequenceSource?: 'online' | 'sync';
+}): {
+  updatedProduct: Product;
+  updatedTransfer: TrackedWarehouseTransfer;
+  pnlImpactIrr: 0;
+} {
+  const { product, transfer, receivedDate, eventSequence, eventSequenceSource } = params;
+  if (!receivedDate.trim()) throw new Error('تاریخ دریافت انتقال الزامی است.');
+  if (product.id !== transfer.productId) throw new Error('انتقال متعلق به این کالا نیست.');
+  if (transfer.status !== 'in_transit') {
+    throw new Error('فقط انتقالی که در وضعیت «در راه» است قابل دریافت است.');
+  }
+  if (!transfer.transferredLayers.length) {
+    throw new Error('لایه‌های بهای تمام‌شده انتقال موجود نیستند.');
+  }
+
+  const expectedById = new Map(transfer.transferredLayers.map((layer) => [layer.layerId, layer]));
+  if (expectedById.size !== transfer.transferredLayers.length) {
+    throw new Error('شناسه لایه در اطلاعات انتقال تکراری است.');
+  }
+
+  const layers = product.costLayers || [];
+  const actualIndexes = new Map<string, number>();
+  layers.forEach((layer, index) => {
+    if (expectedById.has(layer.layerId)) {
+      if (actualIndexes.has(layer.layerId)) {
+        throw new Error('شناسه لایه انتقال در موجودی کالا تکراری است.');
+      }
+      actualIndexes.set(layer.layerId, index);
+    }
+  });
+
+  if (actualIndexes.size !== expectedById.size) {
+    throw new Error('تمام لایه‌های انتقال در موجودی در راه یافت نشدند؛ دریافت انجام نشد.');
+  }
+
+  let actualQty = 0;
+  let actualValue = 0;
+  const nextLayers = layers.map((layer) => {
+    const expected = expectedById.get(layer.layerId);
+    if (!expected) return layer;
+    if (
+      layer.warehouse !== `در راه → ${transfer.toWarehouse}` ||
+      layer.sourceRef !== expected.sourceRef ||
+      Math.abs(layer.remainingQty - expected.remainingQty) > 0.00005 ||
+      layer.totalCostIrr !== expected.totalCostIrr
+    ) {
+      throw new Error('اطلاعات لایه انتقال با سند انتقال مطابقت ندارد؛ دریافت متوقف شد.');
+    }
+    actualQty += layer.remainingQty;
+    actualValue += layer.totalCostIrr;
+    return { ...layer, warehouse: transfer.toWarehouse };
+  });
+
+  if (
+    Math.abs(actualQty - transfer.qty) > 0.0001 ||
+    actualValue !== transfer.transferredCostIrr
+  ) {
+    throw new Error('مقدار یا ارزش لایه‌های انتقال با سند انتقال مغایرت دارد.');
+  }
+
+  const updatedProduct: Product = {
+    ...product,
+    costLayers: nextLayers,
+    // Receiving only changes the warehouse tag; total quantity and value remain unchanged.
+  };
+  const updatedTransfer: TrackedWarehouseTransfer = {
+    ...transfer,
+    status: 'received',
+    receivedDate,
+    ...(Number.isSafeInteger(eventSequence) && Number(eventSequence) > 0
+      ? { receivedEventSequence: Number(eventSequence), ...(eventSequenceSource ? { receivedEventSequenceSource: eventSequenceSource } : {}) }
+      : {}),
+  };
+
+  return { updatedProduct, updatedTransfer, pnlImpactIrr: 0 };
 }
 
 /**
@@ -407,6 +584,8 @@ export function computeWarehouseProductKardex(params: {
     outQty: number;
     valueIrr: number;
     notes: string;
+    eventSequence?: number;
+    eventSequenceSource?: 'online' | 'sync';
   };
 
   const events: RawEvent[] = [];
@@ -431,6 +610,8 @@ export function computeWarehouseProductKardex(params: {
           outQty: 0,
           valueIrr: val,
           notes: `${inv.invoiceType === 'purchase' ? 'خرید از' : 'برگشت فروش از'} ${inv.partyName}`,
+          eventSequence: inv.eventSequence,
+          eventSequenceSource: inv.eventSequenceSource,
         });
       } else {
         events.push({
@@ -446,6 +627,8 @@ export function computeWarehouseProductKardex(params: {
           outQty: qty,
           valueIrr: val,
           notes: `${inv.invoiceType === 'sale' ? 'فروش به' : inv.invoiceType === 'purchase_return' ? 'برگشت خرید به' : 'ضایعات'} ${inv.partyName}`,
+          eventSequence: inv.eventSequence,
+          eventSequenceSource: inv.eventSequenceSource,
         });
       }
     }
@@ -462,6 +645,8 @@ export function computeWarehouseProductKardex(params: {
         outQty: trf.qty,
         valueIrr: trf.transferredCostIrr,
         notes: `انتقال خروجی به ${trf.toWarehouse}`,
+        eventSequence: trf.eventSequence,
+        eventSequenceSource: trf.eventSequenceSource,
       });
     }
     if (trf.toWarehouse === warehouse && trf.status === 'received') {
@@ -473,21 +658,149 @@ export function computeWarehouseProductKardex(params: {
         outQty: 0,
         valueIrr: trf.transferredCostIrr,
         notes: `انتقال ورودی از ${trf.fromWarehouse}`,
+        eventSequence: trf.receivedEventSequence,
+        eventSequenceSource: trf.receivedEventSequenceSource,
       });
     }
   }
 
-  events.sort((a, b) => a.date.localeCompare(b.date));
+  const eventsByDate = new Map<string, RawEvent[]>();
+  for (const event of events) {
+    const dayEvents = eventsByDate.get(event.date) ?? [];
+    dayEvents.push(event);
+    eventsByDate.set(event.date, dayEvents);
+  }
+
+  const ambiguousDates = new Set<string>();
+  const orderedEvents: RawEvent[] = [];
+  for (const date of Array.from(eventsByDate.keys()).sort((a, b) => a.localeCompare(b))) {
+    const dayEvents = eventsByDate.get(date)!;
+    if (dayEvents.length > 1) {
+      const sequences = dayEvents.map((event) => event.eventSequence);
+      const hasCompleteUniqueSequence =
+        sequences.every((sequence) => Number.isSafeInteger(sequence) && Number(sequence) > 0) &&
+        new Set(sequences).size === sequences.length;
+      if (hasCompleteUniqueSequence) {
+        dayEvents.sort((a, b) => Number(a.eventSequence) - Number(b.eventSequence));
+        if (dayEvents.some((event) => event.eventSequenceSource === 'sync')) {
+          // Firestore trigger delivery order is not guaranteed; retain its sequence for repeatability,
+          // but do not present it as proof of the original order of offline device actions.
+          ambiguousDates.add(date);
+        }
+      } else {
+        // Do not fabricate chronology for legacy records; preserve source order and flag the day.
+        ambiguousDates.add(date);
+      }
+    }
+    orderedEvents.push(...dayEvents);
+  }
 
   let runningQty = 0;
-  return events.map((ev) => {
-    runningQty = roundQtyFixed(runningQty + ev.inQty - ev.outQty, 2);
+  return orderedEvents.map((ev) => {
+    runningQty = roundQtyFixed(runningQty + ev.inQty - ev.outQty, 4);
     return {
       ...ev,
       warehouse,
       balanceQty: runningQty,
+      orderIsAmbiguous: ambiguousDates.has(ev.date),
     };
   });
+}
+
+export interface WarehouseKardexReconciliation {
+  warehouse: string;
+  productId: string;
+  openingQty: number;
+  openingValueIrr: number;
+  kardexQty: number;
+  kardexValueIrr: number;
+  physicalQty: number;
+  physicalValueIrr: number;
+  quantityDifference: number;
+  valueDifferenceIrr: number;
+  isQuantityBalanced: boolean;
+  isValueBalanced: boolean;
+  isBalanced: boolean;
+}
+
+/**
+ * Reconciles a warehouse Kardex against its current physical FIFO layers.
+ * Opening balances must represent the balance immediately before the supplied
+ * invoices/transfers; in-transit layers are excluded from physical warehouse stock.
+ */
+export function reconcileWarehouseKardex(params: {
+  product: Product;
+  warehouse: string;
+  invoices: Invoice[];
+  transfers?: TrackedWarehouseTransfer[];
+  openingQty: number;
+  openingValueIrr: number;
+  defaultCostingMethod?: InventoryCostingMethod;
+}): WarehouseKardexReconciliation {
+  const {
+    product,
+    warehouse,
+    invoices,
+    transfers = [],
+    openingQty,
+    openingValueIrr,
+    defaultCostingMethod = 'moving_average',
+  } = params;
+  if (!Number.isFinite(openingQty) || openingQty < 0) {
+    throw new Error('موجودی افتتاحیه کاردکس باید عددی معتبر و غیرمنفی باشد.');
+  }
+  if (!Number.isSafeInteger(openingValueIrr) || openingValueIrr < 0) {
+    throw new Error('ارزش افتتاحیه کاردکس باید مبلغ صحیح و غیرمنفی باشد.');
+  }
+
+  const rows = computeWarehouseProductKardex({ product, warehouse, invoices, transfers });
+  const movementQty = rows.reduce((sum, row) => sum + row.inQty - row.outQty, 0);
+  const movementValueIrr = rows.reduce(
+    (sum, row) => addIrr(sum, row.inQty > 0 ? row.valueIrr : -row.valueIrr),
+    0
+  );
+  const kardexQty = roundQtyFixed(openingQty + movementQty, 4);
+  const kardexValueIrr = addIrr(openingValueIrr, movementValueIrr);
+
+  const state = normalizeProductCostState(product, defaultCostingMethod);
+  const physicalLayers = state.layers.filter((layer) => {
+    const layerWarehouse = layer.warehouse || product.warehouse || 'انبار مرکزی';
+    return layerWarehouse === warehouse && !layerWarehouse.startsWith('در راه → ');
+  });
+  const physicalQty = roundQtyFixed(
+    physicalLayers.length > 0
+      ? physicalLayers.reduce((sum, layer) => sum + layer.remainingQty, 0)
+      : state.layers.length === 0 && product.warehouse === warehouse
+        ? product.stock
+        : 0,
+    4
+  );
+  const physicalValueIrr = physicalLayers.length > 0
+    ? sumIrr(physicalLayers.map((layer) => layer.totalCostIrr))
+    : state.layers.length === 0 && product.warehouse === warehouse
+      ? toExactIrr(product.inventoryValueIrr ?? mulQtyByIrr(product.stock, product.buyPrice))
+      : 0;
+
+  const quantityDifference = roundQtyFixed(kardexQty - physicalQty, 4);
+  const valueDifferenceIrr = subIrr(kardexValueIrr, physicalValueIrr);
+  const isQuantityBalanced = Math.abs(quantityDifference) < 0.0001;
+  const isValueBalanced = Math.abs(valueDifferenceIrr) <= 1;
+
+  return {
+    warehouse,
+    productId: product.id,
+    openingQty: roundQtyFixed(openingQty, 4),
+    openingValueIrr: toExactIrr(openingValueIrr),
+    kardexQty,
+    kardexValueIrr,
+    physicalQty,
+    physicalValueIrr,
+    quantityDifference,
+    valueDifferenceIrr,
+    isQuantityBalanced,
+    isValueBalanced,
+    isBalanced: isQuantityBalanced && isValueBalanced,
+  };
 }
 
 /**
@@ -508,10 +821,13 @@ export function evaluateWarehouseShortageSurplus(params: {
       : product.warehouse === warehouse
         ? product.stock
         : 0,
-    2
+    4
   );
-  const cleanCounted = roundQtyFixed(Math.max(0, countedQty), 2);
-  const varianceQty = roundQtyFixed(cleanCounted - bookQty, 2);
+  if (!Number.isFinite(countedQty) || countedQty < 0) {
+    throw new Error('مقدار شمارش‌شده باید یک عدد متناهی و غیرمنفی باشد.');
+  }
+  const cleanCounted = roundQtyFixed(countedQty, 4);
+  const varianceQty = roundQtyFixed(cleanCounted - bookQty, 4);
   const unitCostIrr = state.weightedAvgUnitCostIrr || toExactIrr(product.buyPrice);
   const varianceValueIrr = mulQtyByIrr(varianceQty, unitCostIrr);
 
@@ -525,6 +841,6 @@ export function evaluateWarehouseShortageSurplus(params: {
     varianceQty,
     unitCostIrr,
     varianceValueIrr,
-    kind: Math.abs(varianceQty) < 0.005 ? 'exact' : varianceQty > 0 ? 'surplus' : 'shortage',
+    kind: Math.abs(varianceQty) < 0.00005 ? 'exact' : varianceQty > 0 ? 'surplus' : 'shortage',
   };
 }

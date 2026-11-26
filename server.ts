@@ -5,6 +5,7 @@ import http from 'http';
 import express, { Request, Response } from 'express';
 import path from 'path';
 import { fileURLToPath } from 'url';
+import { appendProcessedSyncOperation, hasProcessedSyncOperation, hasSupabaseRevisionConflict, resolveVerifiedFirebaseIdentity } from './server/authPolicy';
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
@@ -32,9 +33,15 @@ async function startServer() {
   app.set('trust proxy', 1);
 
   // Baseline security headers (preserve iframe embed compatibility by omitting X-Frame-Options)
-  app.use((_req, res, next) => {
+  app.use((req, res, next) => {
     res.setHeader('X-Content-Type-Options', 'nosniff');
     res.setHeader('Referrer-Policy', 'strict-origin-when-cross-origin');
+    res.setHeader('Permissions-Policy', 'camera=(), microphone=(), geolocation=()');
+    if (req.secure) res.setHeader('Strict-Transport-Security', 'max-age=31536000; includeSubDomains');
+    if (req.path === '/api' || req.path.startsWith('/api/')) {
+      res.setHeader('Cache-Control', 'no-store');
+      res.setHeader('Pragma', 'no-cache');
+    }
     next();
   });
 
@@ -42,14 +49,15 @@ async function startServer() {
   const rateBuckets = new Map<string, { count: number; resetAt: number }>();
   const createRateLimiter = (maxPerMinute: number) => (req: Request, res: Response, next: express.NextFunction) => {
     const ip = req.ip || req.socket.remoteAddress || 'unknown';
-    const key = `${req.path}:${ip}`;
+    const key = `${req.method}:${req.baseUrl}${req.path}:${ip}`;
     const now = Date.now();
     const bucket = rateBuckets.get(key);
     if (!bucket || now > bucket.resetAt) {
       rateBuckets.set(key, { count: 1, resetAt: now + 60_000 });
       if (rateBuckets.size > 5000) {
         for (const [k, v] of rateBuckets.entries()) {
-          if (now > v.resetAt) rateBuckets.delete(k);
+          if (now > v.resetAt || rateBuckets.size > 4000) rateBuckets.delete(k);
+          if (rateBuckets.size <= 4000) break;
         }
       }
       next();
@@ -57,6 +65,7 @@ async function startServer() {
     }
     bucket.count += 1;
     if (bucket.count > maxPerMinute) {
+      res.setHeader('Retry-After', '60');
       res.status(429).json({
         error: 'تعداد درخواست‌ها بیش از حد مجاز در دقیقه است. لطفاً کمی صبر کرده و دوباره تلاش کنید.',
       });
@@ -65,9 +74,12 @@ async function startServer() {
     next();
   };
 
-  app.use(express.json({ limit: '10mb' }));
+  // Apply API throttling before JSON parsing so oversized or malformed bodies are rate-limited too.
   app.use('/api/ai', createRateLimiter(30));
   app.use('/api/supabase', createRateLimiter(80));
+  app.use('/api/live-fx', createRateLimiter(10));
+  app.use('/api/server', createRateLimiter(10));
+  app.use(express.json({ limit: '10mb' }));
 
   app.get('/api/health', (_req: Request, res: Response) => {
     res.json({
@@ -499,14 +511,11 @@ async function startServer() {
         signal: AbortSignal.timeout(7000),
       });
       if (!resp.ok) return null;
-      const data = (await resp.json()) as {
-        users?: { localId?: string; email?: string }[];
-      };
-      const userRec = data?.users?.[0];
-      if (!userRec?.localId) return null;
+      const data: unknown = await resp.json();
+      const identity = resolveVerifiedFirebaseIdentity(data);
+      if (!identity) return null;
       return {
-        uid: String(userRec.localId),
-        email: String(userRec.email || ''),
+        ...identity,
         authSource: 'firebase',
       };
     } catch {
@@ -1983,34 +1992,31 @@ async function startServer() {
       const existing = existingRows?.[0];
       const serverRev = Number(existing?.revision) || 0;
 
-      // Durable idempotent replay check against persisted _syncMeta.lastOperationId
-      if (operationId && existing?.snapshot_json) {
+      // Persisted replay window: retries remain idempotent after later snapshots are accepted.
+      let existingSyncMeta: unknown;
+      if (existing?.snapshot_json) {
         const existingObj =
           typeof existing.snapshot_json === 'string'
             ? (JSON.parse(existing.snapshot_json) as Record<string, unknown>)
             : existing.snapshot_json;
-        const lastOp = (existingObj?._syncMeta as { lastOperationId?: string } | undefined)
-          ?.lastOperationId;
-        if (lastOp && lastOp === operationId) {
-          const backupState = await listAndPruneSupabaseBackups(cfg, verified.uid);
-          res.json({
-            status: 'idempotent_replay',
-            idempotentReplay: true,
-            operationId,
-            serverRevision: serverRev,
-            conflictPolicy,
-            syncedAt: existing.updated_at || new Date().toISOString(),
-            retainedBackups: backupState.backups,
-            prunedBackupsCount: 0,
-          });
-          return;
-        }
+        existingSyncMeta = existingObj?._syncMeta;
+      }
+      if (operationId && hasProcessedSyncOperation(existingSyncMeta, operationId)) {
+        const backupState = await listAndPruneSupabaseBackups(cfg, verified.uid);
+        res.json({
+          status: 'idempotent_replay',
+          idempotentReplay: true,
+          operationId,
+          serverRevision: serverRev,
+          conflictPolicy,
+          syncedAt: existing?.updated_at || new Date().toISOString(),
+          retainedBackups: backupState.backups,
+          prunedBackupsCount: 0,
+        });
+        return;
       }
 
-      const hasRemoteConflict =
-        Boolean(existing) &&
-        serverRev > clientRevision &&
-        existing?.last_device_id !== deviceId;
+      const hasRemoteConflict = Boolean(existing) && hasSupabaseRevisionConflict(serverRev, clientRevision);
 
       const writeAuditLog = async (outcome: string, nextRev: number, details: string) => {
         try {
@@ -2066,7 +2072,7 @@ async function startServer() {
         ? {
             ...parsedSnapshot,
             _syncMeta: {
-              lastOperationId: operationId,
+              ...appendProcessedSyncOperation(existingSyncMeta, operationId),
               revision: nextRevision,
               deviceId,
               syncedAt: nowIso,

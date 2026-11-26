@@ -1,5 +1,6 @@
 import { initializeApp } from 'firebase/app';
 import { getAuth, GoogleAuthProvider, signInWithPopup, signOut } from 'firebase/auth';
+import { getFunctions, httpsCallable } from 'firebase/functions';
 import {
   doc,
   Firestore,
@@ -188,4 +189,226 @@ export async function signInWithGoogle() {
 
 export async function signOutAccount() {
   return signOut(auth);
+}
+
+
+// Workspace callable gateway. Membership and role are revalidated server-side on every call.
+export const functions = getFunctions(app, 'us-central1');
+export interface WorkspaceContextResult {
+  workspaceId: string;
+  role: string;
+  migrationStatus: string;
+  stagedReadsEnabled: boolean;
+  coreWritesFrozen: boolean;
+  coreWriteMode: 'legacy' | 'workspace_native' | string;
+}
+export async function resolveWorkspaceContext(): Promise<WorkspaceContextResult> {
+  const callable = httpsCallable<void, WorkspaceContextResult>(functions, 'getWorkspaceContext');
+  const result = await callable();
+  return result.data;
+}
+
+export interface InvoiceReturnCounterMigrationResult {
+  status: 'completed' | 'already-completed';
+  migratedCount: number;
+  scannedInvoiceCount?: number;
+}
+
+export async function migrateInvoiceReturnCounters(): Promise<InvoiceReturnCounterMigrationResult> {
+  const callable = httpsCallable<void, InvoiceReturnCounterMigrationResult>(
+    functions,
+    'migrateInvoiceReturnCounters',
+  );
+  const result = await callable();
+  return result.data;
+}
+
+
+export interface WorkspaceCoreRecord<T = Record<string, unknown>> {
+  id: string;
+  payload: T;
+  version: number;
+}
+
+/** Reads a complete, frozen Workspace snapshot. Partial pages are never returned. */
+export async function listWorkspaceCoreRecords<T = Record<string, unknown>>(
+  collectionName: 'accounts' | 'products' | 'parties' | 'vouchers'
+): Promise<WorkspaceCoreRecord<T>[]> {
+  const callable = httpsCallable<
+    { collection: 'accounts' | 'products' | 'parties' | 'vouchers'; limit: number; cursor?: string },
+    { workspaceId: string; collection: string; generation: string; items: WorkspaceCoreRecord<T>[]; nextCursor: string | null }
+  >(functions, 'listWorkspaceCoreRecords');
+  const all: WorkspaceCoreRecord<T>[] = [];
+  let cursor: string | undefined;
+  let generation: string | undefined;
+  for (let page = 0; page < 50; page += 1) {
+    const response = await callable({ collection: collectionName, limit: 100, ...(cursor ? { cursor } : {}) });
+    const data = response.data;
+    if (data.collection !== collectionName || !data.generation || (generation && generation !== data.generation)) {
+      throw new Error('Workspace snapshot generation changed during pagination.');
+    }
+    generation = data.generation;
+    all.push(...data.items);
+    if (!data.nextCursor) return all;
+    cursor = data.nextCursor;
+  }
+  throw new Error('Workspace collection exceeds the safe pagination limit; no partial result was returned.');
+}
+
+export interface WorkspaceCoreMutationInput<T = Record<string, unknown>> {
+  collection: 'accounts' | 'products';
+  documentId: string;
+  operation: 'create' | 'update' | 'delete';
+  operationId: string;
+  expectedVersion: number;
+  data?: T;
+}
+export interface WorkspaceCoreMutationResult {
+  status: 'committed' | 'replayed';
+  operationId: string;
+  version: number;
+}
+
+/** Calls the versioned Workspace-native gateway; never falls back to legacy root writes. */
+export async function mutateWorkspaceCoreRecord<T = Record<string, unknown>>(
+  input: WorkspaceCoreMutationInput<T>
+): Promise<WorkspaceCoreMutationResult> {
+  const callable = httpsCallable<WorkspaceCoreMutationInput<T>, WorkspaceCoreMutationResult>(
+    functions,
+    'mutateWorkspaceCoreRecord'
+  );
+  const result = await callable(input);
+  return result.data;
+}
+
+export interface CreateTrackedWarehouseTransferInput {
+  productId: string;
+  transferId: string;
+  transferNumber: string;
+  fromWarehouse: string;
+  toWarehouse: string;
+  qty: number;
+  date: string;
+  operatorName?: string;
+  notes?: string;
+}
+export async function createTrackedWarehouseTransferAtomic(
+  input: CreateTrackedWarehouseTransferInput
+): Promise<{ status: 'committed' | 'replayed'; transfer: Record<string, unknown>; productVersion: number }> {
+  const callable = httpsCallable<CreateTrackedWarehouseTransferInput, {
+    status: 'committed' | 'replayed'; transfer: Record<string, unknown>; productVersion: number;
+  }>(functions, 'createTrackedWarehouseTransfer');
+  const result = await callable(input);
+  return result.data;
+}
+export interface ReceiveTrackedWarehouseTransferInput {
+  productId: string;
+  transferId: string;
+  receivedDate: string;
+}
+export async function receiveTrackedWarehouseTransferAtomic(
+  input: ReceiveTrackedWarehouseTransferInput
+): Promise<{
+  status: 'committed' | 'replayed';
+  productVersion: number;
+  transferId?: string;
+  receivedEventSequence?: number;
+}> {
+  const callable = httpsCallable<ReceiveTrackedWarehouseTransferInput, {
+    status: 'committed' | 'replayed';
+    productVersion: number;
+    transferId?: string;
+    receivedEventSequence?: number;
+  }>(functions, 'receiveTrackedWarehouseTransfer');
+  const result = await callable(input);
+  return result.data;
+}
+export interface RestoreTrackedWarehouseTransfersResult {
+  status: 'restored' | 'capacity-reached' | 'up-to-date';
+  restoredCount: number;
+  remainingCapacity: number;
+}
+export async function restoreTrackedWarehouseTransfersAtomic(): Promise<RestoreTrackedWarehouseTransfersResult> {
+  const callable = httpsCallable<void, RestoreTrackedWarehouseTransfersResult>(
+    functions,
+    'restoreTrackedWarehouseTransfers',
+  );
+  const result = await callable();
+  return result.data;
+}
+
+
+export interface TrackedWarehouseTransferHistoryPage {
+  transfers: import('./multiWarehouseEngine').TrackedWarehouseTransfer[];
+  nextCursor: string | null;
+  hasMore: boolean;
+}
+export async function listTrackedWarehouseTransferHistoryAtomic(
+  cursor: string | null = null,
+): Promise<TrackedWarehouseTransferHistoryPage> {
+  const callable = httpsCallable<{ cursor: string | null }, TrackedWarehouseTransferHistoryPage>(
+    functions,
+    'listTrackedWarehouseTransferHistory',
+  );
+  const result = await callable({ cursor });
+  return result.data;
+}
+
+export interface WorkspaceVoucherMutationInput {
+  operation: 'create' | 'update' | 'delete' | 'finalize' | 'reverse';
+  documentId: string;
+  operationId: string;
+  expectedVersion?: number;
+  sourceDocumentId?: string;
+  expectedSourceVersion?: number;
+  integrityHash?: string;
+  data?: Record<string, unknown>;
+}
+export interface WorkspaceVoucherMutationResult {
+  status: 'committed' | 'replayed';
+  operationId: string;
+  version: number;
+  sourceVersion?: number;
+  voucherNumber: number;
+}
+export interface WorkspaceInventoryAdjustmentInput {
+  productId: string;
+  voucherId: string;
+  operationId: string;
+  expectedVersion: number;
+  countedStock: number;
+  date: string;
+  reason: string;
+  deviceId?: string;
+}
+export interface WorkspaceInventoryAdjustmentResult {
+  status: 'committed' | 'replayed' | 'no_change';
+  operationId: string;
+  version: number;
+  voucherNumber?: number | null;
+  adjustmentCostIrr: number;
+  product?: {
+    stock: number; buyPrice: number; costingMethod?: string;
+    costLayers?: unknown[]; inventoryValueIrr?: number; _version?: number;
+  };
+  voucher?: Record<string, unknown>;
+}
+export async function adjustWorkspaceProductStockWithVoucher(
+  input: WorkspaceInventoryAdjustmentInput
+): Promise<WorkspaceInventoryAdjustmentResult> {
+  const callable = httpsCallable<WorkspaceInventoryAdjustmentInput, WorkspaceInventoryAdjustmentResult>(
+    functions, 'adjustWorkspaceProductStockWithVoucher'
+  );
+  const result = await callable(input);
+  return result.data;
+}
+
+export async function mutateWorkspaceVoucher(
+  input: WorkspaceVoucherMutationInput
+): Promise<WorkspaceVoucherMutationResult> {
+  const callable = httpsCallable<WorkspaceVoucherMutationInput, WorkspaceVoucherMutationResult>(
+    functions, 'mutateWorkspaceVoucher'
+  );
+  const result = await callable(input);
+  return result.data;
 }
