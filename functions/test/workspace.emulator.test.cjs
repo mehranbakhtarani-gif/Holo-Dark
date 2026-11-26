@@ -234,3 +234,27 @@ test('workspace context resolves active membership from server, not a client-sel
   const outsider = await createVerifiedUser('context-outsider');
   await expectCallableError(call('getWorkspaceContext', outsider.token), 'FAILED_PRECONDITION');
 });
+
+
+test('core workspace reads require a verified snapshot and an explicit freeze barrier', async () => {
+  const owner = await createVerifiedUser('core-read-owner');
+  await call('bootstrapWorkspace', owner.token);
+  await refreshUserToken(owner);
+  const manifestRef = firestore.collection('workspaceMigrations').doc(owner.uid);
+  await manifestRef.set({ status: 'verified' });
+  await expectCallableError(call('listWorkspaceCoreRecords', owner.token, { collection: 'accounts' }), 'FAILED_PRECONDITION');
+
+  await manifestRef.set({ status: 'verified', readBarrier: {
+    status: 'frozen', generation: 'freeze-generation-001', frozenAt: Timestamp.now(),
+  } }, { merge: true });
+  const recordId = `core-read-${owner.uid}`;
+  await firestore.collection('workspaces').doc(owner.uid)
+    .collection('migrationData').doc('accounts').collection('records').doc(recordId).set({
+      payload: { ownerId: owner.uid, code: '99201', title: 'Frozen snapshot account' },
+      sourceId: recordId, workspaceId: owner.uid, schemaVersion: 1,
+    });
+  const page = await call('listWorkspaceCoreRecords', owner.token, { collection: 'accounts', limit: 10 });
+  assert.equal(page.generation, 'freeze-generation-001');
+  assert.ok(page.items.some((item) => item.id === recordId && item.payload.title === 'Frozen snapshot account'));
+  await expectCallableError(call('listWorkspaceCoreRecords', owner.token, { collection: 'vouchers' }), 'INVALID_ARGUMENT');
+});
