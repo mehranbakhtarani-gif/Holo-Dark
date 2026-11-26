@@ -34,7 +34,17 @@ async function createVerifiedUser(label, verify = true) {
   const verifiedText = await verified.text();
   assert.equal(verified.ok, true, verifiedText);
   const account = JSON.parse(verifiedText);
-  return { email, password, uid: account.localId, token: account.idToken };
+  assert.equal(account.emailVerified, true, verifiedText);
+  // Mint a fresh ID token after the verification mutation so the email_verified
+  // claim presented to callable functions reflects the updated Auth user record.
+  const signedIn = await fetch(`http://${AUTH_EMULATOR}/identitytoolkit.googleapis.com/v1/accounts:signInWithPassword?key=${API_KEY}`, {
+    method: 'POST', headers: { 'content-type': 'application/json' },
+    body: JSON.stringify({ email, password, returnSecureToken: true }),
+  });
+  const signedInText = await signedIn.text();
+  assert.equal(signedIn.ok, true, signedInText);
+  const freshToken = JSON.parse(signedInText);
+  return { email, password, uid: freshToken.localId, token: freshToken.idToken };
 }
 
 async function refreshUserToken(user) {
