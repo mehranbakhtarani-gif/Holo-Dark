@@ -86,6 +86,7 @@ import { FuzzyTableOption, FuzzyTableSearch } from './FuzzyTableSearch';
 import { VoiceInputButton } from './VoiceInputButton';
 import { MoadianQrCode } from './MoadianQrCode';
 import { MoneyInput } from './ui/MoneyInput';
+import { getStatutoryParamsForYear, validateStatutoryParams } from '../lib/iranStatutoryParams';
 import { MessengerShareActions } from './MessengerShareActions';
 
 const TYPE_LABELS: Record<InvoiceType, string> = {
@@ -236,6 +237,18 @@ export const InvoicesView: React.FC<{ initialIntent?: string; clearIntent?: () =
 
   const isFxMode = isForeignCurrency(currencyCode);
   const fxDecimals = activeCurrencyDef?.decimalPlaces ?? 2;
+  const invoiceFiscalYear = /^\\d{4}/.test(date) ? date.slice(0, 4) : profile.fiscalYear;
+  const invoiceStatutory = useMemo(
+    () => getStatutoryParamsForYear(invoiceFiscalYear, profile.statutoryParamsByYear),
+    [invoiceFiscalYear, profile.statutoryParamsByYear]
+  );
+  const invoiceStatutoryErrors = useMemo(
+    () => validateStatutoryParams(invoiceStatutory),
+    [invoiceStatutory]
+  );
+  const vatParamsReady =
+    invoiceStatutoryErrors.length === 0 &&
+    !(invoiceStatutory.requiresUserVerification && !invoiceStatutory.verifiedByUser);
 
   const makeInitialDraftRow = (
     prodId: string,
@@ -634,7 +647,7 @@ export const InvoicesView: React.FC<{ initialIntent?: string; clearIntent?: () =
           const fNet = roundCurrency(Math.max(0, fGross - fDisc), fxDecimals);
           const fVat =
             invoiceType !== 'waste' && applyVat && !prod.vatExempt
-              ? roundCurrency(fNet * 0.1, fxDecimals)
+              ? roundCurrency(fNet * invoiceStatutory.vatRate, fxDecimals)
               : 0;
           const fTotal = roundCurrency(fNet + fVat, fxDecimals);
 
@@ -644,7 +657,7 @@ export const InvoicesView: React.FC<{ initialIntent?: string; clearIntent?: () =
           const irrNet = Math.max(0, irrGross - irrDisc);
           const irrVat =
             invoiceType !== 'waste' && applyVat && !prod.vatExempt
-              ? convertForeignToIrr(fVat, effRate)
+              ? Math.round(irrNet * invoiceStatutory.vatRate)
               : 0;
           const irrTotal = irrNet + irrVat;
 
@@ -678,7 +691,7 @@ export const InvoicesView: React.FC<{ initialIntent?: string; clearIntent?: () =
         const safeDiscount = Math.min(gross, Math.max(0, toExactIrr(rawDiscount)));
         const net = Math.max(0, gross - safeDiscount);
         const vat =
-          invoiceType !== 'waste' && applyVat && !prod.vatExempt ? percentOfIrr(net, 10) : 0;
+          invoiceType !== 'waste' && applyVat && !prod.vatExempt ? Math.round(net * invoiceStatutory.vatRate) : 0;
         return {
           productId: prod.id,
           sku: prod.sku,
@@ -925,6 +938,13 @@ export const InvoicesView: React.FC<{ initialIntent?: string; clearIntent?: () =
 
   const handleSaveInvoice = async (e: React.FormEvent) => {
     e.preventDefault();
+    if (applyVat && invoiceType !== 'waste' && !vatParamsReady) {
+      const reason = invoiceStatutoryErrors[0] ||
+        invoiceStatutory.verificationNote ||
+        'پارامترهای قانونی ارزش افزوده برای این سال مالی باید تأیید شوند.';
+      showToast(reason, 'error');
+      return;
+    }
     if (computedItems.length === 0) {
       showToast('حداقل یک قلم نخ به فاکتور اضافه کنید.');
       return;
