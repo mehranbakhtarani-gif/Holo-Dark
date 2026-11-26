@@ -950,11 +950,13 @@ test('Tracked warehouse transfer preserves fractional FIFO quantity through rece
     qty: 0.1234,
     date: '1405/01/02',
     transferNumber: 'TRF-FRAC-001',
+    transferId: 'trf_idempotent_test_001',
     mode: 'in_transit',
     defaultCostingMethod: 'fifo',
     eventSequence: 21,
     eventSequenceSource: 'sync',
   });
+  assert.equal(dispatched.transferRecord.id, 'trf_idempotent_test_001');
   assert.equal(dispatched.transferRecord.eventSequence, 21);
   assert.equal(dispatched.transferRecord.eventSequenceSource, 'sync');
   assert.equal(dispatched.plan.qty, 0.1234);
