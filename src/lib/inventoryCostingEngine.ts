@@ -554,21 +554,28 @@ export function applyInventoryMovementStep(
       // A linked purchase return must consume only its originating purchase layer.
       // Never silently substitute stock from an unrelated receipt.
       if (movement.sourceRefId) {
-        const target = layers.find(
-          (l) => l.sourceRef === movement.sourceRefId && l.remainingQty > 0.00005
+        const sourceLayers = layers.filter(
+          (layer) => layer.sourceRef === movement.sourceRefId && layer.remainingQty > 0.00005
         );
-        const sourceRemainingQty = target?.remainingQty ?? 0;
-        if (!target || sourceRemainingQty + 0.0001 < qty) {
+        const sourceRemainingQty = roundQty(
+          sourceLayers.reduce((sum, layer) => sum + layer.remainingQty, 0)
+        );
+        if (sourceRemainingQty + 0.0001 < qty) {
           throw new Error(
             `موجودی باقی‌مانده از خرید مرجع برای برگشت کافی نیست (شناسه خرید: ${movement.sourceRefId}، موجودی قابل برگشت: ${roundQty2(sourceRemainingQty)}، مقدار درخواستی: ${roundQty2(qty)}).`
           );
         }
-        const take = roundQty(Math.min(target.remainingQty, remainingToRemove));
-        const takeVal = allocateLayerCostIrr(target, take);
-        target.remainingQty = roundQty(Math.max(0, target.remainingQty - take));
-        target.totalCostIrr = Math.max(0, target.totalCostIrr - takeVal);
-        remainingToRemove = roundQty(Math.max(0, remainingToRemove - take));
-        inventoryCostRemovedIrr += takeVal;
+        // A source purchase can be split across warehouses by transfers. Consume
+        // only its surviving descendant layers, never an unrelated purchase layer.
+        for (const sourceLayer of sourceLayers) {
+          if (remainingToRemove <= 0.00005) break;
+          const take = roundQty(Math.min(sourceLayer.remainingQty, remainingToRemove));
+          const takeVal = allocateLayerCostIrr(sourceLayer, take);
+          sourceLayer.remainingQty = roundQty(Math.max(0, sourceLayer.remainingQty - take));
+          sourceLayer.totalCostIrr = Math.max(0, sourceLayer.totalCostIrr - takeVal);
+          remainingToRemove = roundQty(Math.max(0, remainingToRemove - take));
+          inventoryCostRemovedIrr += takeVal;
+        }
       } else {
         // Without a source reference, reverse the newest available layers first (LIFO).
         for (let i = layers.length - 1; i >= 0 && remainingToRemove > 0.00005; i--) {
