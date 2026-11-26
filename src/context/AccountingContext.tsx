@@ -2088,7 +2088,8 @@ export const AccountingProvider: React.FC<{ children: React.ReactNode }> = ({ ch
         unit: next.unit.slice(0, 32),
         buyPrice: Math.max(0, Number(next.buyPrice) || 0),
         sellPrice: Math.max(0, Number(next.sellPrice) || 0),
-        stock: Number((Number(next.stock) || 0).toFixed(2)),
+        // Inventory movements support four decimal places; do not truncate FIFO quantities on persistence.
+        stock: Number((Number(next.stock) || 0).toFixed(4)),
         reorderPoint: Math.max(0, Number(next.reorderPoint) || 0),
         vatExempt: Boolean(next.vatExempt),
         createdAt: new Date(),
