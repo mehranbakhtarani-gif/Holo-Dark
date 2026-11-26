@@ -620,10 +620,10 @@ export const mutateWorkspaceVoucher = onCall({ region: REGION, timeoutSeconds: 6
   const operationId = request.data?.operationId;
   const documentId = request.data?.documentId;
   const expectedVersion = request.data?.expectedVersion;
-  if (!['create', 'update', 'delete', 'finalize'].includes(operation)
+  if (!['create', 'update', 'delete', 'finalize', 'reverse'].includes(operation)
       || typeof operationId !== 'string' || !/^[A-Za-z0-9_-]{16,128}$/.test(operationId)
       || typeof documentId !== 'string' || !/^[A-Za-z0-9_-]{1,128}$/.test(documentId)
-      || (['update', 'delete', 'finalize'].includes(String(operation))
+      || (['update', 'delete', 'finalize', 'reverse'].includes(String(operation))
         && (!Number.isInteger(expectedVersion) || expectedVersion < 1))) {
     throw new HttpsError('invalid-argument', 'پارامترهای عملیات سند معتبر نیستند.');
   }
@@ -632,6 +632,18 @@ export const mutateWorkspaceVoucher = onCall({ region: REGION, timeoutSeconds: 6
   const operationRef = db.collection('workspaceWriteOperations').doc(`${workspaceId}_voucher_${operationId}`);
   const counterRef = migrationDestination(workspaceId, 'counters').doc(workspaceId);
   const input = request.data?.data as Record<string, unknown> | undefined;
+  const sourceDocumentId = request.data?.sourceDocumentId;
+  const expectedSourceVersion = request.data?.expectedSourceVersion;
+  if (operation === 'reverse'
+      && (typeof sourceDocumentId !== 'string' || !/^[A-Za-z0-9_-]{1,128}$/.test(sourceDocumentId)
+        || !Number.isInteger(expectedSourceVersion) || expectedSourceVersion < 1
+        || !input || typeof input.date !== 'string' || !/^\\d{4}\\/\\d{2}\\/\\d{2}$/.test(input.date)
+        || typeof input.fiscalYear !== 'string' || !input.fiscalYear || input.fiscalYear.length > 16
+        || typeof input.description !== 'string' || input.description.length > 300
+        || (input.updatedByDevice !== undefined && (typeof input.updatedByDevice !== 'string' || input.updatedByDevice.length > 64))
+        || Object.keys(input).some((key) => !['date', 'fiscalYear', 'description', 'updatedByDevice'].includes(key)))) {
+    throw new HttpsError('invalid-argument', 'پارامترهای معکوس‌سازی سند معتبر نیستند.');
+  }
   if (operation === 'create' || operation === 'update') {
     if (!input || input.ownerId !== workspaceId || input.status !== 'draft'
         || typeof input.date !== 'string' || typeof input.fiscalYear !== 'string'
@@ -673,11 +685,19 @@ export const mutateWorkspaceVoucher = onCall({ region: REGION, timeoutSeconds: 6
   const requestHash = createHash('sha256').update(JSON.stringify(stableMigrationValue({
     operation, documentId, expectedVersion: ['update', 'delete', 'finalize'].includes(String(operation)) ? expectedVersion : null,
     data: ['create', 'update'].includes(String(operation)) ? input : null,
+    sourceDocumentId: operation === 'reverse' ? request.data?.sourceDocumentId : null,
+    sourceExpectedVersion: operation === 'reverse' ? request.data?.expectedSourceVersion : null,
+    reversalDate: operation === 'reverse' ? request.data?.data?.date : null,
+    reversalFiscalYear: operation === 'reverse' ? request.data?.data?.fiscalYear : null,
     integrityHash: operation === 'finalize' ? request.data?.integrityHash : null,
   }))).digest('hex');
   return db.runTransaction(async (tx) => {
-    const [manifest, operationSnap, voucherSnap, counterSnap] = await Promise.all([
+    const sourceVoucherRef = operation === 'reverse'
+      ? migrationDestination(workspaceId, 'vouchers').doc(String(sourceDocumentId))
+      : null;
+    const [manifest, operationSnap, voucherSnap, counterSnap, sourceVoucherSnap] = await Promise.all([
       tx.get(manifestRef), tx.get(operationRef), tx.get(voucherRef), tx.get(counterRef),
+      sourceVoucherRef ? tx.get(sourceVoucherRef) : Promise.resolve(null),
     ]);
     if (!manifest.exists || manifest.get('status') !== 'verified'
         || manifest.get('coreWritesFrozen') !== true || manifest.get('coreWriteMode') !== 'workspace_native'
@@ -725,6 +745,92 @@ export const mutateWorkspaceVoucher = onCall({ region: REGION, timeoutSeconds: 6
         requestHash, resultVersion: nextVersion, voucherNumber: currentPayload.voucherNumber, createdAt: now,
       });
       return { status: 'committed', operationId, version: nextVersion, voucherNumber: currentPayload.voucherNumber };
+    }
+    if (operation === 'reverse') {
+      if (voucherSnap.exists) throw new HttpsError('already-exists', 'شناسه سند معکوس از قبل وجود دارد.');
+      if (!sourceVoucherSnap?.exists || sourceVoucherSnap.get('deleted') === true) {
+        throw new HttpsError('not-found', 'سند اصلی برای معکوس‌سازی یافت نشد.');
+      }
+      const sourceVersion = Number(sourceVoucherSnap.get('version') || 1);
+      if (sourceVersion !== expectedSourceVersion) {
+        throw new HttpsError('aborted', 'نسخه سند اصلی تغییر کرده است؛ اطلاعات را تازه‌سازی کنید.', { expectedVersion: expectedSourceVersion, currentVersion: sourceVersion });
+      }
+      const sourcePayload = sourceVoucherSnap.get('payload') as Record<string, unknown>;
+      if (sourcePayload.status !== 'permanent') {
+        throw new HttpsError('failed-precondition', 'فقط سند قطعی قابل معکوس‌سازی است.');
+      }
+      if (sourceVoucherSnap.get('reversedByVoucherId')) {
+        throw new HttpsError('already-exists', 'برای این سند قبلاً سند معکوس ثبت شده است.');
+      }
+      const duplicateReversalQuery = migrationDestination(workspaceId, 'vouchers')
+        .where('payload.reversalOfVoucherId', '==', String(sourceDocumentId));
+      const duplicateReversals = await tx.get(duplicateReversalQuery);
+      if (duplicateReversals.docs.some((item) => item.get('deleted') !== true)) {
+        throw new HttpsError('already-exists', 'برای این سند قبلاً سند معکوس ثبت شده است.');
+      }
+      const sourceLines = Array.isArray(sourcePayload.lines) ? sourcePayload.lines as Record<string, unknown>[] : [];
+      if (sourceLines.length < 2 || sourceLines.length > 100) {
+        throw new HttpsError('failed-precondition', 'ساختار آرتیکل‌های سند اصلی معتبر نیست.');
+      }
+      const reversalLines = sourceLines.map((line) => ({
+        ...line,
+        description: `برگشت/اصلاح سند #${sourcePayload.voucherNumber}: ${String(line.description || '').slice(0, 180)}`.slice(0, 300),
+        debit: Number(line.credit) || 0,
+        credit: Number(line.debit) || 0,
+        ...(line.foreignCredit !== undefined ? { foreignDebit: line.foreignCredit } : { foreignDebit: null }),
+        ...(line.foreignDebit !== undefined ? { foreignCredit: line.foreignDebit } : { foreignCredit: null }),
+      })).map((line) => Object.fromEntries(Object.entries(line).filter(([, value]) => value !== null)));
+      const totalDebit = Number(sourcePayload.totalCredit) || 0;
+      const totalCredit = Number(sourcePayload.totalDebit) || 0;
+      if (Math.abs(totalDebit - totalCredit) > 0.000001
+          || Math.abs(reversalLines.reduce((sum, line) => sum + Number(line.debit), 0) - totalDebit) > 0.000001
+          || Math.abs(reversalLines.reduce((sum, line) => sum + Number(line.credit), 0) - totalCredit) > 0.000001) {
+        throw new HttpsError('failed-precondition', 'تراز سند اصلی برای ایجاد سند معکوس معتبر نیست.');
+      }
+      const fiscalYear = String(input!.fiscalYear);
+      const voucherQuery = migrationDestination(workspaceId, 'vouchers')
+        .where('payload.fiscalYear', '==', fiscalYear);
+      const existingVouchers = await tx.get(voucherQuery);
+      const maxExisting = existingVouchers.docs.reduce((max, item) => Math.max(max, Number(item.get('payload.voucherNumber')) || 0), 0);
+      const nextNumber = Math.max(Number(counterSnap.get('payload.lastVoucherNumber')) || 0, maxExisting) + 1;
+      const reversalPayload = {
+        ownerId: workspaceId,
+        date: String(input!.date),
+        fiscalYear,
+        description: String(input!.description),
+        voucherType: 'general',
+        status: 'draft',
+        totalDebit,
+        totalCredit,
+        ...(typeof sourcePayload.currencyCode === 'string' ? { currencyCode: sourcePayload.currencyCode } : {}),
+        ...(typeof sourcePayload.exchangeRate === 'number' ? { exchangeRate: sourcePayload.exchangeRate } : {}),
+        ...(typeof sourcePayload.foreignTotalCredit === 'number' ? { foreignTotalDebit: sourcePayload.foreignTotalCredit } : {}),
+        ...(typeof sourcePayload.foreignTotalDebit === 'number' ? { foreignTotalCredit: sourcePayload.foreignTotalDebit } : {}),
+        referenceId: String(sourceDocumentId),
+        reversalOfVoucherId: String(sourceDocumentId),
+        lines: reversalLines,
+        voucherNumber: nextNumber,
+        createdAt: now, updatedAt: now, _version: 1,
+        ...(typeof input!.updatedByDevice === 'string' ? { updatedByDevice: input!.updatedByDevice } : {}),
+      };
+      tx.create(voucherRef, {
+        workspaceId, sourceCollection: 'vouchers', sourceId: documentId,
+        sourceHash: workspaceMigrationHash(reversalPayload), schemaVersion: 1,
+        version: 1, deleted: false, payload: reversalPayload, createdAt: now, updatedAt: now,
+      });
+      tx.set(counterRef, {
+        workspaceId, sourceCollection: 'counters', sourceId: 'voucher',
+        schemaVersion: 1, version: Number(counterSnap.get('version') || 0) + 1,
+        deleted: false, payload: { ownerId: workspaceId, lastVoucherNumber: nextNumber, updatedAt: now },
+        createdAt: counterSnap.exists ? counterSnap.get('createdAt') || now : now, updatedAt: now,
+      });
+      tx.update(sourceVoucherRef!, { reversedByVoucherId: documentId, reversedAt: now });
+      tx.create(operationRef, {
+        workspaceId, uid: auth.uid, collection: 'vouchers', documentId, operation,
+        requestHash, resultVersion: 1, voucherNumber: nextNumber,
+        sourceDocumentId: String(sourceDocumentId), createdAt: now,
+      });
+      return { status: 'committed', operationId, version: 1, voucherNumber: nextNumber };
     }
     if (operation === 'create') {
       if (voucherSnap.exists) throw new HttpsError('already-exists', 'شناسه سند از قبل وجود دارد.');
