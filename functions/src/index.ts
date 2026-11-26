@@ -169,7 +169,14 @@ export const getWorkspaceContext = onCall({ region: REGION }, async (request) =>
   const { workspaceId, role } = await requireActiveWorkspaceMember(auth);
   const manifest = await db.collection('workspaceMigrations').doc(workspaceId).get();
   const status = manifest.exists ? String(manifest.get('status') || 'not_started') : 'not_started';
-  return { workspaceId, role, migrationStatus: status, stagedReadsEnabled: status === 'verified' && manifest.get('readBarrier.status') === 'frozen' };
+  return {
+    workspaceId,
+    role,
+    migrationStatus: status,
+    stagedReadsEnabled: status === 'verified' && manifest.get('readBarrier.status') === 'frozen',
+    coreWritesFrozen: manifest.exists && manifest.get('coreWritesFrozen') === true,
+    coreWriteMode: String(manifest.get('coreWriteMode') || 'legacy'),
+  };
 });
 
 async function requireActiveWorkspaceMember(auth: CallableAuth) {
