@@ -372,6 +372,78 @@ test('Atomic Invoice Commit: Rejects completely on insufficient stock, settlemen
   );
 });
 
+test('Atomic Invoice Commit: rejects line arithmetic mismatch and negative settlement components', () => {
+  const seed = createHolooSeedData('test_owner');
+  const product = seed.products[0];
+  const party = seed.parties[0];
+  const unitPrice = Math.max(1_000, Math.round(product.sellPrice));
+  const common = {
+    invoiceNumber: 'SL-ARITH-1',
+    invoiceType: 'sale' as const,
+    date: '1405/07/10',
+    partyId: party.id,
+    partyName: party.name,
+    warehouse: product.warehouse,
+    discount: 0,
+    vatAmount: 0,
+    status: 'issued' as const,
+    items: [{
+      productId: product.id,
+      sku: product.sku,
+      productName: product.name,
+      unit: product.unit,
+      quantity: 1,
+      unitPrice,
+      discount: 0,
+      vatAmount: 0,
+      lineTotal: unitPrice + 2,
+    }],
+  };
+
+  assert.throws(
+    () => planAtomicInvoiceCommit({
+      invoiceId: 'inv_bad_line_math',
+      voucherId: 'vch_bad_line_math',
+      nextVoucherNumber: 905,
+      ownerId: 'test_owner',
+      deviceId: 'dev_test',
+      payload: {
+        ...common,
+        subtotal: unitPrice + 2,
+        grandTotal: unitPrice + 2,
+        paidCash: unitPrice + 2,
+        paidBank: 0,
+        paidCheque: 0,
+        creditAmount: 0,
+      },
+      products: seed.products,
+    }),
+    /مبلغ ناخالص ردیف/
+  );
+
+  assert.throws(
+    () => planAtomicInvoiceCommit({
+      invoiceId: 'inv_negative_settlement',
+      voucherId: 'vch_negative_settlement',
+      nextVoucherNumber: 906,
+      ownerId: 'test_owner',
+      deviceId: 'dev_test',
+      payload: {
+        ...common,
+        subtotal: unitPrice,
+        grandTotal: unitPrice,
+        paidCash: -1,
+        paidBank: 0,
+        paidCheque: 0,
+        creditAmount: unitPrice + 1,
+        items: [{ ...common.items[0], lineTotal: unitPrice }],
+      },
+      products: seed.products,
+    }),
+    /مبالغ تسویه باید عددی معتبر و غیرمنفی باشند/
+  );
+});
+
 // ============================================================================
 // 2. 100% LOCAL SMALL LANGUAGE MODEL (ZERO CLOUD EGRESS) TESTS
 // ============================================================================
