@@ -74,3 +74,9 @@ This repository currently has no trusted server provisioning path. Enforcing cus
 
 ### Named Firestore client decision
 The Functions access the existing named database through `@google-cloud/firestore` with explicit `projectId` and `databaseId`; they do not use the Firebase Admin SDK's named-database `getFirestore(app, databaseId)` API, which is documented as preview. Firebase Admin remains responsible for Auth custom claims.
+
+
+### Deployment guardrails
+- Added `.firebaserc` with the existing Firebase project as the explicit default, preventing accidental deployment to an unspecified project.
+- Added Functions build output and local dependency exclusions under `functions/.gitignore`.
+- No Functions or Firestore Rules were deployed; no production data was changed.
