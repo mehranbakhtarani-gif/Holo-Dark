@@ -423,6 +423,40 @@ test('workspace voucher create, numbering, finalize and replay are atomic', asyn
   });
   assert.equal(second.voucherNumber, 2);
 
+  const updateOperationId = randomUUID().replace(/-/g, '');
+  const updatedDraft = { ...draft, description: 'Updated atomic workspace voucher' };
+  const updated = await call('mutateWorkspaceVoucher', owner.token, {
+    operation: 'update', documentId: secondId, operationId: updateOperationId,
+    expectedVersion: 1, data: updatedDraft,
+  });
+  assert.equal(updated.version, 2);
+  assert.equal(updated.voucherNumber, 2);
+  const secondRef = firestore.collection('workspaces').doc(owner.uid)
+    .collection('migrationData').doc('vouchers').collection('records').doc(secondId);
+  assert.equal((await secondRef.get()).get('payload.description'), 'Updated atomic workspace voucher');
+  assert.equal((await secondRef.get()).get('payload.voucherNumber'), 2);
+  const updatedReplay = await call('mutateWorkspaceVoucher', owner.token, {
+    operation: 'update', documentId: secondId, operationId: updateOperationId,
+    expectedVersion: 1, data: updatedDraft,
+  });
+  assert.equal(updatedReplay.status, 'replayed');
+  await expectCallableError(call('mutateWorkspaceVoucher', owner.token, {
+    operation: 'update', documentId: secondId, operationId: randomUUID().replace(/-/g, ''),
+    expectedVersion: 1, data: updatedDraft,
+  }), 'ABORTED');
+
+  const deleted = await call('mutateWorkspaceVoucher', owner.token, {
+    operation: 'delete', documentId: secondId, operationId: randomUUID().replace(/-/g, ''),
+    expectedVersion: 2,
+  });
+  assert.equal(deleted.version, 3);
+  assert.equal((await secondRef.get()).get('deleted'), true);
+  assert.equal((await firestore.collection('vouchers').doc(secondId).get()).exists, false);
+  await expectCallableError(call('mutateWorkspaceVoucher', owner.token, {
+    operation: 'delete', documentId: secondId, operationId: randomUUID().replace(/-/g, ''),
+    expectedVersion: 2,
+  }), 'NOT_FOUND');
+
   const fnv = (input, seed) => {
     let hash = seed >>> 0;
     for (let i = 0; i < input.length; i += 1) {
