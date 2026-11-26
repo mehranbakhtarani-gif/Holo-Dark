@@ -100,9 +100,10 @@ async function setWorkspaceClaims(uid: string, workspaceId: string, role: string
  * preserving current ownerId-based data ownership during the first migration stage.
  */
 export const bootstrapWorkspace = onCall({ region: REGION }, async (request) => {
-  requireVerifiedAuth(request.auth as CallableAuth | undefined);
-  const uid = request.auth.uid;
-  const existingClaim = request.auth.token.workspaceId;
+  const auth = request.auth as CallableAuth | undefined;
+  requireVerifiedAuth(auth);
+  const uid = auth.uid;
+  const existingClaim = auth.token.workspaceId;
   if (existingClaim && existingClaim !== uid) {
     throw new HttpsError('already-exists', 'این حساب قبلاً به فضای کاری دیگری متصل شده است.');
   }
@@ -132,7 +133,7 @@ export const bootstrapWorkspace = onCall({ region: REGION }, async (request) => 
       tx.create(membershipRef, {
         workspaceId: uid,
         uid,
-        email: normalizeEmail(request.auth.token.email),
+        email: normalizeEmail(auth.token.email),
         role: 'owner',
         active: true,
         createdAt: now,
@@ -149,10 +150,11 @@ export const bootstrapWorkspace = onCall({ region: REGION }, async (request) => 
 
 /** Creates a short-lived, email-bound invitation. The raw token is returned only once. */
 export const createWorkspaceInvitation = onCall({ region: REGION }, async (request) => {
-  requireVerifiedAuth(request.auth as CallableAuth | undefined);
-  const workspaceId = await requireWorkspaceOwner(request.auth);
+  const auth = request.auth as CallableAuth | undefined;
+  requireVerifiedAuth(auth);
+  const workspaceId = await requireWorkspaceOwner(auth);
   const email = normalizeEmail(request.data?.email);
-  if (email === normalizeEmail(request.auth.token.email)) {
+  if (email === normalizeEmail(auth.token.email)) {
     throw new HttpsError('invalid-argument', 'مالک نمی‌تواند برای ایمیل خودش دعوت‌نامه بسازد.');
   }
   const role = parseRole(request.data?.role);
@@ -167,7 +169,7 @@ export const createWorkspaceInvitation = onCall({ region: REGION }, async (reque
     role,
     status: 'pending',
     tokenHash,
-    createdBy: request.auth.uid,
+    createdBy: auth.uid,
     createdAt: FieldValue.serverTimestamp(),
     expiresAt,
   });
@@ -177,7 +179,8 @@ export const createWorkspaceInvitation = onCall({ region: REGION }, async (reque
 
 /** Accepts an invitation only when the signed-in, verified email matches its recipient. */
 export const acceptWorkspaceInvitation = onCall({ region: REGION }, async (request) => {
-  requireVerifiedAuth(request.auth as CallableAuth | undefined);
+  const auth = request.auth as CallableAuth | undefined;
+  requireVerifiedAuth(auth);
   const token = request.data?.invitationToken;
   if (typeof token !== 'string' || token.length < 32 || token.length > 128) {
     throw new HttpsError('invalid-argument', 'توکن دعوت‌نامه معتبر نیست.');
@@ -186,7 +189,7 @@ export const acceptWorkspaceInvitation = onCall({ region: REGION }, async (reque
   const invitationSnap = await invitationRef.get();
   if (!invitationSnap.exists) throw new HttpsError('not-found', 'دعوت‌نامه یافت نشد.');
   const invitation = invitationSnap.data()!;
-  if (invitation.email !== normalizeEmail(request.auth.token.email)) {
+  if (invitation.email !== normalizeEmail(auth.token.email)) {
     throw new HttpsError('permission-denied', 'ایمیل حساب با گیرنده دعوت‌نامه مطابقت ندارد.');
   }
   const expiresAtMs =
@@ -198,13 +201,13 @@ export const acceptWorkspaceInvitation = onCall({ region: REGION }, async (reque
   if (!Number.isFinite(expiresAtMs) || expiresAtMs <= Date.now()) {
     throw new HttpsError('deadline-exceeded', 'مهلت دعوت‌نامه به پایان رسیده است.');
   }
-  if (invitation.status !== 'pending' && invitation.acceptedBy !== request.auth.uid) {
+  if (invitation.status !== 'pending' && invitation.acceptedBy !== auth.uid) {
     throw new HttpsError('failed-precondition', 'این دعوت‌نامه قبلاً مصرف یا لغو شده است.');
   }
 
   const workspaceId = String(invitation.workspaceId);
   const workspaceRef = db.collection('workspaces').doc(workspaceId);
-  const membershipRef = db.collection('workspaceMemberships').doc(`${workspaceId}_${request.auth.uid}`);
+  const membershipRef = db.collection('workspaceMemberships').doc(`${workspaceId}_${auth.uid}`);
   await db.runTransaction(async (tx) => {
     const [workspaceSnap, memberSnap, currentInvite] = await Promise.all([
       tx.get(workspaceRef), tx.get(membershipRef), tx.get(invitationRef),
@@ -219,8 +222,8 @@ export const acceptWorkspaceInvitation = onCall({ region: REGION }, async (reque
       }
       tx.set(membershipRef, {
         workspaceId,
-        uid: request.auth.uid,
-        email: normalizeEmail(request.auth.token.email),
+        uid: auth.uid,
+        email: normalizeEmail(auth.token.email),
         role: invitation.role,
         active: true,
         invitedBy: invitation.createdBy,
@@ -232,21 +235,22 @@ export const acceptWorkspaceInvitation = onCall({ region: REGION }, async (reque
         acceptedBy: auth.uid,
         acceptedAt: FieldValue.serverTimestamp(),
       });
-    } else if (currentInvite.get('acceptedBy') !== request.auth.uid || !memberSnap.exists || memberSnap.get('active') !== true) {
+    } else if (currentInvite.get('acceptedBy') !== auth.uid || !memberSnap.exists || memberSnap.get('active') !== true) {
       throw new HttpsError('failed-precondition', 'دعوت‌نامه قابل استفاده مجدد نیست.');
     }
   });
 
-  await setWorkspaceClaims(request.auth.uid, workspaceId, String(invitation.role), true);
+  await setWorkspaceClaims(auth.uid, workspaceId, String(invitation.role), true);
   return { workspaceId, role: invitation.role, claimsUpdated: true };
 });
 
 /** Changes a member role through the trusted Admin SDK, never through client-writable profile data. */
 export const setWorkspaceMemberRole = onCall({ region: REGION }, async (request) => {
-  requireVerifiedAuth(request.auth as CallableAuth | undefined);
-  const workspaceId = await requireWorkspaceOwner(request.auth);
+  const auth = request.auth as CallableAuth | undefined;
+  requireVerifiedAuth(auth);
+  const workspaceId = await requireWorkspaceOwner(auth);
   const uid = request.data?.uid;
-  if (typeof uid !== 'string' || uid === request.auth.uid || uid.length > 128) {
+  if (typeof uid !== 'string' || uid === auth.uid || uid.length > 128) {
     throw new HttpsError('invalid-argument', 'شناسه عضو معتبر نیست.');
   }
   const role = parseRole(request.data?.role);
@@ -256,7 +260,7 @@ export const setWorkspaceMemberRole = onCall({ region: REGION }, async (request)
     if (!snap.exists || snap.get('active') !== true || snap.get('role') === 'owner') {
       throw new HttpsError('failed-precondition', 'عضو فعال قابل تغییر یافت نشد.');
     }
-    tx.update(memberRef, { role, updatedAt: FieldValue.serverTimestamp(), updatedBy: request.auth.uid });
+    tx.update(memberRef, { role, updatedAt: FieldValue.serverTimestamp(), updatedBy: auth.uid });
   });
   await setWorkspaceClaims(uid, workspaceId, role, true);
   return { uid, role, updated: true };
@@ -264,10 +268,11 @@ export const setWorkspaceMemberRole = onCall({ region: REGION }, async (request)
 
 /** Revocation marks membership inactive; future rules must consult this record, not trust stale claims. */
 export const revokeWorkspaceMember = onCall({ region: REGION }, async (request) => {
-  requireVerifiedAuth(request.auth as CallableAuth | undefined);
-  const workspaceId = await requireWorkspaceOwner(request.auth);
+  const auth = request.auth as CallableAuth | undefined;
+  requireVerifiedAuth(auth);
+  const workspaceId = await requireWorkspaceOwner(auth);
   const uid = request.data?.uid;
-  if (typeof uid !== 'string' || uid === request.auth.uid || uid.length > 128) {
+  if (typeof uid !== 'string' || uid === auth.uid || uid.length > 128) {
     throw new HttpsError('invalid-argument', 'شناسه عضو معتبر نیست.');
   }
   const memberRef = db.collection('workspaceMemberships').doc(`${workspaceId}_${uid}`);
@@ -279,7 +284,7 @@ export const revokeWorkspaceMember = onCall({ region: REGION }, async (request) 
     tx.update(memberRef, {
       active: false,
       revokedAt: FieldValue.serverTimestamp(),
-      revokedBy: request.auth.uid,
+      revokedBy: auth.uid,
       updatedAt: FieldValue.serverTimestamp(),
     });
   });
