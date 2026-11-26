@@ -175,12 +175,14 @@ export function computeMultiWarehouseMatrix(params: {
   // 2. Aggregate in-transit quantities (from active in_transit transfers + in_transit/customs import dossiers)
   const inTransitInByKey = new Map<string, number>();
   const inTransitOutByKey = new Map<string, number>();
+  const inTransitValueByKey = new Map<string, number>();
   for (const trf of transfers) {
     if (trf.status !== 'in_transit') continue;
     const inKey = `${trf.toWarehouse}::${trf.productId}`;
     const outKey = `${trf.fromWarehouse}::${trf.productId}`;
     inTransitInByKey.set(inKey, roundQtyFixed((inTransitInByKey.get(inKey) || 0) + trf.qty, 4));
     inTransitOutByKey.set(outKey, roundQtyFixed((inTransitOutByKey.get(outKey) || 0) + trf.qty, 4));
+    inTransitValueByKey.set(inKey, addIrr(inTransitValueByKey.get(inKey) || 0, trf.transferredCostIrr));
   }
   for (const imp of importDossiers) {
     if (imp.status !== 'in_transit' && imp.status !== 'customs') continue;
@@ -200,6 +202,9 @@ export function computeMultiWarehouseMatrix(params: {
     if (state.layers.length > 0) {
       for (const layer of state.layers) {
         const wh = layer.warehouse || p.warehouse || 'انبار مرکزی';
+        // In-transit layers remain part of inventory valuation, but are not physical
+        // stock in either warehouse until the receiving transaction is committed.
+        if (wh.startsWith('در راه → ')) continue;
         const cur = byWh.get(wh) || { qty: 0, valIrr: 0 };
         cur.qty = roundQtyFixed(cur.qty + layer.remainingQty, 4);
         cur.valIrr = addIrr(cur.valIrr, layer.totalCostIrr);
@@ -273,12 +278,25 @@ export function computeMultiWarehouseMatrix(params: {
     summaryMap.set(pos.warehouse, existing);
   }
 
+  // Attribute in-transit inventory value to its destination summary without counting
+  // it as physical quantity or duplicating it in the source/destination warehouses.
+  for (const [key, valueIrr] of inTransitValueByKey.entries()) {
+    const separator = key.indexOf('::');
+    const warehouse = key.slice(0, separator);
+    const existing = summaryMap.get(warehouse);
+    if (existing) existing.totalValuationIrr = addIrr(existing.totalValuationIrr, valueIrr);
+  }
+
   return {
     positions,
     warehouseSummaries: Array.from(summaryMap.values()).sort(
       (a, b) => b.totalValuationIrr - a.totalValuationIrr
     ),
-    totalPhysicalValuationIrr: sumIrr(positions.map((p) => p.valuationIrr)),
+    // Inventory asset valuation includes goods in transit until receipt; physical
+    // warehouse quantities above deliberately exclude those layers.
+    totalPhysicalValuationIrr: sumIrr(products.map((product) =>
+      normalizeProductCostState(product, defaultCostingMethod).totalValueIrr
+    )),
   };
 }
 
