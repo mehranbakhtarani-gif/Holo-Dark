@@ -142,3 +142,22 @@ The Functions access the existing named database through `@google-cloud/firestor
 - Firestore Rules remain unchanged and default-deny for workspace staging paths. Clients cannot bypass the callable's membership checks with direct Firestore reads.
 - No broad member access, dual-write, data cutover, or legacy deletion is enabled. These require the next separately tested phase.
 - The Emulator tests and both builds remain unexecuted; the code and test cases are committed but not runtime-verified.
+
+## 8. Phase 6 — Atomic Dual-Write Bridge (Core Collections, Not Yet App Cutover)
+
+### Implemented server-side bridge
+- Added `writeWorkspaceRecord` for the initial core collections: `accounts`, `products`, `vouchers`, and `invoices`.
+- Each operation checks the current active membership and role. Read-only auditors cannot write; other roles receive explicit collection allowlists.
+- Create/update/delete writes to the legacy root document and the workspace staging record occur in one Firestore transaction in the same named database.
+- A per-workspace operation ledger provides idempotent retries. Reusing an operation ID with different content is rejected.
+- Updates/deletes require both legacy and staging copies to exist; creates reject an existing copy. This avoids silently recreating a missing side of an inconsistent pair.
+- Added server-side structural and core financial checks for account, product/FIFO, voucher balance/permanent integrity seal, and invoice amounts/status. Unsupported collection writes are rejected instead of bypassing validation.
+- Added Emulator test source for paired updates, replay idempotency, and operation-ID content conflict.
+
+### Explicit rollout restrictions
+- The bridge is a callable server primitive, not yet the active write path in `AccountingContext`. Existing CRUD methods, invoice multi-document posting, stock adjustments, cancellation, counters, and other collections still use their legacy write paths.
+- The callable requires a verified migration manifest and both copies for update/delete. It must not be invoked until the owner has completed and verified staging.
+- The current migration snapshot can become stale if legacy writes continue after verification. Before routing production writes, the application must enter a controlled migration freeze or implement a durable change journal/reconciliation barrier; a snapshot verification alone is not a safe cutover protocol.
+- Core validators are intentionally conservative and incomplete relative to every Firestore Rules constraint. No production use is authorized until schema parity, full transaction flows, and Emulator tests are verified.
+- No Firestore Rules change, Functions deployment, production migration, or PR merge was performed.
+- Emulator tests and builds remain unexecuted.
