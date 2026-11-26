@@ -371,6 +371,7 @@ export function executeTrackedWarehouseTransfer(params: {
   qty: number;
   date: string;
   transferNumber: string;
+  transferId?: string;
   mode: 'immediate' | 'in_transit';
   operatorName?: string;
   notes?: string;
@@ -390,6 +391,7 @@ export function executeTrackedWarehouseTransfer(params: {
     qty,
     date,
     transferNumber,
+    transferId: requestedTransferId,
     mode,
     operatorName,
     notes,
@@ -412,7 +414,7 @@ export function executeTrackedWarehouseTransfer(params: {
     layers: sourceLayers,
   };
 
-  const transferId = `trf_${Date.now()}_${Math.random().toString(36).slice(2, 6)}`;
+  const transferId = requestedTransferId || `trf_${Date.now()}_${Math.random().toString(36).slice(2, 10)}`;
   const plan = planWarehouseTransfer({
     state: sourceState,
     fromWarehouse,
