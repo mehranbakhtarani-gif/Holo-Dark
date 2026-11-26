@@ -800,9 +800,10 @@ export function tagSnapshotWithSyncMetadata(
             ) {
               date = (timestamp as { toDate: () => Date }).toDate();
             }
-            return date && !Number.isNaN(date.getTime()) ? date.toISOString() : nowIso;
+            if (date && !Number.isNaN(date.getTime())) return date.toISOString();
+            return col === 'trackedWarehouseTransfers' ? '1970-01-01T00:00:00.000Z' : nowIso;
           } catch {
-            return nowIso;
+            return col === 'trackedWarehouseTransfers' ? '1970-01-01T00:00:00.000Z' : nowIso;
           }
         })(),
         isDeleted: Boolean(item.isDeleted),
