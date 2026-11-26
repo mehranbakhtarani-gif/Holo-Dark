@@ -1340,6 +1340,9 @@ export const AccountingProvider: React.FC<{ children: React.ReactNode }> = ({ ch
       exchangeRate?: number;
     }): Promise<Voucher> => {
       if (!requirePermission('canCreateVoucher', 'ایجاد یا ویرایش سند حسابداری')) throw new Error('مجوز ایجاد سند حسابداری وجود ندارد.');
+      if (user && workspaceContext && (workspaceContext.workspaceId !== user.uid || workspaceContext.coreWritesFrozen || workspaceContext.coreWriteMode === 'workspace_native')) {
+        throw new Error('ثبت سند حسابداری تا انتقال اتمیک اسناد و شماره‌گذاری به Workspace موقتاً متوقف است؛ هیچ تغییری اعمال نشد.');
+      }
 
       const validation = validateVoucherPayload({
         payload,
@@ -1467,6 +1470,7 @@ export const AccountingProvider: React.FC<{ children: React.ReactNode }> = ({ ch
       reserveNextVoucherNumber,
       showToast,
       requirePermission,
+      workspaceContext,
     ]
   );
 
@@ -1484,6 +1488,10 @@ export const AccountingProvider: React.FC<{ children: React.ReactNode }> = ({ ch
       }
     ) => {
       if (!requirePermission('canCreateVoucher', 'ویرایش سند حسابداری')) return;
+      if (user && workspaceContext && (workspaceContext.workspaceId !== user.uid || workspaceContext.coreWritesFrozen || workspaceContext.coreWriteMode === 'workspace_native')) {
+        showToast('ویرایش سند حسابداری تا انتقال اتمیک اسناد به Workspace موقتاً متوقف است؛ هیچ تغییری اعمال نشد.', 'error');
+        return;
+      }
 
       const existing = vouchers.find((v) => v.id === voucherId);
       if (!existing) return;
@@ -1638,12 +1646,16 @@ export const AccountingProvider: React.FC<{ children: React.ReactNode }> = ({ ch
       }
       showToast(`سند موقت شماره ${existing.voucherNumber} با موفقیت اصلاح شد.`);
     },
-    [accounts, parties, vouchers, profile.closedFiscalYears, user, deviceId, showToast, requirePermission]
+    [accounts, parties, vouchers, profile.closedFiscalYears, user, deviceId, showToast, requirePermission, workspaceContext]
   );
 
   const deleteVoucher = useCallback(
     async (voucherId: string): Promise<boolean> => {
       if (!requirePermission('canDeleteRecords', 'حذف سند موقت')) return false;
+      if (user && workspaceContext && (workspaceContext.workspaceId !== user.uid || workspaceContext.coreWritesFrozen || workspaceContext.coreWriteMode === 'workspace_native')) {
+        showToast('حذف سند موقت تا انتقال اتمیک اسناد به Workspace موقتاً متوقف است؛ هیچ تغییری اعمال نشد.', 'error');
+        return false;
+      }
 
       const existing = vouchers.find((v) => v.id === voucherId);
       if (!existing) return false;
@@ -1668,12 +1680,16 @@ export const AccountingProvider: React.FC<{ children: React.ReactNode }> = ({ ch
       showToast(`سند موقت شماره ${existing.voucherNumber} حذف شد.`);
       return true;
     },
-    [vouchers, profile.closedFiscalYears, user, showToast, requirePermission]
+    [vouchers, profile.closedFiscalYears, user, showToast, requirePermission, workspaceContext]
   );
 
   const finalizeVoucher = useCallback(
     async (voucherId: string): Promise<boolean> => {
       if (!requirePermission('canFinalizeVoucher', 'قطعی‌سازی سند')) return false;
+      if (user && workspaceContext && (workspaceContext.workspaceId !== user.uid || workspaceContext.coreWritesFrozen || workspaceContext.coreWriteMode === 'workspace_native')) {
+        showToast('قطعی‌سازی سند تا انتقال اتمیک سند و شمارنده به Workspace موقتاً متوقف است؛ هیچ تغییری اعمال نشد.', 'error');
+        return false;
+      }
 
       const target = vouchers.find((v) => v.id === voucherId);
       if (!target || target.status !== 'draft') return false;
@@ -1709,7 +1725,7 @@ export const AccountingProvider: React.FC<{ children: React.ReactNode }> = ({ ch
       showToast('سند حسابداری پس از اعتبارسنجی کامل، دائم و مُهر اصالت شد.');
       return true;
     },
-    [vouchers, accounts, parties, profile.closedFiscalYears, user, showToast, requirePermission]
+    [vouchers, accounts, parties, profile.closedFiscalYears, user, showToast, requirePermission, workspaceContext]
   );
 
   const createReversingVoucher = useCallback(
