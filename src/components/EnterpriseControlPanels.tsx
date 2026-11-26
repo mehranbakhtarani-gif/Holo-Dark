@@ -1343,6 +1343,24 @@ export const EnterpriseControlPanels: React.FC<{ activeTab: EnterpriseControlTab
             <FileCheck2 className="w-4 h-4 text-teal-700 dark:text-teal-400" />
             <span>وضعیت چندانباره (فیزیکی / رزروشده / قابل فروش / در راه)</span>
           </div>
+          <div className={`rounded-lg border px-3 py-2 text-[11px] flex flex-wrap items-center justify-between gap-2 ${multiWarehouse.reconciliation.every((row) => row.isBalanced) ? 'border-emerald-200 bg-emerald-50/60 text-emerald-800 dark:border-emerald-900 dark:bg-emerald-950/20 dark:text-emerald-300' : 'border-amber-300 bg-amber-50 text-amber-900 dark:border-amber-900 dark:bg-amber-950/20 dark:text-amber-300'}`}>
+            <span className="font-semibold">
+              {multiWarehouse.reconciliation.every((row) => row.isBalanced)
+                ? 'تطبیق موجودی و ارزش FIFO برقرار است'
+                : `مغایرت در ${toPersianDigits(multiWarehouse.reconciliation.filter((row) => !row.isBalanced).length)} کالا شناسایی شد`}
+            </span>
+            <span>ارزش کل موجودی (با احتساب کالای در راه): {formatMoney(multiWarehouse.totalInventoryValuationIrr, unit)}</span>
+          </div>
+          {multiWarehouse.reconciliation.some((row) => !row.isBalanced) && (
+            <div className="rounded-lg border border-amber-200 dark:border-amber-900 p-2 space-y-1 text-[10px]">
+              {multiWarehouse.reconciliation.filter((row) => !row.isBalanced).slice(0, 5).map((row) => (
+                <div key={row.productId} className="flex flex-wrap justify-between gap-2">
+                  <span>{row.sku}</span>
+                  <span>اختلاف مقدار: {formatNumber(row.quantityDifference)} · اختلاف ارزش: {formatMoney(row.valueDifferenceIrr, unit)}</span>
+                </div>
+              ))}
+            </div>
+          )}
           <div className="overflow-x-auto">
             <table className="w-full text-right text-[11px] border-collapse">
               <thead>
