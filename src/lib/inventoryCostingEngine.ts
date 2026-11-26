@@ -156,8 +156,14 @@ export function normalizeProductCostState(
       }));
     const layerQty = roundQty(cleanLayers.reduce((s, l) => s + l.remainingQty, 0));
     const layerVal = cleanLayers.reduce((s, l) => s + l.totalCostIrr, 0);
-    // Only trust stored layers if they reconcile with current stock quantity
-    if (Math.abs(layerQty - stockQty) < 0.005) {
+    // Trust persisted layers only when both quantity and valuation reconcile with
+    // the product snapshot. A quantity-only match can silently drift from GL 10501.
+    const snapshotValue = product.inventoryValueIrr;
+    const hasSnapshotValue =
+      typeof snapshotValue === 'number' && Number.isFinite(snapshotValue) && snapshotValue >= 0;
+    const valueMatchesSnapshot =
+      !hasSnapshotValue || Math.abs(layerVal - Math.round(snapshotValue)) < 1;
+    if (Math.abs(layerQty - stockQty) < 0.005 && valueMatchesSnapshot) {
       return {
         productId: product.id,
         costingMethod: method,
