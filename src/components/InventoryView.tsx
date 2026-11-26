@@ -36,6 +36,7 @@ import {
   createTrackedWarehouseTransferAtomic,
   receiveTrackedWarehouseTransferAtomic,
   restoreTrackedWarehouseTransfersAtomic,
+  listTrackedWarehouseTransferHistoryAtomic,
 } from '../lib/firebase';
 import {
   executeTrackedWarehouseTransfer,
@@ -145,6 +146,11 @@ export const InventoryView: React.FC<{ initialIntent?: string; clearIntent?: () 
   const [transferQty, setTransferQty] = useState('');
   const transferRequestRef = useRef<{ key: string; id: string; number: string } | null>(null);
   const [panelTab, setPanelTab] = useState<'kardex' | 'stocktake' | 'transfer'>('stocktake');
+  const [transferHistory, setTransferHistory] = useState<TrackedWarehouseTransfer[]>([]);
+  const [transferHistoryCursor, setTransferHistoryCursor] = useState<string | null>(null);
+  const [transferHistoryHasMore, setTransferHistoryHasMore] = useState(false);
+  const [transferHistoryLoading, setTransferHistoryLoading] = useState(false);
+  const [transferHistoryError, setTransferHistoryError] = useState('');
   const stockInputRef = useRef<HTMLInputElement | null>(null);
 
   // Bulk Stocktaking & Bulk Price Update states (Holoo Sherkati Apex)
@@ -466,6 +472,32 @@ export const InventoryView: React.FC<{ initialIntent?: string; clearIntent?: () 
       showToast(`حواله ${transferRecord.transferNumber} ثبت شد؛ ${quantity} ${selectedProduct.unit} در وضعیت «در راه» قرار گرفت.`);
     } catch (error) {
       showToast(error instanceof Error ? error.message : 'ثبت انتقال انجام نشد.', 'error');
+    }
+  };
+
+
+  const loadTransferHistory = async (reset = false) => {
+    if (!isCloudMode || transferHistoryLoading) return;
+    setTransferHistoryLoading(true);
+    setTransferHistoryError('');
+    try {
+      const page = await listTrackedWarehouseTransferHistoryAtomic(
+        reset ? null : transferHistoryCursor
+      );
+      setTransferHistory((current) => {
+        const combined = reset ? [] : current;
+        const byId = new Map(combined.map((item) => [item.id, item]));
+        for (const item of page.transfers) byId.set(item.id, item);
+        return Array.from(byId.values()).sort(
+          (a, b) => Number(b.eventSequence || 0) - Number(a.eventSequence || 0)
+        );
+      });
+      setTransferHistoryCursor(page.nextCursor);
+      setTransferHistoryHasMore(page.hasMore);
+    } catch (error) {
+      setTransferHistoryError(error instanceof Error ? error.message : 'بارگذاری تاریخچه حواله‌ها ناموفق بود.');
+    } finally {
+      setTransferHistoryLoading(false);
     }
   };
 
@@ -1936,6 +1968,59 @@ export const InventoryView: React.FC<{ initialIntent?: string; clearIntent?: () 
                           </button>
                         </div>
                       ))}
+                    </div>
+                  )}
+                  {isCloudMode && (
+                    <div className="pt-3 border-t border-slate-200 dark:border-slate-800 space-y-2">
+                      <div className="flex items-center justify-between gap-2">
+                        <strong className="text-slate-700 dark:text-slate-200">تاریخچه دائمی حواله‌ها</strong>
+                        <button
+                          type="button"
+                          onClick={() => loadTransferHistory(true)}
+                          disabled={transferHistoryLoading}
+                          className="px-2.5 py-1 rounded-md border border-slate-300 dark:border-slate-700 disabled:opacity-50"
+                        >
+                          {transferHistoryLoading && transferHistory.length === 0 ? 'در حال بارگذاری...' : 'بارگذاری / تازه‌سازی'}
+                        </button>
+                      </div>
+                      <p className="text-[10px] text-slate-500">
+                        تاریخچه از دفتر مرجع فقط‌خواندنی سرور خوانده می‌شود و محدودیت ۱۰۰ حواله فعال را ندارد.
+                      </p>
+                      {transferHistoryError && (
+                        <p role="alert" className="text-[11px] text-rose-600">{transferHistoryError}</p>
+                      )}
+                      {transferHistory.length > 0 && (
+                        <div className="space-y-1.5">
+                          {transferHistory
+                            .filter((transfer) => transfer.productId === selectedProduct?.id)
+                            .map((transfer) => (
+                              <div key={transfer.id} className="rounded-md border border-slate-200 dark:border-slate-700 p-2">
+                                <div className="flex items-center justify-between gap-2">
+                                  <strong>{transfer.transferNumber}</strong>
+                                  <span className={transfer.status === 'received' ? 'text-emerald-700 dark:text-emerald-400' : 'text-amber-700 dark:text-amber-400'}>
+                                    {transfer.status === 'received' ? 'دریافت‌شده' : 'در راه'}
+                                  </span>
+                                </div>
+                                <div className="text-[11px] text-slate-500">
+                                  {transfer.fromWarehouse} ← {transfer.toWarehouse} · {formatWeight(transfer.qty)} {selectedProduct.unit}
+                                </div>
+                                <div className="text-[10px] text-slate-400">
+                                  خروج: {transfer.date}{transfer.receivedDate ? ` · دریافت: ${transfer.receivedDate}` : ''}
+                                </div>
+                              </div>
+                            ))}
+                        </div>
+                      )}
+                      {transferHistoryHasMore && (
+                        <button
+                          type="button"
+                          onClick={() => loadTransferHistory(false)}
+                          disabled={transferHistoryLoading}
+                          className="w-full py-1.5 rounded-md border border-slate-300 dark:border-slate-700 disabled:opacity-50"
+                        >
+                          {transferHistoryLoading ? 'در حال بارگذاری...' : 'نمایش صفحه بعدی تاریخچه'}
+                        </button>
+                      )}
                     </div>
                   )}
                 </div>
