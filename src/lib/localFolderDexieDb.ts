@@ -880,6 +880,19 @@ export interface LwwMergeStats {
   changed: boolean;
 }
 
+function stableSerializeForLww(value: unknown): string {
+  if (value === null || typeof value !== 'object') {
+    return JSON.stringify(value) ?? String(value);
+  }
+  if (Array.isArray(value)) {
+    return `[${value.map(stableSerializeForLww).join(',')}]`;
+  }
+  const record = value as Record<string, unknown>;
+  return `{${Object.keys(record).sort().map((key) =>
+    `${JSON.stringify(key)}:${stableSerializeForLww(record[key])}`
+  ).join(',')}}`;
+}
+
 function compareLwwWinner(
   a: { updatedAt?: unknown; deviceId?: unknown },
   b: { updatedAt?: unknown; deviceId?: unknown }
@@ -891,7 +904,11 @@ function compareLwwWinner(
   if (safeA !== safeB) return safeA > safeB ? 1 : -1;
   const dA = String(a.deviceId || '');
   const dB = String(b.deviceId || '');
-  return dA.localeCompare(dB);
+  const deviceOrder = dA.localeCompare(dB);
+  if (deviceOrder !== 0) return deviceOrder;
+  // Same-device writes can share a millisecond timestamp. Use canonical payload
+  // ordering as a final tie-break so merge(A, B) and merge(B, A) choose the same winner.
+  return stableSerializeForLww(a).localeCompare(stableSerializeForLww(b));
 }
 
 /**
