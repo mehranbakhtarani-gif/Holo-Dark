@@ -1722,11 +1722,12 @@ async function validateWorkspaceVoucherReferences(
   workspaceId: string,
   voucher: Record<string, unknown>,
   fiscalProfileSnap: FirebaseFirestore.DocumentSnapshot,
+  ignoreVoucherId?: string,
 ): Promise<void> {
   const voucherDate = voucher.date;
   if (voucher.ownerId !== workspaceId
       || !isValidWorkspaceShamsiDate(voucherDate)
-      || typeof voucher.description !== 'string'
+      || typeof voucher.description !== 'string' || voucher.description.length > 300
       || !['opening', 'general', 'sales', 'purchase', 'treasury', 'payroll', 'depreciation', 'closing'].includes(String(voucher.voucherType))
       || !['draft', 'permanent'].includes(String(voucher.status))) {
     throw new HttpsError('invalid-argument', 'ساختار پایه سند برای ثبت یا قطعی‌سازی معتبر نیست.');
@@ -1755,7 +1756,8 @@ async function validateWorkspaceVoucherReferences(
   let calculatedCredit = 0;
   for (let index = 0; index < lines.length; index += 1) {
     const line = lines[index];
-    if (typeof line.accountCode !== 'string' || !line.accountCode.trim()
+    if (!line || typeof line !== 'object' || Array.isArray(line)
+        || typeof line.accountCode !== 'string' || !line.accountCode.trim()
         || typeof line.debit !== 'number' || !Number.isFinite(line.debit) || line.debit < 0
         || typeof line.credit !== 'number' || !Number.isFinite(line.credit) || line.credit < 0
         || (line.debit > 0 && line.credit > 0)
@@ -1776,6 +1778,19 @@ async function validateWorkspaceVoucherReferences(
   ).filter(Boolean))];
   if (accountCodes.length === 0) {
     throw new HttpsError('invalid-argument', 'کد حساب‌های سند معتبر نیست.');
+  }
+
+  if (typeof voucher.referenceId === 'string' && voucher.referenceId.trim()
+      && !voucher.reversalOfVoucherId) {
+    const duplicateReferenceQuery = migrationDestination(workspaceId, 'vouchers')
+      .where('payload.referenceId', '==', voucher.referenceId.trim());
+    const duplicateReferences = await tx.get(duplicateReferenceQuery);
+    if (duplicateReferences.docs.some((document) =>
+      document.id !== ignoreVoucherId && document.get('deleted') !== true
+        && !document.get('payload.reversalOfVoucherId')
+    )) {
+      throw new HttpsError('already-exists', 'برای این مرجع قبلاً سند حسابداری ثبت شده است.');
+    }
   }
 
   const accountCollection = migrationDestination(workspaceId, 'accounts');
@@ -1965,7 +1980,7 @@ export const mutateWorkspaceVoucher = onCall({ region: REGION, timeoutSeconds: 6
         throw new HttpsError('failed-precondition', 'فقط سند پیش‌نویس قابل ویرایش یا حذف است.');
       }
       if (operation === 'update') {
-        await validateWorkspaceVoucherReferences(tx, workspaceId, input!, fiscalProfileSnap);
+        await validateWorkspaceVoucherReferences(tx, workspaceId, input!, fiscalProfileSnap, documentId);
       }
       const nextVersion = currentVersion + 1;
       let sourceVersion: number | undefined;
@@ -2144,7 +2159,7 @@ export const mutateWorkspaceVoucher = onCall({ region: REGION, timeoutSeconds: 6
     }
     const currentPayload = voucherSnap.get('payload') as Record<string, unknown>;
     if (currentPayload.status !== 'draft') throw new HttpsError('failed-precondition', 'فقط سند پیش‌نویس قابل قطعی‌سازی است.');
-    await validateWorkspaceVoucherReferences(tx, workspaceId, currentPayload, fiscalProfileSnap);
+    await validateWorkspaceVoucherReferences(tx, workspaceId, currentPayload, fiscalProfileSnap, documentId);
     const integrityHash = request.data?.integrityHash;
     if (typeof integrityHash !== 'string' || !/^vseal_[0-9a-f]{16}$/.test(integrityHash)
         || workspaceVoucherIntegrityHash(currentPayload) !== integrityHash) {
