@@ -21,3 +21,25 @@
 10. **Immutable Owner Tampering**: User A updates their `cheques` doc trying to change `ownerId` to `user_B` -> MUST FAIL.
 11. **Value Poisoning on Allowed Update Field**: User updates `products.stock` to `"not-a-number"` -> MUST FAIL (`isValidProduct`).
 12. **Self-Assigned Admin Escalation**: User creates `/users/{uid}` with `role: "admin"` or writes to `/admins/{uid}` -> MUST FAIL.
+
+
+## 3. Phase 1 — Server-Enforced Operator Authorization (Required Before Production)
+
+### Current verified architecture
+- The client authenticates one Firebase Google account and stores the active operator selection in React state.
+- Multiple local operator records share the same Firebase UID and workspace ownerId.
+- Firestore rules validate the workspace owner and document schema, but cannot prove which local operator is currently using the browser.
+- Therefore local RBAC is a UI/application workflow control, not a security boundary. A modified client using the owner's Firebase token can bypass it.
+- No Firebase Functions source, deployment manifest, operator invitation flow, or custom-claims provisioning workflow exists in this repository at this revision.
+
+### Required target architecture
+1. Give every human operator an individual Firebase Authentication UID. Never use a client-selected operator ID as identity.
+2. Represent workspaces separately from users. Use a server-managed membership record keyed by workspaceId and uid, with immutable workspace ownership and a role identifier.
+3. Issue custom claims only from a trusted Admin SDK environment after verifying an invitation/owner approval. Claims should identify the workspace and membership role; clients must never write claims or membership authority.
+4. Enforce tenant membership and role permissions in Firestore Rules for every collection and sensitive state transition. Keep document owner/workspace identity immutable on update.
+5. Move high-impact accounting transitions (voucher finalization, invoice issue/cancellation, stock valuation changes, year close, operator/role administration) to callable/server functions where invariants span multiple documents or require privileged writes.
+6. Add emulator tests for cross-tenant reads/writes, role escalation, stale/revoked membership, forbidden state transitions, and transaction idempotency before enabling the new rules.
+7. Migrate existing single-owner data with an explicit backup, dry-run mapping, reversible migration, and owner sign-off. Do not deploy rules that require claims until every existing owner has been provisioned.
+
+### Rollout blocker
+This repository currently has no trusted server provisioning path. Enforcing custom-claim-only access immediately would lock out existing workspaces; retaining owner-only fallback would leave local operator RBAC bypassable. The migration and server provisioning layer must be implemented and tested before claiming server-enforced multi-user RBAC.
