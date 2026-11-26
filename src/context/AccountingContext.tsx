@@ -24,6 +24,8 @@ import {
   signInWithGoogle,
   signOutAccount,
   testFirestoreConnection,
+  resolveWorkspaceContext,
+  WorkspaceContextResult,
 } from '../lib/firebase';
 import {
   Account,
@@ -374,6 +376,7 @@ export const AccountingProvider: React.FC<{ children: React.ReactNode }> = ({ ch
   const [lastLocalBackupAt, setLastLocalBackupAt] = useState<string | null>(null);
 
   const [user, setUser] = useState<User | null>(null);
+  const [workspaceContext, setWorkspaceContext] = useState<WorkspaceContextResult | null>(null);
   const [authReady, setAuthReady] = useState(false);
   const [isSyncing, setIsSyncing] = useState(false);
   const [isSigningIn, setIsSigningIn] = useState(false);
@@ -798,10 +801,40 @@ export const AccountingProvider: React.FC<{ children: React.ReactNode }> = ({ ch
       }
     }
 
-    ensureCloudSeed(user)
-      .then(() => {
-        if (cancelled) return;
-        const uid = user.uid;
+    // Resolve Workspace membership before any cloud seeding or owner-scoped listeners.
+    // A member must never seed a second tenant under their personal Firebase UID.
+    (async () => {
+      let resolvedWorkspace: WorkspaceContextResult | null = null;
+      try {
+        resolvedWorkspace = await resolveWorkspaceContext();
+      } catch (error) {
+        const code = error && typeof error === 'object' && 'code' in error
+          ? String((error as { code?: unknown }).code || '')
+          : '';
+        // Existing single-owner installations may not have bootstrapped Workspace yet.
+        // Only absence of a workspace/function is legacy-compatible; authorization failures fail closed.
+        if (code !== 'functions/failed-precondition' && code !== 'functions/not-found') {
+          if (!cancelled) {
+            setWorkspaceContext(null);
+            showToast('اعتبارسنجی فضای کاری انجام نشد؛ برای جلوگیری از دسترسی ناامن، همگام‌سازی ابری متوقف شد.');
+          }
+          return;
+        }
+      }
+      if (cancelled) return;
+      setWorkspaceContext(resolvedWorkspace);
+      if (resolvedWorkspace && resolvedWorkspace.workspaceId !== user.uid) {
+        showToast(
+          resolvedWorkspace.migrationStatus === 'verified'
+            ? 'عضویت فضای کاری تأیید شد؛ دسترسی به داده‌ها تا آماده‌شدن مسیر خواندن و نوشتن امن حسابداری محدود است.'
+            : 'عضویت فضای کاری تأیید شد؛ تا تکمیل و تأیید مهاجرت داده‌ها، دسترسی حسابداری غیرفعال است.'
+        );
+        return;
+      }
+
+      await ensureCloudSeed(user);
+      if (cancelled) return;
+      const uid = user.uid;
 
         unsubs.push(
           onSnapshot(
@@ -865,16 +898,18 @@ export const AccountingProvider: React.FC<{ children: React.ReactNode }> = ({ ch
         subscribeCol<SubcontractJob>('subcontractJobs', setSubcontractJobs);
         subscribeCol<RbacOperator>('rbacOperators', setRbacOperators);
         subscribeCol<AuditActivityLog>('auditLogs', setAuditLogs);
-      })
-      .catch((err) => {
+    })().catch((err) => {
+      if (!cancelled) {
         console.error(err);
-      });
+        showToast('بارگذاری فضای کاری ناموفق بود؛ همگام‌سازی ابری متوقف شد.');
+      }
+    });
 
     return () => {
       cancelled = true;
       unsubs.forEach((u) => u());
     };
-  }, [authReady, user, ensureCloudSeed]);
+  }, [authReady, user, ensureCloudSeed, showToast]);
 
   const ownerId = user?.uid ?? DEMO_OWNER;
   const isCloudMode = !!user;
