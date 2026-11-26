@@ -1312,6 +1312,79 @@ export const restoreTrackedWarehouseTransfers = onCall({ region: REGION, timeout
   });
 });
 
+
+/**
+ * Reads a bounded page of immutable transfer history from the server-only event ledger.
+ * The active extension array remains capped; history is never hydrated into that array.
+ */
+export const listTrackedWarehouseTransferHistory = onCall({ region: REGION, timeoutSeconds: 60 }, async (request) => {
+  const auth = request.auth as CallableAuth | undefined;
+  requireVerifiedAuth(auth);
+  const { workspaceId, role } = await requireActiveWorkspaceMember(auth);
+  if (!(WORKSPACE_READ_COLLECTIONS[role] || []).includes('products')
+      && !(WORKSPACE_WRITE_COLLECTIONS[role] || []).includes('products')) {
+    throw new HttpsError('permission-denied', 'نقش فعلی اجازه مشاهده تاریخچه حواله‌های انبار را ندارد.');
+  }
+
+  const cursor = request.data?.cursor;
+  if (cursor !== undefined && cursor !== null
+      && (typeof cursor !== 'string' || !/^[A-Za-z0-9_-]{1,220}$/.test(cursor))) {
+    throw new HttpsError('invalid-argument', 'نشانگر صفحه تاریخچه معتبر نیست.');
+  }
+
+  const PAGE_DOCUMENTS = 100;
+  let query = db.collection('warehouseTransferEventAuthority')
+    .where('ownerId', '==', workspaceId)
+    .orderBy(FieldPath.documentId())
+    .limit(PAGE_DOCUMENTS);
+  if (typeof cursor === 'string' && cursor) query = query.startAfter(cursor);
+  const page = await query.get();
+
+  const dispatches = page.docs.filter((doc) =>
+    doc.get('ownerId') === workspaceId
+    && doc.get('kind') === 'dispatch'
+    && typeof doc.get('transferId') === 'string'
+    && doc.get('transferSnapshot')
+    && typeof doc.get('transferSnapshot') === 'object'
+  );
+  const receiptSnapshots = await Promise.all(dispatches.map(async (doc) => {
+    const transferId = String(doc.get('transferId'));
+    if (!/^[A-Za-z0-9_-]{1,128}$/.test(transferId)) return null;
+    const receipt = await db.collection('warehouseTransferEventAuthority')
+      .doc(`${workspaceId}_${transferId}_receipt`).get();
+    if (!receipt.exists || receipt.get('ownerId') !== workspaceId
+        || receipt.get('transferId') !== transferId || receipt.get('kind') !== 'receipt') return null;
+    const snapshot = receipt.get('transferSnapshot');
+    return snapshot && typeof snapshot === 'object' ? snapshot as Record<string, unknown> : null;
+  }));
+
+  const transfers = dispatches.flatMap((doc, index) => {
+    const transferId = String(doc.get('transferId'));
+    const snapshot = doc.get('transferSnapshot') as Record<string, unknown>;
+    if (!/^[A-Za-z0-9_-]{1,128}$/.test(transferId)
+        || snapshot.id !== transferId
+        || typeof snapshot.productId !== 'string'
+        || !Number.isFinite(Number(snapshot.qty)) || Number(snapshot.qty) <= 0
+        || !Array.isArray(snapshot.transferredLayers)) return [];
+    if (snapshot.status === 'in_transit') return [snapshot];
+    if (snapshot.status !== 'received') return [];
+    const receipt = receiptSnapshots[index];
+    if (!receipt || receipt.id !== transferId || receipt.status !== 'received'
+        || typeof receipt.receivedDate !== 'string' || !receipt.receivedDate) return [];
+    return [receipt];
+  });
+
+  transfers.sort((a, b) =>
+    Number(a.eventSequence || 0) - Number(b.eventSequence || 0)
+    || String(a.id).localeCompare(String(b.id))
+  );
+  return {
+    transfers,
+    nextCursor: page.size === PAGE_DOCUMENTS ? page.docs[page.docs.length - 1].id : null,
+    hasMore: page.size === PAGE_DOCUMENTS,
+  };
+});
+
 /** Workspace-native voucher create/finalize. Voucher and fiscal counter commit together. */
 export const mutateWorkspaceVoucher = onCall({ region: REGION, timeoutSeconds: 60 }, async (request) => {
   const auth = request.auth as CallableAuth | undefined;
