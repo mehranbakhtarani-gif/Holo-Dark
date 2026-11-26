@@ -847,7 +847,16 @@ export function useLocalFirstMeshSync() {
         fallbackMode: false,
       });
 
-      // Mark any pending local_folder outbox items as synced
+      if (!writeRes.ok) {
+        // A selected folder is not a successful mirror until its first write commits.
+        // Keep every pending local_folder outbox item pending for an explicit retry.
+        playErrorTone();
+        showToast(writeRes.error || 'اتصال پوشه انجام شد، اما نوشتن فایل زنده ناموفق بود؛ عملیات در صف باقی ماند.');
+        await refreshOutboxAndLogs();
+        return false;
+      }
+
+      // Mark pending local_folder outbox items as synced only after a confirmed write.
       const items = await listDexieOutboxItems();
       for (const item of items) {
         if (item.target === 'local_folder' && item.status !== 'synced') {
