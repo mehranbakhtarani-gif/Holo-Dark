@@ -633,7 +633,7 @@ export function computeWarehouseProductKardex(params: {
 
   let runningQty = 0;
   return events.map((ev) => {
-    runningQty = roundQtyFixed(runningQty + ev.inQty - ev.outQty, 2);
+    runningQty = roundQtyFixed(runningQty + ev.inQty - ev.outQty, 4);
     return {
       ...ev,
       warehouse,
