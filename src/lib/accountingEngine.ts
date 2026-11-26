@@ -19,6 +19,7 @@ import {
   applyInventoryMovementStep,
   normalizeProductCostState,
   roundQty,
+  selectUnreturnedSaleAllocations,
 } from './inventoryCostingEngine';
 import {
   calculateIranMonthlyPayrollTax,
@@ -2251,6 +2252,24 @@ export function planAtomicInvoiceCommit(input: AtomicInvoicePlanInput): AtomicIn
           ? payload.items.find((it) => it.productId === pid && it.unitCostSnapshot && it.unitCostSnapshot > 0)
               ?.unitCostSnapshot
           : undefined;
+      const previouslyReturnedQty =
+        payload.invoiceType === 'sale_return' && (originalInvoice?.id || payload.sourceInvoiceId)
+          ? roundQty(existingInvoices
+              .filter((existing) =>
+                existing.status !== 'cancelled' &&
+                existing.invoiceType === 'sale_return' &&
+                existing.sourceInvoiceId === (originalInvoice?.id || payload.sourceInvoiceId) &&
+                existing.id !== invoiceId
+              )
+              .reduce((sum, existing) =>
+                sum + existing.items
+                  .filter((item) => item.productId === pid)
+                  .reduce((itemSum, item) => itemSum + Number(item.quantity || 0), 0), 0))
+          : 0;
+      const returnAllocations =
+        origSaleItem?.consumedLayers && origSaleItem.consumedLayers.length > 0
+          ? selectUnreturnedSaleAllocations(origSaleItem.consumedLayers, previouslyReturnedQty, info.qty)
+          : origSaleItem?.consumedLayers;
 
       const step = applyInventoryMovementStep(currentState, {
         id: invoiceId,
@@ -2268,7 +2287,7 @@ export function planAtomicInvoiceCommit(input: AtomicInvoicePlanInput): AtomicIn
             ? origSaleItem?.unitCostSnapshot ?? explicitItemUnitCost
             : undefined,
         sourceRefId: originalInvoice?.id ?? payload.sourceInvoiceId,
-        originalConsumedLayers: origSaleItem?.consumedLayers,
+        originalConsumedLayers: returnAllocations,
         allowNegativeStock,
       });
 
