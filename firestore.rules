@@ -389,7 +389,7 @@ service cloud.firestore {
 
     function isValidInvoice(data) {
       return data.keys().hasAll(['ownerId', 'invoiceNumber', 'invoiceType', 'date', 'partyId', 'partyName', 'warehouse', 'subtotal', 'discount', 'vatAmount', 'grandTotal', 'paidCash', 'paidBank', 'paidCheque', 'creditAmount', 'status', 'items', 'createdAt', 'updatedAt'])
-        && data.keys().hasOnly(['ownerId', 'invoiceNumber', 'taxSerial', 'invoiceType', 'sourceInvoiceId', 'returnRevision', 'activeReturnCount', 'lastReturnMutationId', 'eventSequence', 'date', 'partyId', 'partyName', 'intermediaryId', 'intermediaryName', 'warehouse', 'costCenterId', 'currencyCode', 'exchangeRate', 'foreignSubtotal', 'foreignDiscount', 'foreignVatAmount', 'foreignGrandTotal', 'subtotal', 'discount', 'vatAmount', 'grandTotal', 'paidCash', 'paidBank', 'paidCheque', 'creditAmount', 'status', 'voucherId', 'items', '_version', 'updatedByDevice', 'createdAt', 'updatedAt'])
+        && data.keys().hasOnly(['ownerId', 'invoiceNumber', 'taxSerial', 'invoiceType', 'sourceInvoiceId', 'returnRevision', 'activeReturnCount', 'lastReturnMutationId', 'eventSequence', 'eventSequenceSource', 'date', 'partyId', 'partyName', 'intermediaryId', 'intermediaryName', 'warehouse', 'costCenterId', 'currencyCode', 'exchangeRate', 'foreignSubtotal', 'foreignDiscount', 'foreignVatAmount', 'foreignGrandTotal', 'subtotal', 'discount', 'vatAmount', 'grandTotal', 'paidCash', 'paidBank', 'paidCheque', 'creditAmount', 'status', 'voucherId', 'items', '_version', 'updatedByDevice', 'createdAt', 'updatedAt'])
         && data.ownerId == request.auth.uid
         && isValidId(data.ownerId)
         && isNonEmptyString(data.invoiceNumber, 48)
@@ -398,6 +398,7 @@ service cloud.firestore {
         && (!('returnRevision' in data) || (data.returnRevision is int && data.returnRevision >= 0))
         && (!('activeReturnCount' in data) || (data.activeReturnCount is int && data.activeReturnCount >= 0))
         && (!('eventSequence' in data) || (data.eventSequence is int && data.eventSequence > 0))
+        && (!('eventSequenceSource' in data) || data.eventSequenceSource in ['online', 'sync'])
         && isOptionalString(data, 'lastReturnMutationId', 128)
         && (!(data.invoiceType in ['sale_return', 'purchase_return']) || (!('returnRevision' in data) && !('activeReturnCount' in data) && !('lastReturnMutationId' in data)))
         && data.invoiceType in ['sale', 'purchase', 'proforma', 'sale_return', 'purchase_return', 'waste']
