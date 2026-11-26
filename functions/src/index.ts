@@ -1321,7 +1321,7 @@ export const listTrackedWarehouseTransferHistory = onCall({ region: REGION, time
   const auth = request.auth as CallableAuth | undefined;
   requireVerifiedAuth(auth);
   const { workspaceId, role } = await requireActiveWorkspaceMember(auth);
-  if (!(WORKSPACE_READ_COLLECTIONS[role] || []).includes('products')
+  if (role !== 'auditor_readonly'
       && !(WORKSPACE_WRITE_COLLECTIONS[role] || []).includes('products')) {
     throw new HttpsError('permission-denied', 'نقش فعلی اجازه مشاهده تاریخچه حواله‌های انبار را ندارد.');
   }
