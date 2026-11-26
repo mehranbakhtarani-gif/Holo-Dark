@@ -97,6 +97,22 @@ export interface WarehouseSummaryRow {
   totalValuationIrr: number;
 }
 
+export interface MultiWarehouseReconciliationRow {
+  productId: string;
+  sku: string;
+  physicalQty: number;
+  inTransitQty: number;
+  accountedQty: number;
+  expectedStockQty: number;
+  quantityDifference: number;
+  physicalValueIrr: number;
+  inTransitValueIrr: number;
+  accountedValueIrr: number;
+  expectedInventoryValueIrr: number;
+  valueDifferenceIrr: number;
+  isBalanced: boolean;
+}
+
 export interface ShortageSurplusCheck {
   productId: string;
   sku: string;
@@ -145,7 +161,9 @@ export function computeMultiWarehouseMatrix(params: {
 }): {
   positions: WarehouseProductPosition[];
   warehouseSummaries: WarehouseSummaryRow[];
+  reconciliation: MultiWarehouseReconciliationRow[];
   totalPhysicalValuationIrr: number;
+  totalInventoryValuationIrr: number;
 } {
   const {
     products,
@@ -223,8 +241,13 @@ export function computeMultiWarehouseMatrix(params: {
 
     // Ensure warehouses with pending in-transit inflows appear even if physical stock is 0
     for (const trf of transfers) {
-      if (trf.productId === p.id && trf.status === 'in_transit' && !byWh.has(trf.toWarehouse)) {
+      if (trf.productId !== p.id || trf.status !== 'in_transit') continue;
+      if (!byWh.has(trf.toWarehouse)) {
         byWh.set(trf.toWarehouse, { qty: 0, valIrr: 0 });
+      }
+      // Keep a source position visible even when the transfer depleted its final layer.
+      if (!byWh.has(trf.fromWarehouse)) {
+        byWh.set(trf.fromWarehouse, { qty: 0, valIrr: 0 });
       }
     }
 
@@ -287,16 +310,45 @@ export function computeMultiWarehouseMatrix(params: {
     if (existing) existing.totalValuationIrr = addIrr(existing.totalValuationIrr, valueIrr);
   }
 
+  const reconciliation: MultiWarehouseReconciliationRow[] = products.map((product) => {
+    const state = normalizeProductCostState(product, defaultCostingMethod);
+    const productPositions = positions.filter((position) => position.productId === product.id);
+    const physicalQty = roundQtyFixed(productPositions.reduce((sum, position) => sum + position.physicalQty, 0), 4);
+    const physicalValueIrr = sumIrr(productPositions.map((position) => position.valuationIrr));
+    const transitLayers = state.layers.filter((layer) => (layer.warehouse || '').startsWith('در راه → '));
+    const inTransitQty = roundQtyFixed(transitLayers.reduce((sum, layer) => sum + layer.remainingQty, 0), 4);
+    const inTransitValueIrr = sumIrr(transitLayers.map((layer) => layer.totalCostIrr));
+    const accountedQty = roundQtyFixed(physicalQty + inTransitQty, 4);
+    const quantityDifference = roundQtyFixed(accountedQty - state.stockQty, 4);
+    const accountedValueIrr = addIrr(physicalValueIrr, inTransitValueIrr);
+    const valueDifferenceIrr = subIrr(accountedValueIrr, state.totalValueIrr);
+    return {
+      productId: product.id,
+      sku: product.sku,
+      physicalQty,
+      inTransitQty,
+      accountedQty,
+      expectedStockQty: state.stockQty,
+      quantityDifference,
+      physicalValueIrr,
+      inTransitValueIrr,
+      accountedValueIrr,
+      expectedInventoryValueIrr: state.totalValueIrr,
+      valueDifferenceIrr,
+      isBalanced: Math.abs(quantityDifference) < 0.0001 && Math.abs(valueDifferenceIrr) <= 1,
+    };
+  });
+
+  const totalInventoryValuationIrr = sumIrr(reconciliation.map((row) => row.expectedInventoryValueIrr));
   return {
     positions,
     warehouseSummaries: Array.from(summaryMap.values()).sort(
       (a, b) => b.totalValuationIrr - a.totalValuationIrr
     ),
-    // Inventory asset valuation includes goods in transit until receipt; physical
-    // warehouse quantities above deliberately exclude those layers.
-    totalPhysicalValuationIrr: sumIrr(products.map((product) =>
-      normalizeProductCostState(product, defaultCostingMethod).totalValueIrr
-    )),
+    reconciliation,
+    // Backward-compatible alias: this is total inventory asset value, including goods in transit.
+    totalPhysicalValuationIrr: totalInventoryValuationIrr,
+    totalInventoryValuationIrr,
   };
 }
 
