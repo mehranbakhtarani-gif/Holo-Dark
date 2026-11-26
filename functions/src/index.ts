@@ -868,6 +868,7 @@ export const createTrackedWarehouseTransfer = onCall({ region: REGION, timeoutSe
     const eventSequence = Math.max(0, Number(counterSnap.data()?.lastInventorySequence) || 0) + 1;
     const transfer = {
       id: transferId, transferNumber: transferNumber.trim(), date, productId,
+      updatedAt: new Date().toISOString(),
       eventSequence,
       eventSequenceSource: 'online',
       sku: String(productData.sku || ''), productName: String(productData.name || ''),
@@ -985,8 +986,8 @@ export const receiveTrackedWarehouseTransfer = onCall({ region: REGION, timeoutS
     const eventSequence = Math.max(0, Number(counterSnap.data()?.lastInventorySequence) || 0) + 1;
     const nextTransfers = transfers.slice();
     nextTransfers[transferIndex] = {
-      ...transfer, status: 'received', receivedDate, receivedEventSequence: eventSequence,
-      receivedEventSequenceSource: 'online',
+      ...transfer, status: 'received', receivedDate, updatedAt: new Date().toISOString(),
+      receivedEventSequence: eventSequence, receivedEventSequenceSource: 'online',
     };
     const now = FieldValue.serverTimestamp();
     if (nativeMode) {
