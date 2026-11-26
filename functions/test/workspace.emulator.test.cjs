@@ -2,6 +2,7 @@ const { test } = require('node:test');
 const assert = require('node:assert/strict');
 const { randomUUID } = require('node:crypto');
 const { deleteApp, initializeApp } = require('firebase-admin/app');
+const { getAuth } = require('firebase-admin/auth');
 const { getFirestore, Timestamp } = require('firebase-admin/firestore');
 
 const PROJECT_ID = process.env.FIREBASE_PROJECT_ID || 'elaborate-hash-368613';
@@ -27,14 +28,7 @@ async function createVerifiedUser(label, verify = true) {
   assert.equal(signup.ok, true, signupText);
   const created = JSON.parse(signupText);
   if (!verify) return { email, password, uid: created.localId, token: created.idToken };
-  const verified = await fetch(`http://${AUTH_EMULATOR}/identitytoolkit.googleapis.com/v1/accounts:update?key=${API_KEY}`, {
-    method: 'POST', headers: { 'content-type': 'application/json' },
-    body: JSON.stringify({ idToken: created.idToken, emailVerified: true, returnSecureToken: true }),
-  });
-  const verifiedText = await verified.text();
-  assert.equal(verified.ok, true, verifiedText);
-  const account = JSON.parse(verifiedText);
-  assert.equal(account.emailVerified, true, verifiedText);
+  await getAuth(adminApp).updateUser(created.localId, { emailVerified: true });
   // Mint a fresh ID token after the verification mutation so the email_verified
   // claim presented to callable functions reflects the updated Auth user record.
   const signedIn = await fetch(`http://${AUTH_EMULATOR}/identitytoolkit.googleapis.com/v1/accounts:signInWithPassword?key=${API_KEY}`, {
