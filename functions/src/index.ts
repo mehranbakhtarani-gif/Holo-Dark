@@ -434,8 +434,8 @@ export const listWorkspaceCoreRecords = onCall({ region: REGION, timeoutSeconds:
   requireVerifiedAuth(auth);
   const { workspaceId, role } = await requireActiveWorkspaceMember(auth);
   const collectionName = request.data?.collection;
-  if (collectionName !== 'accounts' && collectionName !== 'products') {
-    throw new HttpsError('invalid-argument', 'این آداپتور فقط حساب‌ها و کالاها را می‌خواند.');
+  if (!['accounts', 'products', 'parties', 'vouchers'].includes(String(collectionName))) {
+    throw new HttpsError('invalid-argument', 'این آداپتور فقط حساب‌ها، کالاها، طرف‌حساب‌ها و اسناد را می‌خواند.');
   }
   if (!(STAGED_READ_COLLECTIONS[role] || []).includes(collectionName)) {
     throw new HttpsError('permission-denied', 'نقش شما به مشاهده این مجموعه دسترسی ندارد.');
