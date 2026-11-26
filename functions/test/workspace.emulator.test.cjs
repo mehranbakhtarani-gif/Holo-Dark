@@ -526,4 +526,22 @@ test('workspace voucher create, numbering, finalize and replay are atomic', asyn
     sourceDocumentId: voucherId, expectedSourceVersion: 3,
     data: { date: '1405/08/06', fiscalYear: '1405', description: 'Duplicate reversal attempt' },
   }), 'ALREADY_EXISTS');
+
+  const deletedReversal = await call('mutateWorkspaceVoucher', owner.token, {
+    operation: 'delete', documentId: reversalId, operationId: randomUUID().replace(/-/g, ''),
+    expectedVersion: 1,
+  });
+  assert.equal(deletedReversal.version, 2);
+  assert.equal(deletedReversal.sourceVersion, 4);
+  const sourceAfterDelete = await voucherRef.get();
+  assert.equal(sourceAfterDelete.get('version'), 4);
+  assert.equal(sourceAfterDelete.get('reversedByVoucherId'), undefined);
+  const secondReversal = await call('mutateWorkspaceVoucher', owner.token, {
+    operation: 'reverse', documentId: `reversal-again-${owner.uid}`,
+    operationId: randomUUID().replace(/-/g, ''),
+    sourceDocumentId: voucherId, expectedSourceVersion: 4,
+    data: { date: '1405/08/07', fiscalYear: '1405', description: 'Reversal after prior draft was deleted' },
+  });
+  assert.equal(secondReversal.status, 'committed');
+  assert.equal(secondReversal.voucherNumber, 4);
 });
