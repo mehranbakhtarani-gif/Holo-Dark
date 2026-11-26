@@ -992,7 +992,7 @@ export const AccountingProvider: React.FC<{ children: React.ReactNode }> = ({ ch
       }
       showToast('مشخصات شرکتی و سال مالی ذخیره شد.');
     },
-    [profile, user, showToast]
+    [profile, user, showToast, requirePermission]
   );
 
   const setCurrencyUnit = useCallback(
@@ -2287,7 +2287,7 @@ export const AccountingProvider: React.FC<{ children: React.ReactNode }> = ({ ch
       }
       showToast('مشخصات چک صیادی ویرایش شد.');
     },
-    [user, showToast]
+    [user, showToast, requirePermission]
   );
 
   const updateChequeStatus = useCallback(
@@ -2413,7 +2413,7 @@ export const AccountingProvider: React.FC<{ children: React.ReactNode }> = ({ ch
         lines,
       });
     },
-    [parties, accounts, createVoucher]
+    [parties, accounts, createVoucher, requirePermission]
   );
 
   const recordBankTransfer = useCallback(
@@ -2457,7 +2457,7 @@ export const AccountingProvider: React.FC<{ children: React.ReactNode }> = ({ ch
         ],
       });
     },
-    [accounts, createVoucher, showToast]
+    [accounts, createVoucher, showToast, requirePermission]
   );
 
   // ---------------- INVOICES CRUD & COMMERCIAL OPS (STRICT 4-ENTITY ATOMICITY) ----------------
@@ -5207,7 +5207,7 @@ export const AccountingProvider: React.FC<{ children: React.ReactNode }> = ({ ch
       logActivity('مدیریت کاربران', `تعریف کاربر ${full.fullName}`, `نقش: ${full.role}`);
       showToast(`کاربر «${full.fullName}» به لیست اپراتورها اضافه شد.`);
     },
-    [user, ownerId, logActivity, showToast]
+    [user, ownerId, logActivity, showToast, requirePermission]
   );
 
   const updateRbacOperator = useCallback(
@@ -5232,7 +5232,7 @@ export const AccountingProvider: React.FC<{ children: React.ReactNode }> = ({ ch
       logActivity('مدیریت کاربران', 'ویرایش سطح دسترسی کاربر', `شناسه اپراتور: ${opId}`);
       showToast('سطح دسترسی کاربر به‌روزرسانی شد.');
     },
-    [user, logActivity, showToast]
+    [user, logActivity, showToast, requirePermission]
   );
 
   const deleteRbacOperator = useCallback(
@@ -5259,7 +5259,7 @@ export const AccountingProvider: React.FC<{ children: React.ReactNode }> = ({ ch
       logActivity('مدیریت کاربران', 'حذف اپراتور', `شناسه اپراتور: ${opId}`);
       showToast('اپراتور حذف شد.');
     },
-    [user, rbacOperators, activeOperatorId, logActivity, showToast]
+    [user, rbacOperators, activeOperatorId, logActivity, showToast, requirePermission]
   );
 
   // ---------------- BACKUP & RESTORE (CLOUD + LOCAL DEVICE STORAGE) ----------------
@@ -5365,8 +5365,7 @@ export const AccountingProvider: React.FC<{ children: React.ReactNode }> = ({ ch
       deviceId,
       updateCompanyProfile,
       logActivity,
-      showToast,
-    ]
+      showToast,, requirePermission]
   );
 
   const commitHolo203Migration = useCallback(
