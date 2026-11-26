@@ -1046,20 +1046,27 @@ export function planWarehouseTransfer(input: {
   if (qty <= 0) {
     throw new Error('مقدار انتقال بین انبارها باید بزرگ‌تر از صفر باشد.');
   }
-  if (state.stockQty + 0.0001 < qty) {
+  const remainingSourceLayers = cloneLayers(state.layers);
+  const sourceQty = roundQty(
+    remainingSourceLayers
+      .filter((layer) => layer.warehouse === fromWarehouse)
+      .reduce((sum, layer) => sum + layer.remainingQty, 0)
+  );
+  if (sourceQty + 0.0001 < qty) {
     throw new Error(
-      `موجودی کافی برای انتقال از «${fromWarehouse}» وجود ندارد (موجودی: ${state.stockQty}، درخواستی: ${qty}).`
+      `موجودی کافی برای انتقال از «${fromWarehouse}» وجود ندارد (موجودی این انبار: ${roundQty2(sourceQty)}، درخواستی: ${roundQty2(qty)}).`
     );
   }
 
-  const remainingSourceLayers = cloneLayers(state.layers);
   const transferredLayers: InventoryCostLayer[] = [];
   let rem = qty;
   let transferredCostIrr = 0;
 
+  // Transfer only layers physically held by the selected source warehouse.
+  // Other warehouses' layers remain untouched even when aggregate product stock is sufficient.
   for (const layer of remainingSourceLayers) {
     if (rem <= 0.00005) break;
-    if (layer.remainingQty <= 0.00005) continue;
+    if (layer.warehouse !== fromWarehouse || layer.remainingQty <= 0.00005) continue;
     const take = roundQty(Math.min(layer.remainingQty, rem));
     const takeCost = allocateLayerCostIrr(layer, take);
     layer.remainingQty = roundQty(Math.max(0, layer.remainingQty - take));
