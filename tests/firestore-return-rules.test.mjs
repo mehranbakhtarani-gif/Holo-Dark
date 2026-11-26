@@ -146,6 +146,14 @@ test('proforma conversion initializes source return counters', async () => {
     updatedByDevice: 'rules-test',
     updatedAt: serverTimestamp(),
   }));
+
+  const returnRef = doc(db, 'invoices', 'return_from_converted_proforma');
+  const returnBatch = writeBatch(db);
+  returnBatch.set(returnRef, invoiceBase(uid, 'sale_return', {
+    sourceInvoiceId: 'proforma_to_sale_1',
+  }));
+  returnBatch.update(proformaRef, sourceMutation(proformaRef, 'return_from_converted_proforma', 1, 1));
+  await assertSucceeds(returnBatch.commit());
 });
 
 test('return ACL rejects mismatched mutation IDs and fails closed for legacy sources', async () => {
