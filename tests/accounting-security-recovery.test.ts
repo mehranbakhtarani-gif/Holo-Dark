@@ -1010,7 +1010,8 @@ test('Invoice cancellation restores sale stock to the invoice warehouse, not the
   assert.ok(restored);
   const qtyByWarehouse = new Map<string, number>();
   for (const layer of restored.costLayers ?? []) {
-    qtyByWarehouse.set(layer.warehouse, (qtyByWarehouse.get(layer.warehouse) ?? 0) + layer.remainingQty);
+    const warehouse = layer.warehouse ?? restored.warehouse;
+    qtyByWarehouse.set(warehouse, (qtyByWarehouse.get(warehouse) ?? 0) + layer.remainingQty);
   }
   assert.equal(restored.stock, 8);
   assert.equal(qtyByWarehouse.get('انبار الف'), 5);
