@@ -250,12 +250,11 @@ service cloud.firestore {
         && isPairedReturnMutation(sourceInvoiceId, returnInvoiceId, sourceBefore, sourceAfter, countDelta);
     }
 
-    function isValidReturnSource(data) {
+    function isValidReturnSourceDocument(data) {
       let sourcePath = /databases/$(database)/documents/invoices/$(data.sourceInvoiceId);
       let sourceSnapshot = get(sourcePath);
       let source = sourceSnapshot.data;
-      return !(data.invoiceType in ['sale_return', 'purchase_return']) || (
-        ('sourceInvoiceId' in data)
+      return ('sourceInvoiceId' in data)
         && isNonEmptyString(data.sourceInvoiceId, 128)
         && sourceSnapshot.exists()
         && source.ownerId == data.ownerId
@@ -266,8 +265,12 @@ service cloud.firestore {
         && (
           (data.invoiceType == 'sale_return' && source.invoiceType == 'sale')
           || (data.invoiceType == 'purchase_return' && source.invoiceType == 'purchase')
-        )
-      );
+        );
+    }
+
+    function isValidReturnSource(data) {
+      return !(data.invoiceType in ['sale_return', 'purchase_return'])
+        || isValidReturnSourceDocument(data);
     }
 
     function isValidInvoice(data) {
