@@ -883,7 +883,7 @@ service cloud.firestore {
               existing().invoiceType in ['sale_return', 'purchase_return']
               && incoming().status == 'cancelled'
               && existing().status != 'cancelled'
-              && hasAtomicReturnRevisionBump(
+              && hasSourceCounterBump(
                 existing().sourceInvoiceId,
                 invoiceId,
                 existing().ownerId,
