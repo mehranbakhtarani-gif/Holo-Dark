@@ -322,7 +322,7 @@ export const listWorkspaceMembers = onCall({ region: REGION }, async (request) =
       email: String(data.email || ''),
       role: String(data.role),
       active: data.active === true,
-      createdAt: data.createdAt?.toDate?.().toISOString?.() || null,
+      createdAt: data.createdAt && typeof data.createdAt.toDate === 'function' ? data.createdAt.toDate().toISOString() : null,
     };
   });
   members.sort((a, b) => a.role === 'owner' ? -1 : b.role === 'owner' ? 1 : a.email.localeCompare(b.email));
