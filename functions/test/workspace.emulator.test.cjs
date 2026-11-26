@@ -100,6 +100,24 @@ test('workspace provisioning, invitation, owner-only RBAC and revocation', async
   const changed = await call('listWorkspaceMembers', owner.token);
   assert.equal(changed.members.find((member) => member.uid === invitee.uid).role, 'warehouse_keeper');
 
+  const migration = await call('beginWorkspaceDataMigration', owner.token);
+  assert.equal(migration.status, 'copying');
+  let migrationStatus = migration.status;
+  let migrationSteps = 0;
+  while (migrationStatus === 'copying' && migrationSteps < 30) {
+    const step = await call('migrateWorkspaceDataBatch', owner.token);
+    migrationStatus = step.status;
+    migrationSteps += 1;
+  }
+  assert.equal(migrationStatus, 'verifying');
+  let verifySteps = 0;
+  while (migrationStatus === 'verifying' && verifySteps < 30) {
+    const step = await call('verifyWorkspaceDataMigration', owner.token);
+    migrationStatus = step.status;
+    verifySteps += 1;
+  }
+  assert.equal(migrationStatus, 'verified');
+
   await call('revokeWorkspaceMember', owner.token, { uid: invitee.uid });
   const revoked = await call('listWorkspaceMembers', owner.token);
   assert.equal(revoked.members.find((member) => member.uid === invitee.uid).active, false);
