@@ -1504,6 +1504,47 @@ test('Inventory normalization: Rebuilds FIFO layers when quantity matches but va
   assert.equal(normalized.layers[0].sourceRef, 'opening_balance');
 });
 
+test('Inventory normalization: Rejects non-finite persisted FIFO layer quantities and costs', () => {
+  const seed = createHolooSeedData('test_owner');
+  const base = seed.products[0];
+  const corrupted: Product = {
+    ...base,
+    stock: 10,
+    buyPrice: 100,
+    inventoryValueIrr: 1_000,
+    costLayers: [
+      {
+        layerId: 'lyr_corrupt',
+        date: '1405/01/01',
+        sourceRef: 'purchase_corrupt',
+        warehouse: base.warehouse,
+        originalQty: Number.POSITIVE_INFINITY,
+        remainingQty: 10,
+        unitCostIrr: Number.POSITIVE_INFINITY,
+        totalCostIrr: Number.POSITIVE_INFINITY,
+      },
+      {
+        layerId: 'lyr_nan_qty',
+        date: '1405/01/02',
+        sourceRef: 'purchase_nan',
+        warehouse: base.warehouse,
+        originalQty: 5,
+        remainingQty: Number.NaN,
+        unitCostIrr: 100,
+        totalCostIrr: 500,
+      },
+    ],
+  };
+
+  const normalized = normalizeProductCostState(corrupted, 'fifo');
+  assert.equal(normalized.stockQty, 10);
+  assert.equal(normalized.totalValueIrr, 1_000);
+  assert.equal(normalized.layers.length, 1, 'Layers with non-finite remaining quantity must be discarded');
+  assert.equal(normalized.layers[0].sourceRef, 'opening_balance');
+  assert.equal(normalized.layers[0].totalCostIrr, 1_000);
+  assert.ok(Number.isFinite(normalized.layers[0].unitCostIrr));
+});
+
 test('Inventory normalization: Retains persisted FIFO layers when quantity and value both reconcile', () => {
   const seed = createHolooSeedData('test_owner');
   const base = seed.products[0];
