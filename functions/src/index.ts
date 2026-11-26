@@ -1,3 +1,4 @@
+import { Buffer } from 'node:buffer';
 import { createHash, randomBytes } from 'node:crypto';
 import { initializeApp } from 'firebase-admin/app';
 import { getAuth } from 'firebase-admin/auth';
