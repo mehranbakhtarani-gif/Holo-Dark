@@ -41,6 +41,20 @@ export interface MeshRelayEnvelope {
   summary: string;
 }
 
+/** Replaces compacted relay metadata with a self-consistent full merged snapshot before forwarding. */
+export function hydrateCompactedRelayPayload<T extends { snapshotJson: string; payloadHash: string }>(
+  item: T,
+  fallbackSnapshotJson: string,
+  fallbackPayloadHash: string
+): T {
+  if (item.snapshotJson && item.snapshotJson.length > 2) return item;
+  return {
+    ...item,
+    snapshotJson: fallbackSnapshotJson,
+    payloadHash: fallbackPayloadHash,
+  };
+}
+
 export interface MeshBatchConfig {
   /** Quiet window (ms) to coalesce consecutive small updates into a single version-vector exchange */
   batchWindowMs: number;
