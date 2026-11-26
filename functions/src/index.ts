@@ -589,6 +589,125 @@ export const mutateWorkspaceCoreRecord = onCall({ region: REGION, timeoutSeconds
   });
 });
 
+
+/** Workspace-native voucher create/finalize. Voucher and fiscal counter commit together. */
+export const mutateWorkspaceVoucher = onCall({ region: REGION, timeoutSeconds: 60 }, async (request) => {
+  const auth = request.auth as CallableAuth | undefined;
+  requireVerifiedAuth(auth);
+  const { workspaceId, role } = await requireActiveWorkspaceMember(auth);
+  if (!['owner', 'finance_manager', 'accountant', 'treasurer'].includes(role)) {
+    throw new HttpsError('permission-denied', 'نقش فعلی اجازه ثبت یا قطعی‌سازی سند را ندارد.');
+  }
+  const operation = request.data?.operation;
+  const operationId = request.data?.operationId;
+  const documentId = request.data?.documentId;
+  const expectedVersion = request.data?.expectedVersion;
+  if (!['create', 'finalize'].includes(operation)
+      || typeof operationId !== 'string' || !/^[A-Za-z0-9_-]{16,128}$/.test(operationId)
+      || typeof documentId !== 'string' || !/^[A-Za-z0-9_-]{1,128}$/.test(documentId)
+      || (operation === 'finalize' && (!Number.isInteger(expectedVersion) || expectedVersion < 1))) {
+    throw new HttpsError('invalid-argument', 'پارامترهای عملیات سند معتبر نیستند.');
+  }
+  const manifestRef = db.collection('workspaceMigrations').doc(workspaceId);
+  const voucherRef = migrationDestination(workspaceId, 'vouchers').doc(documentId);
+  const operationRef = db.collection('workspaceWriteOperations').doc(`${workspaceId}_voucher_${operationId}`);
+  const counterRef = migrationDestination(workspaceId, 'counters').doc('voucher');
+  const input = request.data?.data as Record<string, unknown> | undefined;
+  if (operation === 'create') {
+    if (!input || input.ownerId !== workspaceId || input.status !== 'draft'
+        || typeof input.date !== 'string' || typeof input.fiscalYear !== 'string'
+        || !input.fiscalYear || input.fiscalYear.length > 16
+        || typeof input.description !== 'string' || input.description.length > 300
+        || !['general', 'opening', 'closing', 'adjustment'].includes(String(input.voucherType))
+        || !Array.isArray(input.lines) || input.lines.length < 2 || input.lines.length > 100
+        || input.lines.some((line) => !line || typeof line !== 'object'
+          || typeof (line as Record<string, unknown>).accountCode !== 'string'
+          || typeof (line as Record<string, unknown>).debit !== 'number'
+          || typeof (line as Record<string, unknown>).credit !== 'number'
+          || !Number.isFinite((line as Record<string, unknown>).debit as number)
+          || !Number.isFinite((line as Record<string, unknown>).credit as number)
+          || ((line as Record<string, unknown>).debit as number) < 0
+          || ((line as Record<string, unknown>).credit as number) < 0)
+        || typeof input.totalDebit !== 'number' || typeof input.totalCredit !== 'number'
+        || !Number.isFinite(input.totalDebit) || !Number.isFinite(input.totalCredit)
+        || Math.abs(input.totalDebit - input.totalCredit) > 0.000001
+        || Math.abs((input.lines as Record<string, unknown>[]).reduce((sum, line) => sum + Number(line.debit), 0) - input.totalDebit) > 0.000001
+        || Math.abs((input.lines as Record<string, unknown>[]).reduce((sum, line) => sum + Number(line.credit), 0) - input.totalCredit) > 0.000001) {
+      throw new HttpsError('invalid-argument', 'سند پیش‌نویس از نظر ساختار یا تراز بدهکار/بستانکار معتبر نیست.');
+    }
+  }
+  const requestHash = createHash('sha256').update(JSON.stringify(stableMigrationValue({
+    operation, documentId, expectedVersion: operation === 'finalize' ? expectedVersion : null,
+    data: operation === 'create' ? input : null,
+  }))).digest('hex');
+  return db.runTransaction(async (tx) => {
+    const [manifest, operationSnap, voucherSnap, counterSnap] = await Promise.all([
+      tx.get(manifestRef), tx.get(operationRef), tx.get(voucherRef), tx.get(counterRef),
+    ]);
+    if (!manifest.exists || manifest.get('status') !== 'verified'
+        || manifest.get('coreWritesFrozen') !== true || manifest.get('coreWriteMode') !== 'workspace_native'
+        || manifest.get('readBarrier.status') !== 'frozen') {
+      throw new HttpsError('failed-precondition', 'نوشتن اسناد در Workspace هنوز فعال نشده است.');
+    }
+    if (operationSnap.exists) {
+      if (operationSnap.get('requestHash') !== requestHash) {
+        throw new HttpsError('already-exists', 'شناسه عملیات سند برای درخواست دیگری استفاده شده است.');
+      }
+      return { status: 'replayed', operationId, version: operationSnap.get('resultVersion'), voucherNumber: operationSnap.get('voucherNumber') };
+    }
+    const now = FieldValue.serverTimestamp();
+    if (operation === 'create') {
+      if (voucherSnap.exists) throw new HttpsError('already-exists', 'شناسه سند از قبل وجود دارد.');
+      const fiscalYear = String(input!.fiscalYear);
+      const voucherQuery = migrationDestination(workspaceId, 'vouchers')
+        .where('deleted', '==', false).where('payload.fiscalYear', '==', fiscalYear);
+      const existingVouchers = await tx.get(voucherQuery);
+      const maxExisting = existingVouchers.docs.reduce((max, item) => Math.max(max, Number(item.get('payload.voucherNumber')) || 0), 0);
+      const nextNumber = Math.max(Number(counterSnap.get('lastVoucherNumber')) || 0, maxExisting) + 1;
+      const payload = { ...input!, voucherNumber: nextNumber, createdAt: now, updatedAt: now, _version: 1 };
+      tx.create(voucherRef, {
+        workspaceId, sourceCollection: 'vouchers', sourceId: documentId,
+        sourceHash: workspaceMigrationHash(payload), schemaVersion: 1,
+        version: 1, deleted: false, payload, createdAt: now, updatedAt: now,
+      });
+      tx.set(counterRef, {
+        workspaceId, sourceCollection: 'counters', sourceId: 'voucher',
+        schemaVersion: 1, version: Number(counterSnap.get('version') || 0) + 1,
+        deleted: false, payload: { ownerId: workspaceId, lastVoucherNumber: nextNumber, updatedAt: now },
+        createdAt: counterSnap.exists ? counterSnap.get('createdAt') || now : now, updatedAt: now,
+      });
+      tx.create(operationRef, {
+        workspaceId, uid: auth.uid, collection: 'vouchers', documentId, operation,
+        requestHash, resultVersion: 1, voucherNumber: nextNumber, createdAt: now,
+      });
+      return { status: 'committed', operationId, version: 1, voucherNumber: nextNumber };
+    }
+    if (!voucherSnap.exists || voucherSnap.get('deleted') === true) {
+      throw new HttpsError('not-found', 'سند موردنظر یافت نشد.');
+    }
+    const currentVersion = Number(voucherSnap.get('version') || 1);
+    if (currentVersion !== expectedVersion) {
+      throw new HttpsError('aborted', 'نسخه سند تغییر کرده است؛ ابتدا اطلاعات را تازه‌سازی کنید.', { expectedVersion, currentVersion });
+    }
+    const currentPayload = voucherSnap.get('payload') as Record<string, unknown>;
+    if (currentPayload.status !== 'draft') throw new HttpsError('failed-precondition', 'فقط سند پیش‌نویس قابل قطعی‌سازی است.');
+    const integrityHash = request.data?.integrityHash;
+    if (typeof integrityHash !== 'string' || !/^vseal_[0-9a-f]{16}$/.test(integrityHash)) {
+      throw new HttpsError('invalid-argument', 'مهر اصالت سند معتبر نیست.');
+    }
+    const nextPayload = { ...currentPayload, status: 'permanent', integrityHash, updatedAt: now, _version: currentVersion + 1 };
+    tx.set(voucherRef, {
+      ...voucherSnap.data(), version: currentVersion + 1,
+      sourceHash: workspaceMigrationHash(nextPayload), payload: nextPayload, updatedAt: now,
+    });
+    tx.create(operationRef, {
+      workspaceId, uid: auth.uid, collection: 'vouchers', documentId, operation,
+      requestHash, resultVersion: currentVersion + 1, createdAt: now,
+    });
+    return { status: 'committed', operationId, version: currentVersion + 1, voucherNumber: currentPayload.voucherNumber };
+  });
+});
+
 /** Atomically closes legacy client writes for accounts/products through Firestore Rules. */
 export const freezeWorkspaceCoreWrites = onCall({ region: REGION }, async (request) => {
   const auth = request.auth as CallableAuth | undefined;
