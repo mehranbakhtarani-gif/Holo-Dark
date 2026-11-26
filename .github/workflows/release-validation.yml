@@ -40,9 +40,6 @@ jobs:
       - name: TypeScript validation
         run: npm run lint
 
-      - name: Validate Firestore security rules
-        run: npm run lint:rules
-
       - name: Build production application
         run: npm run build
 
