@@ -371,6 +371,33 @@ export interface WorkspaceVoucherMutationResult {
   sourceVersion?: number;
   voucherNumber: number;
 }
+export interface WorkspaceInventoryAdjustmentInput {
+  productId: string;
+  voucherId: string;
+  operationId: string;
+  expectedVersion: number;
+  countedStock: number;
+  date: string;
+  reason: string;
+  deviceId?: string;
+}
+export interface WorkspaceInventoryAdjustmentResult {
+  status: 'committed' | 'replayed' | 'no_change';
+  operationId: string;
+  version: number;
+  voucherNumber?: number | null;
+  adjustmentCostIrr: number;
+}
+export async function adjustWorkspaceProductStockWithVoucher(
+  input: WorkspaceInventoryAdjustmentInput
+): Promise<WorkspaceInventoryAdjustmentResult> {
+  const callable = httpsCallable<WorkspaceInventoryAdjustmentInput, WorkspaceInventoryAdjustmentResult>(
+    functions, 'adjustWorkspaceProductStockWithVoucher'
+  );
+  const result = await callable(input);
+  return result.data;
+}
+
 export async function mutateWorkspaceVoucher(
   input: WorkspaceVoucherMutationInput
 ): Promise<WorkspaceVoucherMutationResult> {
