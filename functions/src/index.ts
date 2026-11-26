@@ -118,7 +118,7 @@ export const migrateInvoiceReturnCounters = onCall(
           return 1;
         });
       }));
-      migratedCount += results.reduce((total, value) => total + value, 0);
+      migratedCount += results.reduce<number>((total, value) => total + value, 0);
     }
 
     await markerRef.set({
