@@ -2,6 +2,7 @@ import assert from 'node:assert/strict';
 import {
   mergeWorkspacesDeterministicLWW,
   isAuthorizedOutboxPeerAck,
+  isDurableOutboxItemVerified,
   SYNCABLE_WORKSPACE_COLLECTIONS,
   MESH_DEVICES,
   safeParseJsonObject,
@@ -254,6 +255,22 @@ runTest('3c. outbox ACKs are accepted only from required P2P peers', () => {
   assert.equal(isAuthorizedOutboxPeerAck(p2pItem, 'holoo-mesh-mehran-laptop'), false);
   assert.equal(isAuthorizedOutboxPeerAck(folderItem, 'holoo-mesh-mehran-phone1'), false);
   assert.equal(isAuthorizedOutboxPeerAck({ target: 'p2p_mesh', requiredPeers: [] }, 'holoo-mesh-mehran-phone2'), false);
+});
+
+runTest('3e. relay outbox ACK gate requires a verified persisted operation', () => {
+  const expected = {
+    target: 'p2p_mesh' as const,
+    payloadHash: 'payload-hash',
+    snapshotJson: '{"vouchers":[{"id":"v1"}]}',
+    requiredPeers: ['holoo-mesh-mehran-phone2'],
+    deliveredToPeers: ['holoo-mesh-mehran-phone1'],
+  };
+
+  assert.equal(isDurableOutboxItemVerified(expected, expected), true);
+  assert.equal(isDurableOutboxItemVerified(undefined, expected), false);
+  assert.equal(isDurableOutboxItemVerified({ ...expected, snapshotJson: '{"vouchers":[]}' }, expected), false);
+  assert.equal(isDurableOutboxItemVerified({ ...expected, requiredPeers: [] }, expected), false);
+  assert.equal(isDurableOutboxItemVerified({ ...expected, deliveredToPeers: [] }, expected), false);
 });
 
 runTest('4. safeParseJsonObject strips prototype pollution payloads', () => {
