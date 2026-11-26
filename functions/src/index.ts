@@ -751,7 +751,12 @@ export const createTrackedWarehouseTransfer = onCall({ region: REGION, timeoutSe
       throw new HttpsError('failed-precondition', 'نوشتن کالا در دوره توقف مهاجرت مسدود است.');
     }
     const productRef = nativeMode ? migrationDestination(workspaceId, 'products').doc(productId) : db.collection('products').doc(productId);
-    const [productSnap, extensionSnap] = await Promise.all([tx.get(productRef), tx.get(extensionRef)]);
+    const counterRef = nativeMode
+      ? migrationDestination(workspaceId, 'counters').doc(workspaceId)
+      : db.collection('counters').doc(workspaceId);
+    const [productSnap, extensionSnap, counterSnap] = await Promise.all([
+      tx.get(productRef), tx.get(extensionRef), tx.get(counterRef),
+    ]);
     if (!productSnap.exists || !extensionSnap.exists) throw new HttpsError('not-found', 'کالا یا سند انتقال فضای کاری یافت نشد.');
     let productData: Record<string, unknown>;
     let productVersion = 0;
@@ -808,8 +813,10 @@ export const createTrackedWarehouseTransfer = onCall({ region: REGION, timeoutSe
     }
     if (remaining > 0.0001 || !moved.length) throw new HttpsError('failed-precondition', 'موجودی کافی در انبار مبدأ وجود ندارد.');
     const cleanLayers = [...nextLayers.filter((l) => Number(l.remainingQty) > 0.00005), ...moved];
+    const eventSequence = Math.max(0, Number(counterSnap.data()?.lastInventorySequence) || 0) + 1;
     const transfer = {
       id: transferId, transferNumber: transferNumber.trim(), date, productId,
+      eventSequence,
       sku: String(productData.sku || ''), productName: String(productData.name || ''),
       fromWarehouse: fromWarehouse.trim(), toWarehouse: toWarehouse.trim(),
       qty: roundQty(qty), transferredCostIrr: movedCost,
@@ -828,6 +835,12 @@ export const createTrackedWarehouseTransfer = onCall({ region: REGION, timeoutSe
       _version: Math.max(0, Number(ext._version) || 0) + 1,
       updatedAt: now,
     });
+    tx.set(counterRef, {
+      ownerId: workspaceId,
+      lastInventorySequence: eventSequence,
+      updatedAt: now,
+      ...(!counterSnap.exists ? { createdAt: now } : {}),
+    }, { merge: true });
     return { status: 'committed', transfer, productVersion };
   });
 });
@@ -862,7 +875,12 @@ export const receiveTrackedWarehouseTransfer = onCall({ region: REGION, timeoutS
       throw new HttpsError('failed-precondition', 'نوشتن کالا در دوره توقف مهاجرت مسدود است.');
     }
     const productRef = nativeMode ? migrationDestination(workspaceId, 'products').doc(productId) : db.collection('products').doc(productId);
-    const [productSnap, extensionSnap] = await Promise.all([tx.get(productRef), tx.get(extensionRef)]);
+    const counterRef = nativeMode
+      ? migrationDestination(workspaceId, 'counters').doc(workspaceId)
+      : db.collection('counters').doc(workspaceId);
+    const [productSnap, extensionSnap, counterSnap] = await Promise.all([
+      tx.get(productRef), tx.get(extensionRef), tx.get(counterRef),
+    ]);
     if (!productSnap.exists || !extensionSnap.exists) throw new HttpsError('failed-precondition', 'کالا یا سند همگام‌سازی انتقال‌ها در فضای کاری موجود نیست.');
     let productData: Record<string, unknown>;
     let productVersion = 0;
@@ -909,8 +927,11 @@ export const receiveTrackedWarehouseTransfer = onCall({ region: REGION, timeoutS
       return { ...layer, warehouse: transfer.toWarehouse };
     });
     if (found.size !== expectedById.size || Math.abs(actualQty - Number(transfer.qty)) > 0.0001 || actualValue !== Number(transfer.transferredCostIrr)) throw new HttpsError('failed-precondition', 'مقدار یا ارزش لایه‌های انتقال با سند انتقال مطابقت ندارد.');
+    const eventSequence = Math.max(0, Number(counterSnap.data()?.lastInventorySequence) || 0) + 1;
     const nextTransfers = transfers.slice();
-    nextTransfers[transferIndex] = { ...transfer, status: 'received', receivedDate };
+    nextTransfers[transferIndex] = {
+      ...transfer, status: 'received', receivedDate, receivedEventSequence: eventSequence,
+    };
     const now = FieldValue.serverTimestamp();
     if (nativeMode) {
       const nextPayload = { ...productData, costLayers: nextLayers };
@@ -919,7 +940,13 @@ export const receiveTrackedWarehouseTransfer = onCall({ region: REGION, timeoutS
       tx.update(productRef, { payload: nextPayload, sourceHash: workspaceMigrationHash(nextPayload), version: productVersion, updatedAt: now });
     } else tx.update(productRef, { costLayers: nextLayers, updatedAt: now });
     tx.update(extensionRef, { trackedWarehouseTransfers: nextTransfers.slice(0, 100), _version: Math.max(0, Number(extensionData._version) || 0) + 1, updatedAt: now });
-    return { status: 'committed', productVersion, transferId };
+    tx.set(counterRef, {
+      ownerId: workspaceId,
+      lastInventorySequence: eventSequence,
+      updatedAt: now,
+      ...(!counterSnap.exists ? { createdAt: now } : {}),
+    }, { merge: true });
+    return { status: 'committed', productVersion, transferId, receivedEventSequence: eventSequence };
   });
 });
 
