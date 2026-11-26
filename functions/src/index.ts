@@ -189,7 +189,13 @@ export const acceptWorkspaceInvitation = onCall({ region: REGION }, async (reque
   if (invitation.email !== normalizeEmail(request.auth.token.email)) {
     throw new HttpsError('permission-denied', 'ایمیل حساب با گیرنده دعوت‌نامه مطابقت ندارد.');
   }
-  if (!(invitation.expiresAt instanceof Date) || invitation.expiresAt.getTime() <= Date.now()) {
+  const expiresAtMs =
+    typeof invitation.expiresAt?.toMillis === 'function'
+      ? invitation.expiresAt.toMillis()
+      : invitation.expiresAt instanceof Date
+        ? invitation.expiresAt.getTime()
+        : Number.NaN;
+  if (!Number.isFinite(expiresAtMs) || expiresAtMs <= Date.now()) {
     throw new HttpsError('deadline-exceeded', 'مهلت دعوت‌نامه به پایان رسیده است.');
   }
   if (invitation.status !== 'pending' && invitation.acceptedBy !== request.auth.uid) {
@@ -223,7 +229,7 @@ export const acceptWorkspaceInvitation = onCall({ region: REGION }, async (reque
       });
       tx.update(invitationRef, {
         status: 'accepted',
-        acceptedBy: request.auth.uid,
+        acceptedBy: auth.uid,
         acceptedAt: FieldValue.serverTimestamp(),
       });
     } else if (currentInvite.get('acceptedBy') !== request.auth.uid || !memberSnap.exists || memberSnap.get('active') !== true) {
