@@ -1929,6 +1929,7 @@ export interface AtomicInvoicePlanInput {
   existingVouchers?: Voucher[];
   closedFiscalYears?: string[];
   fxDecimals?: number;
+  eventSequence?: number;
 }
 
 export interface AtomicInvoicePlanResult {
@@ -2448,6 +2449,9 @@ export function planAtomicInvoiceCommit(input: AtomicInvoicePlanInput): AtomicIn
     voucherId: voucher?.id,
     ...(payload.invoiceType === 'sale' || payload.invoiceType === 'purchase'
       ? { returnRevision: 0, activeReturnCount: 0 }
+      : {}),
+    ...(Number.isSafeInteger(input.eventSequence) && Number(input.eventSequence) > 0
+      ? { eventSequence: Number(input.eventSequence) }
       : {}),
     _version: 1,
     updatedByDevice: deviceId,
