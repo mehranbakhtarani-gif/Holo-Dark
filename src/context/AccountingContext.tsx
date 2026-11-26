@@ -2097,7 +2097,6 @@ export const AccountingProvider: React.FC<{ children: React.ReactNode }> = ({ ch
       } else if (user) {
         try {
           const legacyPayload = { ...payload, updatedAt: serverTimestamp() };
-          delete legacyPayload.ownerId;
           await updateDoc(doc(db, 'products', productId), legacyPayload);
         } catch (err) {
           handleFirestoreError(err, OperationType.UPDATE, `products/${productId}`);
