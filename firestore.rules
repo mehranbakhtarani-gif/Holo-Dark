@@ -251,18 +251,21 @@ service cloud.firestore {
     }
 
     function isValidReturnSource(data) {
+      let sourcePath = /databases/$(database)/documents/invoices/$(data.sourceInvoiceId);
+      let sourceSnapshot = get(sourcePath);
+      let source = sourceSnapshot.data;
       return !(data.invoiceType in ['sale_return', 'purchase_return']) || (
         ('sourceInvoiceId' in data)
         && isNonEmptyString(data.sourceInvoiceId, 128)
-        && exists(/databases/$(database)/documents/invoices/$(data.sourceInvoiceId))
-        && get(/databases/$(database)/documents/invoices/$(data.sourceInvoiceId)).data.ownerId == data.ownerId
-        && get(/databases/$(database)/documents/invoices/$(data.sourceInvoiceId)).data.status != 'cancelled'
-        && get(/databases/$(database)/documents/invoices/$(data.sourceInvoiceId)).data.activeReturnCount is int
-        && get(/databases/$(database)/documents/invoices/$(data.sourceInvoiceId)).data.returnRevision is int
-        && get(/databases/$(database)/documents/invoices/$(data.sourceInvoiceId)).data.partyId == data.partyId
+        && sourceSnapshot.exists()
+        && source.ownerId == data.ownerId
+        && source.status != 'cancelled'
+        && source.activeReturnCount is int
+        && source.returnRevision is int
+        && source.partyId == data.partyId
         && (
-          (data.invoiceType == 'sale_return' && get(/databases/$(database)/documents/invoices/$(data.sourceInvoiceId)).data.invoiceType == 'sale')
-          || (data.invoiceType == 'purchase_return' && get(/databases/$(database)/documents/invoices/$(data.sourceInvoiceId)).data.invoiceType == 'purchase')
+          (data.invoiceType == 'sale_return' && source.invoiceType == 'sale')
+          || (data.invoiceType == 'purchase_return' && source.invoiceType == 'purchase')
         )
       );
     }
@@ -786,6 +789,8 @@ service cloud.firestore {
         && (
           (
             incoming().invoiceType in ['sale', 'purchase']
+            && ('returnRevision' in incoming())
+            && ('activeReturnCount' in incoming())
             && incoming().returnRevision == 0
             && incoming().activeReturnCount == 0
             && !('lastReturnMutationId' in incoming())
