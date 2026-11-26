@@ -1393,6 +1393,284 @@ export const listTrackedWarehouseTransferHistory = onCall({ region: REGION, time
   };
 });
 
+/** Server-authoritative, atomic stock adjustment and permanent voucher posting. */
+export const adjustWorkspaceProductStockWithVoucher = onCall({ region: REGION, timeoutSeconds: 60 }, async (request) => {
+  const auth = request.auth as CallableAuth | undefined;
+  requireVerifiedAuth(auth);
+  const { workspaceId, role } = await requireActiveWorkspaceMember(auth);
+  if (!['owner', 'finance_manager', 'accountant'].includes(role)) {
+    throw new HttpsError('permission-denied', 'نقش فعلی اجازه تعدیل موجودی همراه با سند حسابداری را ندارد.');
+  }
+  const productId = request.data?.productId;
+  const voucherId = request.data?.voucherId;
+  const operationId = request.data?.operationId;
+  const expectedVersion = request.data?.expectedVersion;
+  const countedStock = request.data?.countedStock;
+  const date = request.data?.date;
+  const reason = request.data?.reason;
+  const deviceId = request.data?.deviceId;
+  if (typeof productId !== 'string' || !/^[A-Za-z0-9_-]{1,128}$/.test(productId)
+      || typeof voucherId !== 'string' || !/^[A-Za-z0-9_-]{1,128}$/.test(voucherId)
+      || typeof operationId !== 'string' || !/^[A-Za-z0-9_-]{16,128}$/.test(operationId)
+      || !Number.isInteger(expectedVersion) || expectedVersion < 1
+      || typeof countedStock !== 'number' || !Number.isFinite(countedStock) || countedStock < 0 || countedStock > 1e12
+      || typeof date !== 'string' || !/^\d{4}\/\d{2}\/\d{2}$/.test(date)
+      || typeof reason !== 'string' || reason.length > 300
+      || (deviceId !== undefined && (typeof deviceId !== 'string' || deviceId.length > 64))) {
+    throw new HttpsError('invalid-argument', 'پارامترهای تعدیل موجودی معتبر نیستند.');
+  }
+  const fiscalYear = date.slice(0, 4);
+  const manifestRef = db.collection('workspaceMigrations').doc(workspaceId);
+  const productRef = migrationDestination(workspaceId, 'products').doc(productId);
+  const voucherRef = migrationDestination(workspaceId, 'vouchers').doc(voucherId);
+  const counterRef = migrationDestination(workspaceId, 'counters').doc(workspaceId);
+  const profileRef = db.collection('users').doc(workspaceId);
+  const operationRef = db.collection('workspaceWriteOperations').doc(workspaceId + '_inventory_adjustment_' + operationId);
+  const accountQuery = migrationDestination(workspaceId, 'accounts').where('deleted', '==', false);
+  const requestHash = createHash('sha256').update(JSON.stringify(stableMigrationValue({
+    productId, voucherId, expectedVersion, countedStock, date, reason,
+  }))).digest('hex');
+
+  return db.runTransaction(async (tx) => {
+    const [manifest, operationSnap, productSnap, voucherSnap, counterSnap, profileSnap, accountSnaps] = await Promise.all([
+      tx.get(manifestRef), tx.get(operationRef), tx.get(productRef), tx.get(voucherRef),
+      tx.get(counterRef), tx.get(profileRef), tx.get(accountQuery),
+    ]);
+    if (!manifest.exists || manifest.get('status') !== 'verified'
+        || manifest.get('coreWritesFrozen') !== true
+        || manifest.get('coreWriteMode') !== 'workspace_native'
+        || manifest.get('readBarrier.status') !== 'frozen') {
+      throw new HttpsError('failed-precondition', 'نوشتن تعدیل موجودی در Workspace فعال یا قفل‌شده نیست.');
+    }
+    if (operationSnap.exists) {
+      if (operationSnap.get('requestHash') !== requestHash) {
+        throw new HttpsError('already-exists', 'شناسه عملیات تعدیل برای درخواست دیگری استفاده شده است.');
+      }
+      return {
+        status: 'replayed', operationId,
+        version: operationSnap.get('resultVersion'),
+        voucherNumber: operationSnap.get('voucherNumber') ?? null,
+        adjustmentCostIrr: operationSnap.get('adjustmentCostIrr') ?? 0,
+      };
+    }
+    if (!productSnap.exists || productSnap.get('workspaceId') !== workspaceId
+        || productSnap.get('sourceCollection') !== 'products' || productSnap.get('deleted') === true) {
+      throw new HttpsError('not-found', 'کالای فعال در فضای کاری یافت نشد.');
+    }
+    if (voucherSnap.exists) throw new HttpsError('already-exists', 'شناسه سند تعدیل از قبل وجود دارد.');
+    const currentVersion = Number(productSnap.get('version') || 1);
+    if (currentVersion !== expectedVersion) {
+      throw new HttpsError('aborted', 'نسخه کالا تغییر کرده است؛ اطلاعات را تازه‌سازی کنید.', {
+        expectedVersion, currentVersion,
+      });
+    }
+    const product = productSnap.get('payload') as Record<string, unknown>;
+    if (!product || product.ownerId !== workspaceId
+        || typeof product.stock !== 'number' || !Number.isFinite(product.stock) || product.stock < 0
+        || typeof product.buyPrice !== 'number' || !Number.isFinite(product.buyPrice) || product.buyPrice < 0
+        || typeof product.name !== 'string' || typeof product.sku !== 'string'
+        || typeof product.warehouse !== 'string' || typeof product.unit !== 'string') {
+      throw new HttpsError('failed-precondition', 'اطلاعات پایه یا موجودی کالا معتبر نیست.');
+    }
+    const closedFiscalYears = profileSnap.get('closedFiscalYears');
+    if (Array.isArray(closedFiscalYears) && closedFiscalYears.includes(fiscalYear)) {
+      throw new HttpsError('failed-precondition', 'سال مالی ' + fiscalYear + ' بسته است.');
+    }
+    const method = String(product.costingMethod || profileSnap.get('defaultCostingMethod') || 'fifo');
+    if (!['fifo', 'moving_average', 'periodic_average'].includes(method)) {
+      throw new HttpsError('failed-precondition', 'روش بهای تمام‌شده کالا پشتیبانی نمی‌شود.');
+    }
+
+    const roundQty = (value: number) => Math.round(value * 10000) / 10000;
+    const roundQty2 = (value: number) => Math.round(value * 100) / 100;
+    const stock = roundQty(product.stock);
+    const layersRaw = product.costLayers;
+    if (stock > 0 && (!Array.isArray(layersRaw) || layersRaw.length === 0)) {
+      throw new HttpsError('failed-precondition', 'لایه‌های بهای تمام‌شده موجود نیست؛ ابتدا بهای FIFO کالا را بازسازی کنید.');
+    }
+    const layers = (Array.isArray(layersRaw) ? layersRaw : []).map((layer) => ({ ...(layer as Record<string, unknown>) }));
+    if (layers.some((layer) => typeof layer.layerId !== 'string' || !layer.layerId
+        || typeof layer.remainingQty !== 'number' || !Number.isFinite(layer.remainingQty) || layer.remainingQty <= 0
+        || typeof layer.totalCostIrr !== 'number' || !Number.isFinite(layer.totalCostIrr) || layer.totalCostIrr < 0
+        || typeof layer.unitCostIrr !== 'number' || !Number.isFinite(layer.unitCostIrr) || layer.unitCostIrr < 0)) {
+      throw new HttpsError('failed-precondition', 'ساختار لایه‌های بهای تمام‌شده نامعتبر است.');
+    }
+    const layerQty = roundQty(layers.reduce((sum, layer) => sum + Number(layer.remainingQty), 0));
+    const layerValue = layers.reduce((sum, layer) => sum + Number(layer.totalCostIrr), 0);
+    const inventoryValue = product.inventoryValueIrr === undefined
+      ? Math.round(stock * product.buyPrice) : Number(product.inventoryValueIrr);
+    if (!Number.isFinite(inventoryValue) || inventoryValue < 0
+        || Math.abs(layerQty - stock) >= 0.005
+        || Math.abs(layerValue - Math.round(inventoryValue)) >= 1) {
+      throw new HttpsError('failed-precondition', 'مقدار یا ارزش لایه‌های بهای تمام‌شده با موجودی کالا تطبیق ندارد.');
+    }
+
+    const diffQty = roundQty(countedStock - stock);
+    const operationNow = FieldValue.serverTimestamp();
+    if (Math.abs(diffQty) < 0.001) {
+      tx.create(operationRef, {
+        workspaceId, uid: auth.uid, collection: 'products', documentId: productId,
+        operation: 'inventory_adjustment_noop', requestHash, resultVersion: currentVersion,
+        adjustmentCostIrr: 0, createdAt: operationNow,
+      });
+      return { status: 'no_change', operationId, version: currentVersion, adjustmentCostIrr: 0 };
+    }
+
+    const totalValue = Math.round(inventoryValue);
+    const weightedAverage = stock > 0 ? Math.round(totalValue / stock) : Math.round(product.buyPrice);
+    const adjustmentQty = Math.abs(diffQty);
+    let adjustmentCostIrr = 0;
+    let nextLayers: Record<string, unknown>[];
+    if (diffQty > 0) {
+      adjustmentCostIrr = Math.max(0, Math.round(adjustmentQty * weightedAverage));
+      nextLayers = [...layers, {
+        layerId: 'lyr_' + operationId, date, sourceRef: operationId,
+        warehouse: product.warehouse, originalQty: adjustmentQty, remainingQty: adjustmentQty,
+        unitCostIrr: adjustmentQty > 0 ? Math.round(adjustmentCostIrr / adjustmentQty) : 0,
+        totalCostIrr: adjustmentCostIrr,
+      }];
+    } else {
+      if (stock + 0.0001 < adjustmentQty) {
+        throw new HttpsError('failed-precondition', 'موجودی کافی نیست؛ ثبت موجودی منفی مجاز نیست.');
+      }
+      if (method === 'fifo') {
+        let remaining = adjustmentQty;
+        nextLayers = layers.map((layer) => ({ ...layer }));
+        for (const layer of nextLayers) {
+          if (remaining <= 0.00005) break;
+          const available = Number(layer.remainingQty);
+          if (available <= 0.00005) continue;
+          const take = roundQty(Math.min(available, remaining));
+          const cost = take >= available - 0.00005
+            ? Number(layer.totalCostIrr)
+            : Math.round((Number(layer.totalCostIrr) * take) / available);
+          layer.remainingQty = roundQty(Math.max(0, available - take));
+          layer.totalCostIrr = Math.max(0, Number(layer.totalCostIrr) - cost);
+          remaining = roundQty(Math.max(0, remaining - take));
+          adjustmentCostIrr += cost;
+        }
+        if (remaining > 0.00005) {
+          throw new HttpsError('failed-precondition', 'لایه‌های FIFO برای پوشش کسری موجودی کافی نیستند.');
+        }
+        nextLayers = nextLayers.filter((layer) => Number(layer.remainingQty) > 0.00005);
+      } else {
+        adjustmentCostIrr = stock > 0 && adjustmentQty >= stock - 0.00005
+          ? totalValue : Math.round((totalValue * adjustmentQty) / stock);
+        let remaining = adjustmentQty;
+        nextLayers = layers.map((layer) => ({ ...layer }));
+        for (const layer of nextLayers) {
+          if (remaining <= 0.00005) break;
+          const available = Number(layer.remainingQty);
+          if (available <= 0.00005) continue;
+          const take = roundQty(Math.min(available, remaining));
+          layer.remainingQty = roundQty(Math.max(0, available - take));
+          layer.totalCostIrr = Math.round(Number(layer.remainingQty) * (adjustmentQty > 0 ? Math.round(adjustmentCostIrr / adjustmentQty) : 0));
+          remaining = roundQty(Math.max(0, remaining - take));
+        }
+        nextLayers = nextLayers.filter((layer) => Number(layer.remainingQty) > 0.00005);
+        const nextStockForLayers = roundQty(stock - adjustmentQty);
+        const nextValueForLayers = Math.max(0, totalValue - adjustmentCostIrr);
+        let runningValue = 0;
+        for (let i = 0; i < nextLayers.length; i += 1) {
+          const isLast = i === nextLayers.length - 1;
+          const value = isLast ? Math.max(0, nextValueForLayers - runningValue)
+            : nextStockForLayers > 0 ? Math.round((nextValueForLayers * Number(nextLayers[i].remainingQty)) / nextStockForLayers) : 0;
+          nextLayers[i].totalCostIrr = value;
+          nextLayers[i].unitCostIrr = Number(nextLayers[i].remainingQty) > 0
+            ? Math.round(value / Number(nextLayers[i].remainingQty)) : 0;
+          runningValue += value;
+        }
+      }
+    }
+
+    const nextStock = roundQty2(diffQty > 0 ? stock + adjustmentQty : stock - adjustmentQty);
+    const nextInventoryValue = diffQty > 0 ? totalValue + adjustmentCostIrr : Math.max(0, totalValue - adjustmentCostIrr);
+    const nextBuyPrice = nextStock > 0 ? Math.round(nextInventoryValue / nextStock) : weightedAverage;
+    const nextPayload = {
+      ...product, stock: nextStock, buyPrice: nextBuyPrice,
+      costingMethod: method, costLayers: nextLayers,
+      inventoryValueIrr: nextInventoryValue, _version: currentVersion + 1,
+      updatedByDevice: typeof deviceId === 'string' ? deviceId : 'workspace_server',
+      updatedAt: operationNow,
+    };
+    validateCoreWorkspacePayload('products', nextPayload, workspaceId);
+
+    let voucherNumber: number | null = null;
+    let voucherPayload: Record<string, unknown> | null = null;
+    if (adjustmentCostIrr > 0) {
+      const accountsByCode = new Map(accountSnaps.docs.map((snapshot) => {
+        const payload = snapshot.get('payload') as Record<string, unknown> | undefined;
+        return [String(payload?.code || ''), payload || {}] as [string, Record<string, unknown>];
+      }));
+      const inventoryAccount = accountsByCode.get('10501');
+      const offsetAccount = accountsByCode.get(diffQty > 0 ? '60301' : '80401');
+      if (!inventoryAccount || inventoryAccount.active === false || !offsetAccount || offsetAccount.active === false) {
+        throw new HttpsError('failed-precondition', 'حساب موجودی کالا یا حساب سود/زیان تعدیل در دفتر حساب‌های Workspace فعال نیست.');
+      }
+      const inventoryTitle = String(inventoryAccount.title || '').trim();
+      const offsetTitle = String(offsetAccount.title || '').trim();
+      if (!inventoryTitle || !offsetTitle) {
+        throw new HttpsError('failed-precondition', 'عنوان حساب‌های لازم برای سند تعدیل معتبر نیست.');
+      }
+      const existingVoucherQuery = migrationDestination(workspaceId, 'vouchers')
+        .where('payload.fiscalYear', '==', fiscalYear);
+      const existingVouchers = await tx.get(existingVoucherQuery);
+      const maxExisting = existingVouchers.docs.reduce((max, item) =>
+        Math.max(max, Number(item.get('payload.voucherNumber')) || 0), 0);
+      voucherNumber = Math.max(Number(counterSnap.get('payload.lastVoucherNumber')) || 0, maxExisting) + 1;
+      const productLabel = String(product.name).slice(0, 160);
+      const referenceId = ('stk_' + operationId).slice(0, 128);
+      const description = 'سند تعدیل انبارگردانی «' + productLabel + '» (' + (diffQty > 0 ? '+' + diffQty : String(diffQty)) + ' ' + String(product.unit).slice(0, 24) + ')';
+      const lines = diffQty > 0 ? [
+        { accountCode: '10501', accountTitle: inventoryTitle, description: 'اضافی انبارگردانی ' + productLabel, debit: adjustmentCostIrr, credit: 0 },
+        { accountCode: '60301', accountTitle: offsetTitle, description: reason || ('سود تعدیل اضافی انبارگردانی — کد ' + String(product.sku)), debit: 0, credit: adjustmentCostIrr },
+      ] : [
+        { accountCode: '80401', accountTitle: offsetTitle, description: reason || ('کسری انبارگردانی — ' + productLabel), debit: adjustmentCostIrr, credit: 0 },
+        { accountCode: '10501', accountTitle: inventoryTitle, description: 'کاهش موجودی انبار بابت کسری/انبارگردانی ' + productLabel, debit: 0, credit: adjustmentCostIrr },
+      ];
+      const unsignedVoucher = {
+        ownerId: workspaceId, voucherNumber, date, fiscalYear, description,
+        voucherType: 'general', status: 'permanent', totalDebit: adjustmentCostIrr,
+        totalCredit: adjustmentCostIrr, referenceId, lines,
+        _version: 1, updatedByDevice: typeof deviceId === 'string' ? deviceId : 'workspace_server',
+      };
+      voucherPayload = {
+        ...unsignedVoucher,
+        integrityHash: workspaceVoucherIntegrityHash(unsignedVoucher),
+        createdAt: operationNow, updatedAt: operationNow,
+      };
+    }
+
+    tx.update(productRef, {
+      version: currentVersion + 1, payload: nextPayload,
+      sourceHash: workspaceMigrationHash(nextPayload), updatedAt: operationNow,
+    });
+    if (voucherPayload && voucherNumber !== null) {
+      tx.create(voucherRef, {
+        workspaceId, sourceCollection: 'vouchers', sourceId: voucherId,
+        sourceHash: workspaceMigrationHash(voucherPayload), schemaVersion: 1,
+        version: 1, deleted: false, payload: voucherPayload,
+        createdAt: operationNow, updatedAt: operationNow,
+      });
+      tx.set(counterRef, {
+        workspaceId, sourceCollection: 'counters', sourceId: workspaceId,
+        schemaVersion: 1, version: Number(counterSnap.get('version') || 0) + 1,
+        deleted: false,
+        payload: { ownerId: workspaceId, lastVoucherNumber: voucherNumber, updatedAt: operationNow },
+        createdAt: counterSnap.exists ? counterSnap.get('createdAt') || operationNow : operationNow,
+        updatedAt: operationNow,
+      });
+    }
+    tx.create(operationRef, {
+      workspaceId, uid: auth.uid, collection: 'products', documentId: productId,
+      operation: 'inventory_adjustment', requestHash, resultVersion: currentVersion + 1,
+      voucherNumber, adjustmentCostIrr, voucherId: voucherPayload ? voucherId : null,
+      createdAt: operationNow,
+    });
+    return { status: 'committed', operationId, version: currentVersion + 1, voucherNumber, adjustmentCostIrr };
+  });
+});
+
 /** Workspace-native voucher create/finalize. Voucher and fiscal counter commit together. */
 export const mutateWorkspaceVoucher = onCall({ region: REGION, timeoutSeconds: 60 }, async (request) => {
   const auth = request.auth as CallableAuth | undefined;
