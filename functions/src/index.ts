@@ -1819,8 +1819,10 @@ async function validateWorkspaceVoucherReferences(
     Promise.all(partyIds.map((id) => tx.get(migrationDestination(workspaceId, 'parties').doc(id)))),
     Promise.all(costCenterIds.map((id) => tx.get(migrationDestination(workspaceId, 'costCenters').doc(id)))),
   ]);
-  const partiesById = new Map(partyIds.map((id, index) => [id, partySnapshots[index]]));
-  const costCentersById = new Map(costCenterIds.map((id, index) => [id, costCenterSnapshots[index]]));
+  const partiesById = new Map<string, FirebaseFirestore.DocumentSnapshot>();
+  partyIds.forEach((id, index) => partiesById.set(id, partySnapshots[index]));
+  const costCentersById = new Map<string, FirebaseFirestore.DocumentSnapshot>();
+  costCenterIds.forEach((id, index) => costCentersById.set(id, costCenterSnapshots[index]));
 
   for (let index = 0; index < lines.length; index += 1) {
     const line = lines[index];
