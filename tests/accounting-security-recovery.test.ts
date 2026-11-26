@@ -20,6 +20,7 @@ import {
   validateVoucherPayload,
 } from '../src/lib/accountingEngine';
 import {
+  applyInventoryMovementStep,
   normalizeProductCostState,
   planWarehouseTransfer,
   recalculateInventoryLedger,
@@ -694,6 +695,65 @@ test('FIFO partial sales returns restore successive original consumed layers wit
   assert.equal(result.finalState.stockQty, 10);
   assert.equal(result.finalState.totalValueIrr, 2_500);
   assert.equal(result.conservationDeltaIrr, 0);
+});
+
+test('FIFO linked purchase return consumes all split layers from its source purchase only', () => {
+  const state = {
+    productId: 'prd_split_purchase_source',
+    costingMethod: 'fifo' as const,
+    stockQty: 5,
+    totalValueIrr: 500,
+    weightedAvgUnitCostIrr: 100,
+    layers: [
+      {
+        layerId: 'source_part_a',
+        date: '1405/01/01',
+        sourceRef: 'purchase_split',
+        warehouse: 'A',
+        originalQty: 2,
+        remainingQty: 2,
+        unitCostIrr: 100,
+        totalCostIrr: 200,
+      },
+      {
+        layerId: 'source_part_b',
+        date: '1405/01/02',
+        sourceRef: 'purchase_split',
+        warehouse: 'B',
+        originalQty: 3,
+        remainingQty: 3,
+        unitCostIrr: 100,
+        totalCostIrr: 300,
+      },
+      {
+        layerId: 'unrelated',
+        date: '1405/01/03',
+        sourceRef: 'purchase_other',
+        warehouse: 'A',
+        originalQty: 4,
+        remainingQty: 4,
+        unitCostIrr: 250,
+        totalCostIrr: 1_000,
+      },
+    ],
+  };
+  const result = applyInventoryMovementStep(state, {
+    id: 'return_split_source',
+    date: '1405/01/04',
+    kind: 'purchase_return',
+    productId: 'prd_split_purchase_source',
+    qty: 4,
+    totalCostIrr: 400,
+    sourceRefId: 'purchase_split',
+  });
+  assert.equal(result.cogsOrCostIrr, 400);
+  assert.equal(result.nextState.stockQty, 5);
+  assert.equal(result.nextState.totalValueIrr, 1_100);
+  assert.deepEqual(
+    result.nextState.layers.map((layer) => [layer.layerId, layer.remainingQty, layer.totalCostIrr]),
+    [['source_part_b', 1, 100], ['unrelated', 4, 1_000]],
+    'Only the originating purchase descendants may be consumed'
+  );
 });
 
 test('FIFO linked purchase return cannot consume stock from a different purchase layer', () => {
