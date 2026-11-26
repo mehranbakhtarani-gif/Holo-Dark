@@ -623,6 +623,13 @@ export async function updateDexieOutboxItem(
   }
 }
 
+export function isAuthorizedOutboxPeerAck(
+  item: Pick<MeshSyncOutboxItem, 'target' | 'requiredPeers'>,
+  peerId: string
+): boolean {
+  return item.target === 'p2p_mesh' && item.requiredPeers.includes(peerId);
+}
+
 export async function markDexieOutboxPeerDelivered(
   operationId: string,
   peerId: string
@@ -631,7 +638,9 @@ export async function markDexieOutboxPeerDelivered(
   if (!db) return false;
   try {
     const existing = await db.syncOutbox.where('operationId').equals(operationId).first();
-    if (!existing || existing.id == null) return false;
+    if (!existing || existing.id == null || !isAuthorizedOutboxPeerAck(existing, peerId)) {
+      return false;
+    }
     const delivered = Array.from(new Set([...(existing.deliveredToPeers || []), peerId]));
     const allDelivered =
       existing.requiredPeers.length === 0 ||
