@@ -308,9 +308,17 @@ export interface ReceiveTrackedWarehouseTransferInput {
 }
 export async function receiveTrackedWarehouseTransferAtomic(
   input: ReceiveTrackedWarehouseTransferInput
-): Promise<{ status: 'committed' | 'replayed'; productVersion: number; transferId?: string }> {
+): Promise<{
+  status: 'committed' | 'replayed';
+  productVersion: number;
+  transferId?: string;
+  receivedEventSequence?: number;
+}> {
   const callable = httpsCallable<ReceiveTrackedWarehouseTransferInput, {
-    status: 'committed' | 'replayed'; productVersion: number; transferId?: string;
+    status: 'committed' | 'replayed';
+    productVersion: number;
+    transferId?: string;
+    receivedEventSequence?: number;
   }>(functions, 'receiveTrackedWarehouseTransfer');
   const result = await callable(input);
   return result.data;
