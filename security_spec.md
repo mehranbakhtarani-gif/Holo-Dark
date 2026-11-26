@@ -30,7 +30,7 @@
 - Multiple local operator records share the same Firebase UID and workspace ownerId.
 - Firestore rules validate the workspace owner and document schema, but cannot prove which local operator is currently using the browser.
 - Therefore local RBAC is a UI/application workflow control, not a security boundary. A modified client using the owner's Firebase token can bypass it.
-- No Firebase Functions source, deployment manifest, operator invitation flow, or custom-claims provisioning workflow exists in this repository at this revision.
+- Firebase Functions now provide workspace bootstrap, invitation acceptance, owner-only role changes/revocation, and owner-only member listing. The React settings UI is connected to these callables; local operator records remain a separate legacy workflow.
 
 ### Required target architecture
 1. Give every human operator an individual Firebase Authentication UID. Never use a client-selected operator ID as identity.
@@ -80,3 +80,27 @@ The Functions access the existing named database through `@google-cloud/firestor
 - Added `.firebaserc` with the existing Firebase project as the explicit default, preventing accidental deployment to an unspecified project.
 - Added Functions build output and local dependency exclusions under `functions/.gitignore`.
 - No Functions or Firestore Rules were deployed; no production data was changed.
+
+
+## 5. Phase 3 — Workspace UI Integration and Emulator Test Harness
+
+### Implemented
+- Added `WorkspaceAccessPanel` to company settings. It uses the same Firebase app as the authenticated user and calls Functions in `us-central1`.
+- Owner bootstrap is an explicit action; users without workspace claims can accept an invitation without first creating a competing workspace.
+- Verified-email gating is enforced in the UI and independently in every callable.
+- Owners can create email-bound invitations, copy the one-time raw token, list members, change supported roles, and revoke memberships.
+- Invitees must enter the token manually; it is not placed in a URL or browser storage. After acceptance, the client forces an ID-token refresh.
+- The legacy local operator matrix is explicitly labelled as local-only and is not presented as Firebase identity or server authorization.
+- Added owner-only `listWorkspaceMembers` callable. Bootstrap now checks existing active membership records so a stale pre-invitation ID token cannot create a second workspace after an invitation has been accepted.
+- Added a Node.js built-in test harness at `functions/test/workspace.emulator.test.cjs` and `npm run test:emulator`. The scenarios cover owner bootstrap/idempotency, invitation email mismatch and invalid token, stale-token bootstrap prevention, member listing, non-owner access denial, invalid/self role escalation, role change, and revocation.
+
+### Deliberate security boundaries
+- Firestore Rules remain owner-only. No workspace member access to accounting documents is enabled.
+- Invitation delivery remains manual; the UI displays a one-time token and does not send email.
+- Accepting an invitation provisions membership and claims only. It does not yet migrate or expose the owner's accounting records.
+- Membership records, not custom claims alone, remain the intended authoritative source for future Rules. The current Rules have not yet been migrated to consult memberships.
+
+### Verification status
+- Emulator test source and command are committed, but the tests have **not** been executed in this environment.
+- Functions dependency installation, TypeScript compilation, Vite build, and Firebase Auth/Firestore/Functions Emulator execution remain pending.
+- No production Functions deployment, Firestore Rules deployment, data migration, or PR merge was performed.
