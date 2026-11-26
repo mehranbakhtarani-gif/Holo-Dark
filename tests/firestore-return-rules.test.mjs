@@ -7,6 +7,7 @@ import {
   initializeTestEnvironment,
 } from '@firebase/rules-unit-testing';
 import {
+  deleteDoc,
   doc,
   getDoc,
   serverTimestamp,
@@ -288,4 +289,6 @@ test('warehouse transfer event authority ledger is server-only', async () => {
     });
   });
   await assertFails(getDoc(authorityRef));
+  await assertFails(updateDoc(authorityRef, { eventSequence: 45 }));
+  await assertFails(deleteDoc(authorityRef));
 });
