@@ -160,6 +160,18 @@ export const bootstrapWorkspace = onCall({ region: REGION }, async (request) => 
   return { workspaceId: uid, role: 'owner', claimsUpdated: true };
 });
 
+/** Resolve the caller's current server-authoritative workspace context.
+ * The custom claim is only a locator; active membership and workspace lifecycle are re-read.
+ */
+export const getWorkspaceContext = onCall({ region: REGION }, async (request) => {
+  const auth = request.auth as CallableAuth | undefined;
+  if (!auth) throw new HttpsError('unauthenticated', 'ورود به حساب کاربری الزامی است.');
+  const { workspaceId, role } = await requireActiveWorkspaceMember(auth);
+  const manifest = await db.collection('workspaceMigrations').doc(workspaceId).get();
+  const status = manifest.exists ? String(manifest.get('status') || 'not_started') : 'not_started';
+  return { workspaceId, role, migrationStatus: status, stagedReadsEnabled: status === 'verified' };
+});
+
 async function requireActiveWorkspaceMember(auth: CallableAuth) {
   const workspaceId = auth.token.workspaceId;
   if (typeof workspaceId !== 'string' || !workspaceId) {
