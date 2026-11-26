@@ -127,3 +127,18 @@ The Functions access the existing named database through `@google-cloud/firestor
 ### Verification status
 - Added emulator test coverage for a real owner-scoped source fixture, exclusion of a foreign owner's record, and preservation of the legacy source after staging.
 - The emulator tests, Functions TypeScript build, and application build have **not** been executed in this environment. No data migration has been run against the live Firebase project, and no Rules or Functions deployment has occurred.
+
+## 7. Phase 5 — Membership-Authoritative Staged Data Read Gateway
+
+### Implemented
+- Added `listWorkspaceStagedRecords`, a read-only callable endpoint for staged workspace records.
+- Every request requires a verified Firebase account, an active workspace, and a matching active `workspaceMemberships/{workspaceId}_{uid}` record. A workspace claim is only a locator; it does not authorize access by itself.
+- Role permissions are evaluated from the current membership document on every request. Supported roles receive explicit collection allowlists; the owner can read all allowlisted staged collections.
+- Reads are blocked until the migration manifest reaches `verified`. Results are paginated, limited to 1–100 records, and response payloads are capped below 7 MiB.
+- Emulator test cases cover denial for a warehouse role reading accounts, access immediately after a server-side role change even with a stale role claim, denial after role reduction with the same stale claim, and immediate denial after revocation without requiring token refresh.
+
+### Not a dual-write or production cutover
+- This endpoint exposes only the verified staging snapshot and is read-only. It does not change `AccountingContext` root collection reads/writes or mirror subsequent changes into staging.
+- Firestore Rules remain unchanged and default-deny for workspace staging paths. Clients cannot bypass the callable's membership checks with direct Firestore reads.
+- No broad member access, dual-write, data cutover, or legacy deletion is enabled. These require the next separately tested phase.
+- The Emulator tests and both builds remain unexecuted; the code and test cases are committed but not runtime-verified.
