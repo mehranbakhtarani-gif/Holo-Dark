@@ -35,6 +35,7 @@ import { mulQtyByIrr } from '../lib/moneyMath';
 import {
   createTrackedWarehouseTransferAtomic,
   receiveTrackedWarehouseTransferAtomic,
+  restoreTrackedWarehouseTransfersAtomic,
 } from '../lib/firebase';
 import {
   executeTrackedWarehouseTransfer,
@@ -113,6 +114,22 @@ export const InventoryView: React.FC<{ initialIntent?: string; clearIntent?: () 
   } = useAccounting();
   const unit = profile.currencyUnit;
 
+  // On cloud entry, reconcile the client-writable transfer list against the
+  // server-only event ledger. The callable is idempotent and restores deleted rows.
+  useEffect(() => {
+    if (!isCloudMode || !user?.uid || transferRecoveryAttemptedRef.current) return;
+    transferRecoveryAttemptedRef.current = true;
+    void restoreTrackedWarehouseTransfersAtomic()
+      .then((result) => {
+        if (result.restoredCount > 0) {
+          showToast(`${result.restoredCount} حواله حذف‌شده از دفتر مرجع سرور بازیابی شد.`);
+        }
+      })
+      .catch(() => {
+        // Recovery can be retried the next time InventoryView is opened.
+      });
+  }, [isCloudMode, user?.uid, showToast]);
+
   const [warehouseFilter, setWarehouseFilter] = useState('all');
   const [search, setSearch] = useState('');
   const [showForm, setShowForm] = useState(false);
@@ -124,6 +141,7 @@ export const InventoryView: React.FC<{ initialIntent?: string; clearIntent?: () 
   const [targetWarehouse, setTargetWarehouse] = useState('');
   const [transferQty, setTransferQty] = useState('');
   const transferRequestRef = useRef<{ key: string; id: string; number: string } | null>(null);
+  const transferRecoveryAttemptedRef = useRef(false);
   const [panelTab, setPanelTab] = useState<'kardex' | 'stocktake' | 'transfer'>('stocktake');
   const stockInputRef = useRef<HTMLInputElement | null>(null);
 
