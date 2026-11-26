@@ -12,7 +12,9 @@ import {
 import {
   buildRelayEnvelopesFromOutbox,
   compactRelayEnvelopesForPeer,
-  computeMeshAuthTag,
+  deriveMeshAuthKey,
+  signMeshWireMessage,
+  verifyMeshWireMessage,
   evaluateVectorExchangeDecision,
   getAcknowledgableMeshOperationIds,
   getOtherMeshPeerIds,
@@ -298,7 +300,7 @@ runTest('4. safeParseJsonObject strips prototype pollution payloads', () => {
   assert.equal(Object.prototype.hasOwnProperty.call(parsed, 'constructor'), false);
 });
 
-runTest('5. 3-device Peer ID allowlist & authTag validation', () => {
+runTest('5. 3-device Peer ID allowlist remains restricted to the three configured devices', () => {
   assert.equal(MESH_DEVICES.length, 3);
   assert.equal(isValidMeshPeerId('holoo-mesh-mehran-laptop'), true);
   assert.equal(isValidMeshPeerId('holoo-mesh-mehran-phone1'), true);
@@ -308,12 +310,31 @@ runTest('5. 3-device Peer ID allowlist & authTag validation', () => {
 
   const others = getOtherMeshPeerIds('holoo-mesh-mehran-laptop');
   assert.deepEqual(others, ['holoo-mesh-mehran-phone1', 'holoo-mesh-mehran-phone2']);
+});
 
-  const tagA = computeMeshAuthTag('secret-mesh-pass');
-  const tagB = computeMeshAuthTag('secret-mesh-pass');
-  const tagC = computeMeshAuthTag('different-pass');
-  assert.equal(tagA, tagB);
-  assert.notEqual(tagA, tagC);
+async function runAsyncTest(name: string, fn: () => Promise<void>) {
+  await fn();
+  passed += 1;
+  console.log(`✓ ${name}`);
+}
+
+await runAsyncTest('5b. P2P wire messages use HMAC-SHA-256 and reject tampering or a different key', async () => {
+  const key = await deriveMeshAuthKey('correct-horse-battery-staple-2026');
+  const body = {
+    type: 'mesh:ack',
+    fromPeerId: 'holoo-mesh-mehran-laptop',
+    receivedOperationIds: ['op-1'],
+    payloadHash: 'hash-1',
+    syncedAt: '2026-11-26T12:00:00.000Z',
+  };
+  const authTag = await signMeshWireMessage(body, key);
+  const signed = { ...body, authTag };
+  assert.equal(authTag.length, 64);
+  assert.equal(await verifyMeshWireMessage(signed, key), true);
+  assert.equal(await verifyMeshWireMessage({ ...signed, payloadHash: 'tampered' }, key), false);
+  const otherKey = await deriveMeshAuthKey('another-secure-mesh-passphrase');
+  assert.equal(await verifyMeshWireMessage(signed, otherKey), false);
+  await assert.rejects(() => deriveMeshAuthKey('short-key'), /at least 16/);
 });
 
 runTest('6. buildRelayEnvelopesFromOutbox selects only pending p2p_mesh operations for relay', () => {
