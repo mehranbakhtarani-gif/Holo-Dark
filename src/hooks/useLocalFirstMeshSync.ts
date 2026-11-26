@@ -834,24 +834,27 @@ export function useLocalFirstMeshSync() {
 
       dirHandleRef.current = res.handle;
       const built = buildTaggedSnapshot();
-      const writeRes = await writeMirrorToSelectedFolder(res.handle, built.snapshotJson);
+      const writeOk = await writeSnapshotToLocalFolder(
+        built.snapshotJson,
+        built.payloadHash,
+        true
+      );
 
-      setLocalFolderStatus({
+      setLocalFolderStatus((prev) => ({
+        ...prev,
         supported: true,
         configured: true,
-        folderName: res.folderName || res.handle.name || 'Holoo_Data',
-        permission: 'granted',
-        lastMirroredAt: writeRes.mirroredAt || new Date().toISOString(),
-        lastDailySnapshotFile: writeRes.dailySnapshotFile || null,
-        lastError: writeRes.ok ? null : writeRes.error || null,
+        folderName: res.folderName || res.handle!.name || 'Holoo_Data',
+        permission: writeOk ? 'granted' : prev.permission,
+        lastMirroredAt: writeOk ? new Date().toISOString() : prev.lastMirroredAt,
+        lastError: writeOk ? null : prev.lastError || 'نوشتن فایل زنده در پوشه انتخابی ناموفق بود.',
         fallbackMode: false,
-      });
+      }));
 
-      if (!writeRes.ok) {
-        // A selected folder is not a successful mirror until its first write commits.
-        // Keep every pending local_folder outbox item pending for an explicit retry.
+      if (!writeOk) {
+        // The helper queues permission-blocked writes; never mark them delivered.
         playErrorTone();
-        showToast(writeRes.error || 'اتصال پوشه انجام شد، اما نوشتن فایل زنده ناموفق بود؛ عملیات در صف باقی ماند.');
+        showToast('پوشه انتخاب شد، اما نوشتن فایل زنده کامل نشد؛ عملیات در صف باقی ماند.');
         await refreshOutboxAndLogs();
         return false;
       }
