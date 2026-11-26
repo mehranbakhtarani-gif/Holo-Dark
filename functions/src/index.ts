@@ -639,6 +639,7 @@ export const mutateWorkspaceVoucher = onCall({ region: REGION, timeoutSeconds: 6
   const requestHash = createHash('sha256').update(JSON.stringify(stableMigrationValue({
     operation, documentId, expectedVersion: operation === 'finalize' ? expectedVersion : null,
     data: operation === 'create' ? input : null,
+    integrityHash: operation === 'finalize' ? request.data?.integrityHash : null,
   }))).digest('hex');
   return db.runTransaction(async (tx) => {
     const [manifest, operationSnap, voucherSnap, counterSnap] = await Promise.all([
