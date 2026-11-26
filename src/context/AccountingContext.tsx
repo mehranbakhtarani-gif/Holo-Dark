@@ -569,7 +569,7 @@ export const AccountingProvider: React.FC<{ children: React.ReactNode }> = ({ ch
             batch.set(doc(db, colName, docId), {
               ...rest,
               ...(colName === 'invoices' && (
-                (rest as unknown as Invoice).invoiceType === 'sale' || (rest as Invoice).invoiceType === 'purchase'
+                (rest as unknown as Invoice).invoiceType === 'sale' || (rest as unknown as Invoice).invoiceType === 'purchase'
               ) ? { returnRevision: 0, activeReturnCount: 0 } : {}),
               createdAt: now,
               updatedAt: now,
