@@ -961,6 +961,13 @@ export const InvoicesView: React.FC<{ initialIntent?: string; clearIntent?: () =
       showToast('حداقل یک قلم نخ به فاکتور اضافه کنید.');
       return;
     }
+    if (
+      (invoiceType === 'sale_return' || invoiceType === 'purchase_return') &&
+      !returnSourceInvoiceId
+    ) {
+      showToast('برای ثبت برگشت، ابتدا فاکتور اصلی مرجع را انتخاب کنید.');
+      return;
+    }
     if (preventNegativeStock && (invoiceType === 'sale' || invoiceType === 'waste')) {
       const shortageItem = computedItems.find((it) => {
         const prod = products.find((p) => p.id === it.productId);
@@ -1661,7 +1668,7 @@ export const InvoicesView: React.FC<{ initialIntent?: string; clearIntent?: () =
                   }}
                   className="w-full px-3 py-2 text-xs rounded-lg border border-slate-200 dark:border-slate-700 bg-white dark:bg-slate-950 text-slate-900 dark:text-white"
                 >
-                  <option value="">بدون ارجاع به فاکتور مشخص</option>
+                  <option value="">انتخاب فاکتور اصلی مرجع...</option>
                   {returnSourceInvoices.map((source) => (
                     <option key={source.id} value={source.id}>
                       {source.invoiceNumber} — {source.partyName} — {source.date}
