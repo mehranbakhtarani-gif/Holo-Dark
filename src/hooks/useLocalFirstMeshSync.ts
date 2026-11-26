@@ -1136,9 +1136,9 @@ export function useLocalFirstMeshSync() {
   const updateMeshPassphrase = useCallback(
     (passphrase: string) => {
       const clean = passphrase.trim();
-      if (clean.length < 4) {
+      if (clean.length < 16) {
         playWarningTone();
-        showToast('کلید امنیتی شبکه ۳ دستگاه باید حداقل ۴ کاراکتر باشد.');
+        showToast('کلید امنیتی شبکه ۳ دستگاه باید حداقل ۱۶ نویسه باشد.');
         return false;
       }
       saveMeshPassphrase(clean);
