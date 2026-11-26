@@ -2875,6 +2875,7 @@ export const AccountingProvider: React.FC<{ children: React.ReactNode }> = ({ ch
           const invoiceRef = doc(db, 'invoices', invoiceId);
           const counterRef = doc(db, 'counters', user.uid);
           const reversalId = 'vch_cancel_' + invoiceId;
+          const reversalRef = doc(db, 'vouchers', reversalId);
           const candidateChequeIds = [...new Set(plan.chequeIdsToCancel)];
           const chequeRefs = candidateChequeIds.map((id) => doc(db, 'cheques', id));
           const productRefs = [...plan.productDeltas.keys()].map((id) => doc(db, 'products', id));
@@ -2887,6 +2888,8 @@ export const AccountingProvider: React.FC<{ children: React.ReactNode }> = ({ ch
             const liveInvoice = { ...inv, ...invoiceSnap.data(), id: invoiceId } as Invoice;
             if (liveInvoice.status === 'cancelled') return { alreadyCancelled: true as const };
 
+            const reversalSnap = await tx.get(reversalRef);
+            if (reversalSnap.exists()) throw new Error('سند معکوس این فاکتور قبلاً ایجاد شده است؛ برای جلوگیری از ثبت تکراری، ابطال متوقف شد.');
             const counterSnap = await tx.get(counterRef);
             const productSnaps = await Promise.all(productRefs.map((ref) => tx.get(ref)));
             const chequeSnaps = await Promise.all(chequeRefs.map((ref) => tx.get(ref)));
