@@ -372,3 +372,66 @@ test('core reconciliation keeps the read barrier closed when source and staging 
   assert.equal(manifest.get('readBarrier.status'), 'reconciling');
   await expectCallableError(call('listWorkspaceCoreRecords', owner.token, { collection: 'accounts' }), 'FAILED_PRECONDITION');
 });
+
+
+test('workspace voucher create, numbering, finalize and replay are atomic', async () => {
+  const owner = await createVerifiedUser('voucher-native-owner');
+  await call('bootstrapWorkspace', owner.token);
+  await refreshUserToken(owner);
+  const manifestRef = firestore.collection('workspaceMigrations').doc(owner.uid);
+  await manifestRef.set({
+    workspaceId: owner.uid, status: 'verified', coreWritesFrozen: true,
+    coreWriteMode: 'workspace_native',
+    readBarrier: { status: 'frozen', generation: 'voucher-generation-1' },
+  });
+  const voucherId = `voucher-${owner.uid}`;
+  const operationId = randomUUID().replace(/-/g, '');
+  const now = Timestamp.now();
+  const draft = {
+    ownerId: owner.uid, date: '1405/08/05', fiscalYear: '1405',
+    description: 'Atomic workspace voucher', voucherType: 'general', status: 'draft',
+    totalDebit: 1250, totalCredit: 1250,
+    lines: [
+      { accountCode: '101', debit: 1250, credit: 0, description: 'Debit' },
+      { accountCode: '401', debit: 0, credit: 1250, description: 'Credit' },
+    ],
+    createdAt: now, updatedAt: now,
+  };
+  const created = await call('mutateWorkspaceVoucher', owner.token, {
+    operation: 'create', documentId: voucherId, operationId, data: draft,
+  });
+  assert.equal(created.status, 'committed');
+  assert.equal(created.version, 1);
+  assert.equal(created.voucherNumber, 1);
+  const replay = await call('mutateWorkspaceVoucher', owner.token, {
+    operation: 'create', documentId: voucherId, operationId, data: draft,
+  });
+  assert.equal(replay.status, 'replayed');
+  const voucherRef = firestore.collection('workspaces').doc(owner.uid)
+    .collection('migrationData').doc('vouchers').collection('records').doc(voucherId);
+  const savedDraft = await voucherRef.get();
+  assert.equal(savedDraft.get('payload.status'), 'draft');
+  assert.equal(savedDraft.get('payload.voucherNumber'), 1);
+  const counterRef = firestore.collection('workspaces').doc(owner.uid)
+    .collection('migrationData').doc('counters').collection('records').doc('voucher');
+  assert.equal((await counterRef.get()).get('payload.lastVoucherNumber'), 1);
+
+  const secondId = `voucher-second-${owner.uid}`;
+  const second = await call('mutateWorkspaceVoucher', owner.token, {
+    operation: 'create', documentId: secondId, operationId: randomUUID().replace(/-/g, ''), data: draft,
+  });
+  assert.equal(second.voucherNumber, 2);
+
+  const integrityHash = 'vseal_0123456789abcdef';
+  const finalized = await call('mutateWorkspaceVoucher', owner.token, {
+    operation: 'finalize', documentId: voucherId, operationId: randomUUID().replace(/-/g, ''),
+    expectedVersion: 1, integrityHash,
+  });
+  assert.equal(finalized.version, 2);
+  assert.equal((await voucherRef.get()).get('payload.status'), 'permanent');
+  assert.equal((await voucherRef.get()).get('payload.integrityHash'), integrityHash);
+  await expectCallableError(call('mutateWorkspaceVoucher', owner.token, {
+    operation: 'finalize', documentId: voucherId, operationId: randomUUID().replace(/-/g, ''),
+    expectedVersion: 1, integrityHash,
+  }), 'ABORTED');
+});
