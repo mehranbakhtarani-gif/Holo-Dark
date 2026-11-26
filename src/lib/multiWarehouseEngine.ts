@@ -43,6 +43,8 @@ export interface TrackedWarehouseTransfer {
   transferredCostIrr: number;
   transferredLayers: InventoryCostLayer[];
   status: WarehouseTransferStatus;
+  eventSequence?: number; // Server-allocated dispatch order for same-day Kardex movements
+  receivedEventSequence?: number; // Server-allocated receipt order; distinct from dispatch
   voucherId?: string;
   operatorName?: string;
   notes?: string;
@@ -85,6 +87,8 @@ export interface WarehouseKardexRow {
   balanceQty: number;
   valueIrr: number;
   notes: string;
+  eventSequence?: number;
+  orderIsAmbiguous: boolean;
 }
 
 export interface WarehouseSummaryRow {
@@ -367,6 +371,7 @@ export function executeTrackedWarehouseTransfer(params: {
   operatorName?: string;
   notes?: string;
   defaultCostingMethod?: InventoryCostingMethod;
+  eventSequence?: number;
 }): {
   plan: WarehouseTransferPlan;
   updatedProduct: Product;
@@ -384,6 +389,7 @@ export function executeTrackedWarehouseTransfer(params: {
     operatorName,
     notes,
     defaultCostingMethod = 'moving_average',
+    eventSequence,
   } = params;
 
   const state = normalizeProductCostState(product, defaultCostingMethod);
@@ -446,6 +452,12 @@ export function executeTrackedWarehouseTransfer(params: {
     transferredCostIrr: plan.transferredCostIrr,
     transferredLayers: plan.transferredLayers,
     status: mode === 'immediate' ? 'received' : 'in_transit',
+    ...(Number.isSafeInteger(eventSequence) && Number(eventSequence) > 0
+      ? { eventSequence: Number(eventSequence) }
+      : {}),
+    ...(mode === 'immediate' && Number.isSafeInteger(eventSequence) && Number(eventSequence) > 0
+      ? { receivedEventSequence: Number(eventSequence) }
+      : {}),
     operatorName,
     notes,
   };
@@ -559,6 +571,7 @@ export function computeWarehouseProductKardex(params: {
     outQty: number;
     valueIrr: number;
     notes: string;
+    eventSequence?: number;
   };
 
   const events: RawEvent[] = [];
@@ -583,6 +596,7 @@ export function computeWarehouseProductKardex(params: {
           outQty: 0,
           valueIrr: val,
           notes: `${inv.invoiceType === 'purchase' ? 'خرید از' : 'برگشت فروش از'} ${inv.partyName}`,
+          eventSequence: inv.eventSequence,
         });
       } else {
         events.push({
@@ -598,6 +612,7 @@ export function computeWarehouseProductKardex(params: {
           outQty: qty,
           valueIrr: val,
           notes: `${inv.invoiceType === 'sale' ? 'فروش به' : inv.invoiceType === 'purchase_return' ? 'برگشت خرید به' : 'ضایعات'} ${inv.partyName}`,
+          eventSequence: inv.eventSequence,
         });
       }
     }
@@ -614,6 +629,7 @@ export function computeWarehouseProductKardex(params: {
         outQty: trf.qty,
         valueIrr: trf.transferredCostIrr,
         notes: `انتقال خروجی به ${trf.toWarehouse}`,
+        eventSequence: trf.eventSequence,
       });
     }
     if (trf.toWarehouse === warehouse && trf.status === 'received') {
@@ -625,11 +641,36 @@ export function computeWarehouseProductKardex(params: {
         outQty: 0,
         valueIrr: trf.transferredCostIrr,
         notes: `انتقال ورودی از ${trf.fromWarehouse}`,
+        eventSequence: trf.receivedEventSequence,
       });
     }
   }
 
-  events.sort((a, b) => a.date.localeCompare(b.date));
+  events.sort((a, b) => {
+    const dateOrder = a.date.localeCompare(b.date);
+    if (dateOrder !== 0) return dateOrder;
+    if (Number.isSafeInteger(a.eventSequence) && Number.isSafeInteger(b.eventSequence)) {
+      return Number(a.eventSequence) - Number(b.eventSequence);
+    }
+    // Legacy events without a server sequence retain source order; the returned flag exposes ambiguity.
+    return 0;
+  });
+
+  const ambiguousDates = new Set<string>();
+  const eventsByDate = new Map<string, RawEvent[]>();
+  for (const event of events) {
+    const dayEvents = eventsByDate.get(event.date) ?? [];
+    dayEvents.push(event);
+    eventsByDate.set(event.date, dayEvents);
+  }
+  for (const [date, dayEvents] of eventsByDate) {
+    if (dayEvents.length < 2) continue;
+    const sequences = dayEvents.map((event) => event.eventSequence);
+    if (sequences.some((sequence) => !Number.isSafeInteger(sequence))
+        || new Set(sequences).size !== sequences.length) {
+      ambiguousDates.add(date);
+    }
+  }
 
   let runningQty = 0;
   return events.map((ev) => {
@@ -638,6 +679,7 @@ export function computeWarehouseProductKardex(params: {
       ...ev,
       warehouse,
       balanceQty: runningQty,
+      orderIsAmbiguous: ambiguousDates.has(ev.date),
     };
   });
 }
