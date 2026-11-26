@@ -135,19 +135,27 @@ export const sequenceSyncedWarehouseTransferEvents = onDocumentWritten(
       // The extension array is client-writable, so its sequence fields are never
       // authoritative. A server-only ledger is the source of truth for provenance.
       const authorityCollection = db.collection('warehouseTransferEventAuthority');
-      const eventRefs = validTransfers.flatMap((transfer) => {
-        const refs = [{
+      const eventRefs: Array<{
+        transfer: Record<string, unknown>;
+        kind: 'dispatch' | 'receipt';
+        ref: FirebaseFirestore.DocumentReference;
+      }> = [];
+      const seenTransferIds = new Set<string>();
+      for (const transfer of validTransfers) {
+        const transferId = String(transfer.id);
+        if (seenTransferIds.has(transferId)) continue;
+        seenTransferIds.add(transferId);
+        eventRefs.push({
           transfer,
-          kind: 'dispatch' as const,
-          ref: authorityCollection.doc(`${workspaceId}_${transfer.id}_dispatch`),
-        }];
-        if (transfer.status === 'received') refs.push({
-          transfer,
-          kind: 'receipt' as const,
-          ref: authorityCollection.doc(`${workspaceId}_${transfer.id}_receipt`),
+          kind: 'dispatch',
+          ref: authorityCollection.doc(`${workspaceId}_${transferId}_dispatch`),
         });
-        return refs;
-      });
+        if (transfer.status === 'received') eventRefs.push({
+          transfer,
+          kind: 'receipt',
+          ref: authorityCollection.doc(`${workspaceId}_${transferId}_receipt`),
+        });
+      }
       const authoritySnaps = await Promise.all(eventRefs.map(({ ref }) => tx.get(ref)));
       const counterRef = manifestSnap.exists && manifestSnap.get('coreWriteMode') === 'workspace_native'
         ? migrationDestination(workspaceId, 'counters').doc(workspaceId)
