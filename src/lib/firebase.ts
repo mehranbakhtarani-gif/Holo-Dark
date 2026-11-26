@@ -199,6 +199,8 @@ export interface WorkspaceContextResult {
   role: string;
   migrationStatus: string;
   stagedReadsEnabled: boolean;
+  coreWritesFrozen: boolean;
+  coreWriteMode: 'legacy' | 'workspace_native' | string;
 }
 export async function resolveWorkspaceContext(): Promise<WorkspaceContextResult> {
   const callable = httpsCallable<void, WorkspaceContextResult>(functions, 'getWorkspaceContext');
