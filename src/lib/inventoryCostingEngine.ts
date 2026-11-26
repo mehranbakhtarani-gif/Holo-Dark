@@ -1191,7 +1191,7 @@ export function planWarehouseTransfer(input: {
     productId: state.productId,
     fromWarehouse,
     toWarehouse,
-    qty: roundQty2(qty),
+    qty: roundQty(qty),
     transferredCostIrr,
     transferredLayers,
     remainingSourceLayers: remainingSourceLayers.filter((l) => l.remainingQty > 0.00005),
