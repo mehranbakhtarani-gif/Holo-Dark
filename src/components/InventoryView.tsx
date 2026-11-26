@@ -123,6 +123,7 @@ export const InventoryView: React.FC<{ initialIntent?: string; clearIntent?: () 
   const [stockReason, setStockReason] = useState('');
   const [targetWarehouse, setTargetWarehouse] = useState('');
   const [transferQty, setTransferQty] = useState('');
+  const transferRequestRef = useRef<{ key: string; id: string; number: string } | null>(null);
   const [panelTab, setPanelTab] = useState<'kardex' | 'stocktake' | 'transfer'>('stocktake');
   const stockInputRef = useRef<HTMLInputElement | null>(null);
 
@@ -383,7 +384,17 @@ export const InventoryView: React.FC<{ initialIntent?: string; clearIntent?: () 
     }
     try {
       const date = getTodayShamsi();
-      const transferNumber = `TR-${Date.now()}`;
+      const requestKey = `${selectedProduct.id}|${destination}|${quantity}|${date}`;
+      if (!transferRequestRef.current || transferRequestRef.current.key !== requestKey) {
+        const requestStamp = Date.now();
+        transferRequestRef.current = {
+          key: requestKey,
+          id: `trf_${requestStamp}_${Math.random().toString(36).slice(2, 10)}`,
+          number: `TR-${requestStamp}`,
+        };
+      }
+      const transferRequest = transferRequestRef.current;
+      const transferNumber = transferRequest.number;
       const planned = executeTrackedWarehouseTransfer({
         product: selectedProduct,
         fromWarehouse: selectedProduct.warehouse,
@@ -391,6 +402,7 @@ export const InventoryView: React.FC<{ initialIntent?: string; clearIntent?: () 
         qty: quantity,
         date,
         transferNumber,
+        transferId: transferRequest.id,
         mode: 'in_transit',
         defaultCostingMethod: profile.defaultCostingMethod || 'moving_average',
       });
@@ -429,6 +441,7 @@ export const InventoryView: React.FC<{ initialIntent?: string; clearIntent?: () 
           ].slice(0, 100),
         }));
       }
+      transferRequestRef.current = null;
       setTransferQty('');
       showToast(`حواله ${transferRecord.transferNumber} ثبت شد؛ ${quantity} ${selectedProduct.unit} در وضعیت «در راه» قرار گرفت.`);
     } catch (error) {
