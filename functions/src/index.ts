@@ -837,6 +837,8 @@ export const createTrackedWarehouseTransfer = onCall({ region: REGION, timeoutSe
     });
     tx.set(counterRef, {
       ownerId: workspaceId,
+      lastVoucherNumber: Math.max(0, Number(counterSnap.data()?.lastVoucherNumber) || 0),
+      lastInvoiceSeq: Math.max(0, Number(counterSnap.data()?.lastInvoiceSeq) || 102),
       lastInventorySequence: eventSequence,
       updatedAt: now,
       ...(!counterSnap.exists ? { createdAt: now } : {}),
@@ -942,6 +944,8 @@ export const receiveTrackedWarehouseTransfer = onCall({ region: REGION, timeoutS
     tx.update(extensionRef, { trackedWarehouseTransfers: nextTransfers.slice(0, 100), _version: Math.max(0, Number(extensionData._version) || 0) + 1, updatedAt: now });
     tx.set(counterRef, {
       ownerId: workspaceId,
+      lastVoucherNumber: Math.max(0, Number(counterSnap.data()?.lastVoucherNumber) || 0),
+      lastInvoiceSeq: Math.max(0, Number(counterSnap.data()?.lastInvoiceSeq) || 102),
       lastInventorySequence: eventSequence,
       updatedAt: now,
       ...(!counterSnap.exists ? { createdAt: now } : {}),
