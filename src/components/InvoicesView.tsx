@@ -237,7 +237,7 @@ export const InvoicesView: React.FC<{ initialIntent?: string; clearIntent?: () =
 
   const isFxMode = isForeignCurrency(currencyCode);
   const fxDecimals = activeCurrencyDef?.decimalPlaces ?? 2;
-  const invoiceFiscalYear = /^\\d{4}/.test(date) ? date.slice(0, 4) : profile.fiscalYear;
+  const invoiceFiscalYear = /^\d{4}/.test(date) ? date.slice(0, 4) : profile.fiscalYear;
   const invoiceStatutory = useMemo(
     () => getStatutoryParamsForYear(invoiceFiscalYear, profile.statutoryParamsByYear),
     [invoiceFiscalYear, profile.statutoryParamsByYear]
@@ -657,7 +657,7 @@ export const InvoicesView: React.FC<{ initialIntent?: string; clearIntent?: () =
           const irrNet = Math.max(0, irrGross - irrDisc);
           const irrVat =
             invoiceType !== 'waste' && applyVat && !prod.vatExempt
-              ? Math.round(irrNet * invoiceStatutory.vatRate)
+              ? convertForeignToIrr(fVat, effRate)
               : 0;
           const irrTotal = irrNet + irrVat;
 
