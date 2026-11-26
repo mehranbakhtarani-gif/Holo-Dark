@@ -1,5 +1,6 @@
 import assert from 'node:assert/strict';
 import { resolveVerifiedFirebaseIdentity } from '../server/authPolicy';
+import { hasSupabaseRevisionConflict } from '../server/authPolicy';
 import crypto from 'node:crypto';
 import { createHolooSeedData } from '../src/data/holooSeed';
 import {
@@ -48,6 +49,12 @@ const tests: TestCase[] = [];
 function test(name: string, fn: () => void | Promise<void>) {
   tests.push({ name, fn });
 }
+
+test('Supabase first-write-wins detects stale revisions even when tabs share one device ID', () => {
+  assert.equal(hasSupabaseRevisionConflict(12, 11), true);
+  assert.equal(hasSupabaseRevisionConflict(12, 12), false);
+  assert.equal(hasSupabaseRevisionConflict(11, 12), false);
+});
 
 test('Server auth policy rejects Firebase accounts without verified email', () => {
   assert.deepEqual(
