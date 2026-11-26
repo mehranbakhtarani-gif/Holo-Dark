@@ -629,7 +629,7 @@ export const mutateWorkspaceVoucher = onCall({ region: REGION, timeoutSeconds: 6
   const manifestRef = db.collection('workspaceMigrations').doc(workspaceId);
   const voucherRef = migrationDestination(workspaceId, 'vouchers').doc(documentId);
   const operationRef = db.collection('workspaceWriteOperations').doc(`${workspaceId}_voucher_${operationId}`);
-  const counterRef = migrationDestination(workspaceId, 'counters').doc('voucher');
+  const counterRef = migrationDestination(workspaceId, 'counters').doc(workspaceId);
   const input = request.data?.data as Record<string, unknown> | undefined;
   if (operation === 'create') {
     if (!input || input.ownerId !== workspaceId || input.status !== 'draft'
