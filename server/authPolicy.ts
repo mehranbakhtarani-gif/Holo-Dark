@@ -39,3 +39,39 @@ export function resolveVerifiedFirebaseIdentity(payload: unknown): VerifiedFireb
 export function hasSupabaseRevisionConflict(serverRevision: number, clientRevision: number): boolean {
   return Number.isFinite(serverRevision) && Number.isFinite(clientRevision) && serverRevision > clientRevision;
 }
+
+const MAX_RECENT_SYNC_OPERATION_IDS = 256;
+
+function readSyncMeta(value: unknown): Record<string, unknown> {
+  return value && typeof value === 'object' && !Array.isArray(value)
+    ? value as Record<string, unknown>
+    : {};
+}
+
+/** Checks the bounded durable replay window, retaining compatibility with old snapshots. */
+export function hasProcessedSyncOperation(syncMeta: unknown, operationId: string): boolean {
+  if (!operationId) return false;
+  const meta = readSyncMeta(syncMeta);
+  if (meta.lastOperationId === operationId) return true;
+  return Array.isArray(meta.recentOperationIds)
+    && meta.recentOperationIds.some((id) => id === operationId);
+}
+
+/** Adds an operation to the persisted replay window without trusting client-supplied history. */
+export function appendProcessedSyncOperation(
+  previousSyncMeta: unknown,
+  operationId: string,
+): Record<string, unknown> {
+  const previous = readSyncMeta(previousSyncMeta);
+  const existingIds = Array.isArray(previous.recentOperationIds)
+    ? previous.recentOperationIds.filter(
+        (id): id is string => typeof id === 'string' && id.length > 0 && id.length <= 128,
+      )
+    : [];
+  const recentOperationIds = [...new Set([...existingIds, operationId])].slice(-MAX_RECENT_SYNC_OPERATION_IDS);
+  return {
+    ...previous,
+    lastOperationId: operationId,
+    recentOperationIds,
+  };
+}
