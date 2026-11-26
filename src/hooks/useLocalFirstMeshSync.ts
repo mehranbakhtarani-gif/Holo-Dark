@@ -589,19 +589,10 @@ export function useLocalFirstMeshSync() {
         }
       },
       onPeerAckReceived: async ({ fromPeerId, receivedOperationIds }) => {
-        for (const opId of receivedOperationIds) {
+        // ACKs are operation-scoped: never infer delivery of unrelated pending outbox items
+        // from a peer's acknowledgement of a different batch or snapshot.
+        for (const opId of new Set(receivedOperationIds)) {
           await markDexieOutboxPeerDelivered(opId, fromPeerId);
-        }
-        // Also mark any pending p2p_mesh items whose payload is older than or equal to now as delivered to this peer
-        const currentItems = await listDexieOutboxItems();
-        for (const item of currentItems) {
-          if (
-            item.target === 'p2p_mesh' &&
-            item.status !== 'synced' &&
-            !item.deliveredToPeers.includes(fromPeerId)
-          ) {
-            await markDexieOutboxPeerDelivered(item.operationId, fromPeerId);
-          }
         }
         await refreshOutboxAndLogs();
       },
