@@ -205,3 +205,28 @@ Workspace-native voucher draft edits and deletes are performed only through `mut
 ### Atomic workspace voucher reversal
 
 Reversal of a permanent Workspace voucher is server-derived and transactional. The callable checks active membership and finance role, source envelope version, source integrity seal, closed fiscal years from the workspace owner's profile, and existing reversal links; it derives the opposite debit/credit lines server-side, creates one reversal draft, advances the fiscal counter, and writes a source-side reversal marker with a version increment in the same transaction. The request is idempotent over the full reversal payload. Reversal drafts require the normal finalize flow before becoming permanent. Deleting an unfinalized reversal draft atomically tombstones it and clears the matching source reversal marker with a source-version increment; finalized reversal documents remain immutable. Legacy-root writes are prohibited.
+
+
+## Workspace-native inventory adjustment transaction (phase 17 plan)
+
+### Scope
+The next implementation slice is the single-product, voucher-backed stock adjustment used by `adjustProductStockWithVoucher`. Bulk stocktaking remains a separate follow-up because it has a larger multi-product transaction boundary.
+
+### Required transaction contract
+- Add a dedicated callable that accepts a stable operation ID, product ID, expected staged product version, counted quantity, adjustment date, reason, and the accounting inputs required to derive the adjustment voucher.
+- Re-read the product envelope, migration manifest, frozen read barrier, fiscal-year profile, and relevant account configuration inside one Firestore transaction. Reject legacy-root mode, missing/tombstoned products, stale versions, closed fiscal years, invalid quantities, and insufficient FIFO layers.
+- Recompute the inventory delta and FIFO cost-layer changes from the current server-read product state. Do not trust a client-supplied product snapshot, cost-layer delta, voucher number, or integrity hash.
+- Derive a balanced voucher from validated account configuration and the server-computed valuation difference. Allocate the fiscal-year voucher number from the workspace-native counter in the same transaction.
+- Commit the versioned product envelope, permanent voucher envelope with a server-computed integrity seal, counter update, and idempotency ledger atomically. No legacy-root write or client-side fallback is permitted.
+- Update the client Context only after the callable confirms commit; on conflict or any validation failure, leave local product/voucher state unchanged and surface the error.
+
+### Required Emulator acceptance tests
+- Positive and negative stock adjustments across FIFO layers, including partial-layer depletion and exact inventory valuation.
+- Reject stale product versions, negative/invalid counted stock, insufficient cost layers, invalid/missing inventory accounts, closed fiscal years, and unbalanced derived vouchers.
+- Concurrent adjustments to the same product cannot both commit against the same version.
+- Same operation ID and identical request replays the original result; same ID with different request content is rejected.
+- Product version, voucher envelope, fiscal counter, and operation ledger either all commit or none commit.
+- Workspace mode never writes to legacy `products` or `vouchers` root collections.
+
+### Rollout boundary
+This plan does not authorize deployment, migration activation, or PR merge. The callable must remain gated by the verified frozen Workspace-native manifest. Bulk stocktaking, invoice posting/cancellation, cheque settlement, and their multi-document transaction boundaries remain blocked until separately implemented and emulator-tested.
