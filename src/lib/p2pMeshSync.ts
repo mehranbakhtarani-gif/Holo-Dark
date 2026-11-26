@@ -10,6 +10,15 @@ import {
 
 export type PeerLinkStatus = 'connected' | 'connecting' | 'offline' | 'error';
 
+/** Return operation IDs that may be ACKed only after their state was accepted locally. */
+export function getAcknowledgableMeshOperationIds(
+  operationIds: readonly string[],
+  stateApplied: boolean
+): string[] {
+  if (!stateApplied) return [];
+  return Array.from(new Set(operationIds.filter((id) => typeof id === 'string' && id.trim().length > 0)));
+}
+
 export interface MeshPeerRuntimeState {
   peerId: MeshDevicePeerId;
   shortLabel: string;
