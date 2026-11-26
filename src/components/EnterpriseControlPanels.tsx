@@ -53,7 +53,7 @@ import {
   TrackedWarehouseTransfer,
 } from '../lib/multiWarehouseEngine';
 import { useWorkspaceExtensions } from '../context/WorkspaceExtensionsContext';
-import { receiveTrackedWarehouseTransferAtomic } from '../lib/firebase';
+import { createTrackedWarehouseTransferAtomic, receiveTrackedWarehouseTransferAtomic } from '../lib/firebase';
 
 export type EnterpriseControlTab =
   | 'independent_audit'
@@ -388,6 +388,12 @@ export const EnterpriseControlPanels: React.FC<{ activeTab: EnterpriseControlTab
     [trialBalance, vouchers, invoices, cheques, products]
   );
 
+  const [newTransferProductId, setNewTransferProductId] = useState('');
+  const [newTransferFrom, setNewTransferFrom] = useState('');
+  const [newTransferTo, setNewTransferTo] = useState('');
+  const [newTransferQty, setNewTransferQty] = useState('');
+  const [newTransferDate, setNewTransferDate] = useState(() => new Date().toISOString().slice(0, 10));
+  const [creatingTransfer, setCreatingTransfer] = useState(false);
   const trackedTransfers = trackedWarehouseTransfers;
   const [transferReceivedDate, setTransferReceivedDate] = useState(() => new Date().toISOString().slice(0, 10));
   const [receivingTransferId, setReceivingTransferId] = useState<string | null>(null);
@@ -410,6 +416,32 @@ export const EnterpriseControlPanels: React.FC<{ activeTab: EnterpriseControlTab
       }),
     [products, salesOrders, reservedInvoices, importDossiers, trackedTransfers, profile.defaultCostingMethod]
   );
+
+  const handleCreateWarehouseTransfer = async () => {
+    if (!activeOperator.active || activeOperator.permissions?.canEditInventory !== true) {
+      showToast('اپراتور فعال مجوز انتقال انبار را ندارد.', 'error'); return;
+    }
+    const product = products.find((item) => item.id === newTransferProductId);
+    const qty = Number(newTransferQty);
+    if (!product || !newTransferFrom.trim() || !newTransferTo.trim()
+        || newTransferFrom.trim() === newTransferTo.trim() || !Number.isFinite(qty) || qty <= 0 || !newTransferDate) {
+      showToast('کالا، انبار مبدأ و مقصد، مقدار و تاریخ انتقال را بررسی کنید.', 'error'); return;
+    }
+    setCreatingTransfer(true);
+    try {
+      const transferId = `trf_${crypto.randomUUID().replace(/-/g, '')}`;
+      const transferNumber = `TR-${Date.now()}`;
+      await createTrackedWarehouseTransferAtomic({
+        productId: product.id, transferId, transferNumber,
+        fromWarehouse: newTransferFrom.trim(), toWarehouse: newTransferTo.trim(),
+        qty, date: newTransferDate.replace(/-/g, '/'), operatorName: activeOperator.fullName || '',
+      });
+      showToast(`حواله ${transferNumber} ثبت شد؛ لایه‌های FIFO به وضعیت در راه منتقل شدند.`, 'success');
+      setNewTransferQty('');
+    } catch (error) {
+      showToast(error instanceof Error ? error.message : 'ثبت حواله انتقال ناموفق بود.', 'error');
+    } finally { setCreatingTransfer(false); }
+  };
 
   const handleReceiveWarehouseTransfer = async (transfer: TrackedWarehouseTransfer) => {
     if (!activeOperator.active || activeOperator.permissions?.canEditInventory !== true) {
@@ -1230,6 +1262,24 @@ export const EnterpriseControlPanels: React.FC<{ activeTab: EnterpriseControlTab
       </div>
 
       <div className="bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-800 rounded-xl p-4 space-y-3">
+      <div className="bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-800 rounded-xl p-4 space-y-3">
+        <div className="font-bold text-slate-900 dark:text-white">ثبت حواله انتقال بین انبارها</div>
+        <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-3 text-[11px]">
+          <label className="space-y-1"><span className="text-slate-500">کالا</span>
+            <select value={newTransferProductId} onChange={(e) => setNewTransferProductId(e.target.value)} className="w-full rounded-lg border border-slate-200 dark:border-slate-700 bg-white dark:bg-slate-950 p-2">
+              <option value="">انتخاب کالا</option>
+              {products.map((p) => <option key={p.id} value={p.id}>{p.sku} — {p.name}</option>)}
+            </select>
+          </label>
+          <label className="space-y-1"><span className="text-slate-500">انبار مبدأ</span><input value={newTransferFrom} onChange={(e) => setNewTransferFrom(e.target.value)} maxLength={120} placeholder="انبار مبدأ" className="w-full rounded-lg border border-slate-200 dark:border-slate-700 bg-white dark:bg-slate-950 p-2" /></label>
+          <label className="space-y-1"><span className="text-slate-500">انبار مقصد</span><input value={newTransferTo} onChange={(e) => setNewTransferTo(e.target.value)} maxLength={120} placeholder="انبار مقصد" className="w-full rounded-lg border border-slate-200 dark:border-slate-700 bg-white dark:bg-slate-950 p-2" /></label>
+          <label className="space-y-1"><span className="text-slate-500">مقدار انتقال</span><input type="number" min="0.0001" step="0.0001" value={newTransferQty} onChange={(e) => setNewTransferQty(e.target.value)} placeholder="مقدار" className="w-full rounded-lg border border-slate-200 dark:border-slate-700 bg-white dark:bg-slate-950 p-2" /></label>
+          <label className="space-y-1"><span className="text-slate-500">تاریخ حواله</span><input type="date" value={newTransferDate} onChange={(e) => setNewTransferDate(e.target.value)} className="w-full rounded-lg border border-slate-200 dark:border-slate-700 bg-white dark:bg-slate-950 p-2" /></label>
+          <div className="flex items-end"><button type="button" disabled={creatingTransfer} onClick={() => void handleCreateWarehouseTransfer()} className="w-full rounded-lg bg-indigo-700 hover:bg-indigo-800 disabled:opacity-40 text-white font-semibold p-2">{creatingTransfer ? 'در حال ثبت حواله…' : 'ثبت حواله و انتقال FIFO'}</button></div>
+        </div>
+        <p className="text-[10px] text-slate-500">ثبت حواله، کسر موجودی انبار مبدأ و انتقال لایه‌های بهای تمام‌شده به وضعیت «در راه» در یک تراکنش سرور انجام می‌شود؛ موجودی و ارزش کل کالا ثابت می‌ماند.</p>
+      </div>
+
         <div className="flex flex-wrap items-center justify-between gap-3">
           <div className="font-bold text-slate-900 dark:text-white">دریافت انتقال‌های بین‌انبارِ در راه</div>
           <label className="flex items-center gap-2 text-[11px] text-slate-500">
