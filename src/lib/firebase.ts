@@ -217,10 +217,10 @@ export interface WorkspaceCoreRecord<T = Record<string, unknown>> {
 
 /** Reads a complete, frozen Workspace snapshot. Partial pages are never returned. */
 export async function listWorkspaceCoreRecords<T = Record<string, unknown>>(
-  collectionName: 'accounts' | 'products'
+  collectionName: 'accounts' | 'products' | 'parties' | 'vouchers'
 ): Promise<WorkspaceCoreRecord<T>[]> {
   const callable = httpsCallable<
-    { collection: 'accounts' | 'products'; limit: number; cursor?: string },
+    { collection: 'accounts' | 'products' | 'parties' | 'vouchers'; limit: number; cursor?: string },
     { workspaceId: string; collection: string; generation: string; items: WorkspaceCoreRecord<T>[]; nextCursor: string | null }
   >(functions, 'listWorkspaceCoreRecords');
   const all: WorkspaceCoreRecord<T>[] = [];
