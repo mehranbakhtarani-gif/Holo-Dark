@@ -2182,6 +2182,8 @@ export const AccountingProvider: React.FC<{ children: React.ReactNode }> = ({ ch
   // ---------------- CHEQUES & TREASURY ----------------
   const addCheque = useCallback(
     async (payload: Omit<Cheque, 'id' | 'ownerId'>, skipVoucher = false) => {
+      if (!skipVoucher && !requirePermission('canCreateVoucher', 'صدور سند مرتبط با چک')) return;
+
       if (!requirePermission('canManageTreasury', 'ثبت چک')) return;
 
       const id = generateSafeId('chq');
@@ -2361,6 +2363,8 @@ export const AccountingProvider: React.FC<{ children: React.ReactNode }> = ({ ch
       date: string;
       description: string;
     }) => {
+      if (!requirePermission('canCreateVoucher', 'صدور سند خزانه‌داری')) return;
+
       if (!requirePermission('canManageTreasury', 'ثبت دریافت یا پرداخت نقدی')) return;
 
       const party = parties.find((p) => p.id === payload.partyId);
@@ -2430,6 +2434,8 @@ export const AccountingProvider: React.FC<{ children: React.ReactNode }> = ({ ch
       date: string;
       description: string;
     }) => {
+      if (!requirePermission('canCreateVoucher', 'صدور سند خزانه‌داری')) return;
+
       if (!requirePermission('canManageTreasury', 'انتقال بین حساب‌های بانکی')) return;
 
       if (payload.fromAccountCode === payload.toAccountCode) {
