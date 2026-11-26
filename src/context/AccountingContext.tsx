@@ -3322,6 +3322,7 @@ export const AccountingProvider: React.FC<{ children: React.ReactNode }> = ({ ch
           products,
           vouchers,
           cheques,
+          existingInvoices: invoices,
           costingMethod: profile.defaultCostingMethod ?? 'fifo',
           closedFiscalYears: profile.closedFiscalYears ?? [],
           ownerId,
@@ -3358,6 +3359,25 @@ export const AccountingProvider: React.FC<{ children: React.ReactNode }> = ({ ch
             if (!invoiceSnap.exists()) throw new Error('فاکتور در پایگاه داده یافت نشد.');
             const liveInvoice = { ...inv, ...invoiceSnap.data(), id: invoiceId } as Invoice;
             if (liveInvoice.status === 'cancelled') return { alreadyCancelled: true as const };
+
+            let cancellationExistingInvoices = invoices;
+            if (liveInvoice.invoiceType === 'sale' || liveInvoice.invoiceType === 'purchase') {
+              const linkedReturnsQuery = query(
+                collection(db, 'invoices'),
+                where('ownerId', '==', user.uid),
+                where('sourceInvoiceId', '==', invoiceId)
+              );
+              const linkedReturnsSnap = await tx.get(linkedReturnsQuery);
+              const liveLinkedReturns = linkedReturnsSnap.docs.map((snap) => ({
+                ...(invoices.find((candidate) => candidate.id === snap.id) || {}),
+                ...snap.data(),
+                id: snap.id,
+              }) as Invoice);
+              cancellationExistingInvoices = [
+                ...invoices.filter((candidate) => candidate.sourceInvoiceId !== invoiceId),
+                ...liveLinkedReturns,
+              ];
+            }
 
             let sourceInvoiceReturnRevision: number | null = null;
             let sourceInvoiceVersion: number | null = null;
@@ -3410,6 +3430,7 @@ export const AccountingProvider: React.FC<{ children: React.ReactNode }> = ({ ch
               products: liveProducts,
               vouchers: liveVouchers,
               cheques: liveCheques,
+              existingInvoices: cancellationExistingInvoices,
               costingMethod: profile.defaultCostingMethod ?? 'fifo',
               closedFiscalYears: profile.closedFiscalYears ?? [],
               ownerId,
