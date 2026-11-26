@@ -810,6 +810,7 @@ test('6. Multi-Warehouse Physical/Reserved/Available/In-Transit, Tracked Transfe
 test('Receiving an in-transit transfer moves only its exact FIFO layers and preserves valuation', () => {
   const product: Product = {
     id: 'prod_receive_transfer',
+    ownerId: 'owner_test',
     sku: 'TRF-RCV',
     name: 'کالای آزمایشی',
     category: 'آزمایشی',
