@@ -717,10 +717,29 @@ export function recalculateInventoryLedger(input: {
     let totalNetOutQty = 0;
     let totalSalesQty = 0;
     let totalWasteQty = 0;
+    const saleQtyByRef = new Map<string, number>();
+    const returnedQtyBySaleRef = new Map<string, number>();
 
     // Pass 1: Pool all opening + purchases + surplus - purchase_returns across the entire period
+    // Validate linked returns here too; periodic costing must enforce the same source limits as FIFO.
     for (const m of sorted) {
       const q = roundQty(m.qty);
+      if (m.kind === 'sale') {
+        saleQtyByRef.set(m.id, q);
+      } else if (m.kind === 'sale_return' && m.sourceRefId) {
+        const originalSaleQty = saleQtyByRef.get(m.sourceRefId);
+        if (originalSaleQty === undefined) {
+          throw new Error(`فاکتور فروش مرجع برای برگشت از فروش یافت نشد: ${m.sourceRefId}`);
+        }
+        const alreadyReturned = returnedQtyBySaleRef.get(m.sourceRefId) ?? 0;
+        const remainingReturnableQty = roundQty(originalSaleQty - alreadyReturned);
+        if (q > remainingReturnableQty + 0.0001) {
+          throw new Error(
+            `مقدار برگشت از فروش از مقدار فروش‌رفتهٔ باقی‌مانده بیشتر است (باقی‌مانده: ${roundQty2(remainingReturnableQty)}، برگشتی: ${roundQty2(q)}).`
+          );
+        }
+        returnedQtyBySaleRef.set(m.sourceRefId, roundQty(alreadyReturned + q));
+      }
       if (m.kind === 'opening' || m.kind === 'purchase' || m.kind === 'surplus') {
         const val =
           m.totalCostIrr !== undefined
