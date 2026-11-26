@@ -942,8 +942,9 @@ export function recalculateInventoryLedger(input: {
 
   const saleHistoryByRef = new Map<
     string,
-    { unitCostIrr: number; consumedLayers?: ConsumedCostLayerAllocation[] }
+    { unitCostIrr: number; consumedLayers?: ConsumedCostLayerAllocation[]; quantity: number }
   >();
+  const returnedQtyBySaleRef = new Map<string, number>();
 
   const kardex: InventoryKardexEntry[] = [];
   let totalPurchasesQty = 0;
@@ -956,6 +957,21 @@ export function recalculateInventoryLedger(input: {
   let netOutflowsIrr = 0;
 
   for (const m of sorted) {
+    if (m.kind === 'sale_return' && m.sourceRefId) {
+      const originalSale = saleHistoryByRef.get(m.sourceRefId);
+      if (!originalSale) {
+        throw new Error(`فاکتور فروش مرجع برای برگشت از فروش یافت نشد: ${m.sourceRefId}`);
+      }
+      const alreadyReturned = returnedQtyBySaleRef.get(m.sourceRefId) ?? 0;
+      const remainingReturnableQty = roundQty(originalSale.quantity - alreadyReturned);
+      if (roundQty(m.qty) > remainingReturnableQty + 0.0001) {
+        throw new Error(
+          `مقدار برگشت از فروش از مقدار فروش‌رفتهٔ باقی‌مانده بیشتر است (باقی‌مانده: ${roundQty2(remainingReturnableQty)}، برگشتی: ${roundQty2(m.qty)}).`
+        );
+      }
+      returnedQtyBySaleRef.set(m.sourceRefId, roundQty(alreadyReturned + m.qty));
+    }
+
     const step = applyInventoryMovementStep(state, m, saleHistoryByRef);
     state = step.nextState;
 
@@ -963,6 +979,7 @@ export function recalculateInventoryLedger(input: {
       saleHistoryByRef.set(m.id, {
         unitCostIrr: step.effectiveUnitCostIrr,
         consumedLayers: step.consumedLayers,
+        quantity: roundQty(m.qty),
       });
       totalSalesQty = roundQty(totalSalesQty + m.qty);
       totalCogsIrr += step.cogsOrCostIrr;
