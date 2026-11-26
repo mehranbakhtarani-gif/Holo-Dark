@@ -866,6 +866,37 @@ test('Receiving an in-transit transfer moves only its exact FIFO layers and pres
   assert.equal(received.updatedProduct.costLayers?.find((l) => l.layerId === 'source_remain')?.warehouse, 'انبار مرکزی');
   assert.equal(received.pnlImpactIrr, 0);
 
+  const destinationBeforeReceipt = computeWarehouseProductKardex({
+    product,
+    warehouse: 'انبار مقصد',
+    invoices: [],
+    transfers: [transfer],
+  });
+  assert.equal(destinationBeforeReceipt.length, 0,
+    'An in-transit transfer must not appear as a physical inbound Kardex movement before receipt');
+  const sourceDuringTransit = computeWarehouseProductKardex({
+    product,
+    warehouse: 'انبار مرکزی',
+    invoices: [],
+    transfers: [transfer],
+  });
+  assert.equal(sourceDuringTransit.length, 1);
+  assert.equal(sourceDuringTransit[0].movementType, 'transfer_out');
+  assert.equal(sourceDuringTransit[0].outQty, 5);
+
+  const destinationAfterReceipt = computeWarehouseProductKardex({
+    product: received.updatedProduct,
+    warehouse: 'انبار مقصد',
+    invoices: [],
+    transfers: [received.updatedTransfer],
+  });
+  assert.equal(destinationAfterReceipt.length, 1);
+  assert.equal(destinationAfterReceipt[0].movementType, 'transfer_in');
+  assert.equal(destinationAfterReceipt[0].date, '1405/01/03',
+    'The destination Kardex must record the physical receipt date, not dispatch date');
+  assert.equal(destinationAfterReceipt[0].inQty, 5);
+  assert.equal(destinationAfterReceipt[0].balanceQty, 5);
+
   assert.throws(
     () => receiveTrackedWarehouseTransfer({ product: received.updatedProduct, transfer: received.updatedTransfer, receivedDate: '1405/01/04' }),
     /فقط انتقالی/
