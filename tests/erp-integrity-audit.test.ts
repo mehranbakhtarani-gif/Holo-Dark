@@ -871,6 +871,32 @@ test('A fully depleted transfer source remains visible and reconciles physical p
   assert.equal(matrix.reconciliation[0].accountedValueIrr, 1_000);
 });
 
+test('Multi-warehouse reconciliation preserves fractional FIFO quantities', () => {
+  const product: Product = {
+    id: 'prod_fractional_fifo',
+    ownerId: 'owner_test',
+    sku: 'FRAC-01',
+    name: 'کالای کسری',
+    category: 'آزمایشی',
+    unit: 'کیلوگرم',
+    warehouse: 'انبار مرکزی',
+    buyPrice: 10_000,
+    sellPrice: 12_000,
+    stock: 0.1234,
+    reorderPoint: 0,
+    vatExempt: true,
+    inventoryValueIrr: 1_234,
+    costingMethod: 'fifo',
+    costLayers: [
+      { layerId: 'fractional_layer', date: '1405/01/01', sourceRef: 'purchase_fractional', warehouse: 'انبار مرکزی', originalQty: 0.1234, remainingQty: 0.1234, unitCostIrr: 10_000, totalCostIrr: 1_234 },
+    ],
+  };
+  const matrix = computeMultiWarehouseMatrix({ products: [product], defaultCostingMethod: 'fifo' });
+  assert.equal(matrix.positions[0].physicalQty, 0.1234);
+  assert.equal(matrix.reconciliation[0].physicalQty, 0.1234);
+  assert.equal(matrix.reconciliation[0].isBalanced, true);
+});
+
 test('Receiving an in-transit transfer moves only its exact FIFO layers and preserves valuation', () => {
   const product: Product = {
     id: 'prod_receive_transfer',
