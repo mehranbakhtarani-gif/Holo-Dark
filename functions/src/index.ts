@@ -1209,6 +1209,105 @@ export const receiveTrackedWarehouseTransfer = onCall({ region: REGION, timeoutS
   });
 });
 
+/**
+ * Restores transfer records removed from the client-writable extension array.
+ * The server-only dispatch ledger is authoritative; receipt snapshots supersede
+ * dispatch snapshots only when the receipt event is owned by this workspace.
+ */
+export const restoreTrackedWarehouseTransfers = onCall({ region: REGION, timeoutSeconds: 60 }, async (request) => {
+  const auth = request.auth as CallableAuth | undefined;
+  requireVerifiedAuth(auth);
+  const { workspaceId, role } = await requireActiveWorkspaceMember(auth);
+  if (!(WORKSPACE_WRITE_COLLECTIONS[role] || []).includes('products')) {
+    throw new HttpsError('permission-denied', 'نقش فعلی اجازه بازیابی اسناد انتقال انبار را ندارد.');
+  }
+
+  const extensionRef = db.collection('workspaceExtensions').doc(workspaceId);
+  const authorityCollection = db.collection('warehouseTransferEventAuthority');
+  return db.runTransaction(async (tx) => {
+    const extensionSnap = await tx.get(extensionRef);
+    if (!extensionSnap.exists || extensionSnap.get('ownerId') !== workspaceId) {
+      throw new HttpsError('not-found', 'سند فضای کاری برای بازیابی حواله‌ها یافت نشد.');
+    }
+
+    const existing = Array.isArray(extensionSnap.get('trackedWarehouseTransfers'))
+      ? extensionSnap.get('trackedWarehouseTransfers') as Record<string, unknown>[]
+      : [];
+    const existingIds = new Set(existing
+      .filter((item) => item && typeof item.id === 'string')
+      .map((item) => String(item.id)));
+
+    // A single-field owner query avoids requiring a composite index. The bounded
+    // scan prevents an unbounded callable read; the extension itself is capped at 100.
+    const authorityQuery = authorityCollection
+      .where('ownerId', '==', workspaceId)
+      .limit(1000);
+    const authoritySnap = await tx.get(authorityQuery);
+    const dispatchDocs = authoritySnap.docs.filter((doc) =>
+      doc.get('kind') === 'dispatch'
+      && doc.get('ownerId') === workspaceId
+      && typeof doc.get('transferId') === 'string'
+      && !existingIds.has(String(doc.get('transferId')))
+      && doc.get('transferSnapshot')
+      && typeof doc.get('transferSnapshot') === 'object'
+    );
+
+    const candidates = dispatchDocs.map((doc) => ({
+      doc,
+      transferId: String(doc.get('transferId')),
+      snapshot: doc.get('transferSnapshot') as Record<string, unknown>,
+    })).filter(({ transferId, snapshot }) =>
+      /^[A-Za-z0-9_-]{1,128}$/.test(transferId)
+      && snapshot.id === transferId
+      && snapshot.productId
+      && Number.isFinite(Number(snapshot.qty))
+      && Number(snapshot.qty) > 0
+      && Array.isArray(snapshot.transferredLayers)
+    );
+
+    const receiptRefs = candidates.map(({ transferId }) =>
+      authorityCollection.doc(`${workspaceId}_${transferId}_receipt`)
+    );
+    const receiptSnaps = receiptRefs.length
+      ? await Promise.all(receiptRefs.map((ref) => tx.get(ref)))
+      : [];
+
+    const recovered = candidates.map(({ transferId, snapshot }, index) => {
+      const receipt = receiptSnaps[index];
+      const receiptSnapshot = receipt.exists
+        && receipt.get('ownerId') === workspaceId
+        && receipt.get('transferId') === transferId
+        && receipt.get('kind') === 'receipt'
+        ? receipt.get('transferSnapshot') as Record<string, unknown> | undefined
+        : undefined;
+      const selected = receiptSnapshot?.status === 'received'
+        && receiptSnapshot.id === transferId
+        && receiptSnapshot.receivedDate
+        ? receiptSnapshot
+        : snapshot;
+      return selected;
+    }).filter((transfer) => !existingIds.has(String(transfer.id)));
+
+    const room = Math.max(0, 100 - existing.length);
+    const restored = recovered
+      .sort((a, b) => Number(a.eventSequence || 0) - Number(b.eventSequence || 0))
+      .slice(0, room);
+    if (restored.length) {
+      tx.update(extensionRef, {
+        trackedWarehouseTransfers: [...existing, ...restored],
+        _version: Math.max(0, Number(extensionSnap.get('_version')) || 0) + 1,
+        updatedAt: FieldValue.serverTimestamp(),
+      });
+    }
+
+    return {
+      status: restored.length ? 'restored' : recovered.length ? 'capacity-reached' : 'up-to-date',
+      restoredCount: restored.length,
+      remainingCapacity: Math.max(0, room - restored.length),
+    };
+  });
+});
+
 /** Workspace-native voucher create/finalize. Voucher and fiscal counter commit together. */
 export const mutateWorkspaceVoucher = onCall({ region: REGION, timeoutSeconds: 60 }, async (request) => {
   const auth = request.auth as CallableAuth | undefined;
