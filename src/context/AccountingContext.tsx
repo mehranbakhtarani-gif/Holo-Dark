@@ -2891,6 +2891,7 @@ export const AccountingProvider: React.FC<{ children: React.ReactNode }> = ({ ch
         creditAmount: inv.creditAmount,
         status: inv.status,
         ...(inv.voucherId ? { voucherId: inv.voucherId } : {}),
+        ...(Number.isSafeInteger(inv.eventSequence) ? { eventSequence: inv.eventSequence } : {}),
         items: inv.items.slice(0, 100),
         _version: 1,
         updatedByDevice: deviceId.slice(0, 64),
@@ -3058,6 +3059,7 @@ export const AccountingProvider: React.FC<{ children: React.ReactNode }> = ({ ch
                 ? Math.max(Number(counterSnap.data().lastVoucherNumber) || 0, localMaxVoucherNum)
                 : localMaxVoucherNum;
               const liveNextVoucherNum = currentMax + 1;
+              const liveNextInventorySequence = Math.max(0, Number(counterSnap.data()?.lastInventorySequence) || 0) + 1;
 
               let liveOriginalInvoice = linkedOriginalInvoice;
               let sourceInvoiceReturnRevision: number | null = null;
@@ -3139,6 +3141,7 @@ export const AccountingProvider: React.FC<{ children: React.ReactNode }> = ({ ch
                 existingVouchers: vouchers,
                 closedFiscalYears: profile.closedFiscalYears,
                 fxDecimals,
+                eventSequence: payload.invoiceType === 'proforma' ? undefined : liveNextInventorySequence,
               });
 
               if (livePlan.voucher) {
@@ -3147,6 +3150,7 @@ export const AccountingProvider: React.FC<{ children: React.ReactNode }> = ({ ch
                     ownerId: user.uid,
                     lastVoucherNumber: liveNextVoucherNum,
                     lastInvoiceSeq: 102,
+                    lastInventorySequence: liveNextInventorySequence,
                     updatedByDevice: deviceId.slice(0, 64),
                     createdAt: serverTimestamp(),
                     updatedAt: serverTimestamp(),
@@ -3154,6 +3158,7 @@ export const AccountingProvider: React.FC<{ children: React.ReactNode }> = ({ ch
                 } else {
                   tx.update(counterRef, {
                     lastVoucherNumber: liveNextVoucherNum,
+                    lastInventorySequence: liveNextInventorySequence,
                     updatedByDevice: deviceId.slice(0, 64),
                     updatedAt: serverTimestamp(),
                   });
