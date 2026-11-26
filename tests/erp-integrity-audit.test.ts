@@ -1059,6 +1059,14 @@ test('Same-day warehouse Kardex uses the shared event sequence and flags legacy 
   assert.deepEqual(ordered.map((row) => row.eventSequence), [20, 30]);
   assert.equal(ordered.every((row) => !row.orderIsAmbiguous), true);
 
+  const synchronizedOffline = computeWarehouseProductKardex({
+    product, warehouse: 'انبار مرکزی',
+    invoices: [{ ...sale, eventSequenceSource: 'sync' }], transfers: [transfer],
+  });
+  assert.deepEqual(synchronizedOffline.map((row) => row.movementType), ['transfer_out', 'sale']);
+  assert.equal(synchronizedOffline.every((row) => row.orderIsAmbiguous), true,
+    'A trigger-assigned sequence must not be presented as original offline-device chronology');
+
   const legacy = computeWarehouseProductKardex({
     product, warehouse: 'انبار مرکزی',
     invoices: [{ ...sale, eventSequence: undefined }],
