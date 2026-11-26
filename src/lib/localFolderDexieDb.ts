@@ -788,13 +788,18 @@ export function tagSnapshotWithSyncMetadata(
           if (typeof item.updatedAt === 'string' && !Number.isNaN(Date.parse(item.updatedAt))) {
             return item.updatedAt;
           }
-          const timestamp = item.updatedAt as { toDate?: () => Date } | Date | null | undefined;
+          const timestamp = item.updatedAt;
           try {
-            const date = timestamp instanceof Date
-              ? timestamp
-              : timestamp && typeof timestamp.toDate === 'function'
-                ? timestamp.toDate()
-                : null;
+            let date: Date | null = null;
+            if (timestamp instanceof Date) {
+              date = timestamp;
+            } else if (
+              timestamp &&
+              typeof timestamp === 'object' &&
+              typeof (timestamp as { toDate?: unknown }).toDate === 'function'
+            ) {
+              date = (timestamp as { toDate: () => Date }).toDate();
+            }
             return date && !Number.isNaN(date.getTime()) ? date.toISOString() : nowIso;
           } catch {
             return nowIso;
