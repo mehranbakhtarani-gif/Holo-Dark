@@ -63,11 +63,14 @@ export function appendProcessedSyncOperation(
   operationId: string,
 ): Record<string, unknown> {
   const previous = readSyncMeta(previousSyncMeta);
-  const existingIds = Array.isArray(previous.recentOperationIds)
-    ? previous.recentOperationIds.filter(
-        (id): id is string => typeof id === 'string' && id.length > 0 && id.length <= 128,
-      )
-    : [];
+  const existingIds = [
+    ...(typeof previous.lastOperationId === 'string' ? [previous.lastOperationId] : []),
+    ...(Array.isArray(previous.recentOperationIds)
+      ? previous.recentOperationIds.filter(
+          (id): id is string => typeof id === 'string' && id.length > 0 && id.length <= 128,
+        )
+      : []),
+  ];
   const recentOperationIds = [...new Set([...existingIds, operationId])].slice(-MAX_RECENT_SYNC_OPERATION_IDS);
   return {
     ...previous,
