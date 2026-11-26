@@ -428,7 +428,7 @@ service cloud.firestore {
         && data.ownerId == request.auth.uid
         && isValidId(data.ownerId)
         && isNonEmptyString(data.fullName, 140)
-        && data.role in ['finance_manager', 'accountant', 'warehouse_keeper', 'sales_officer', 'auditor']
+        && data.role in ['finance_manager', 'accountant', 'warehouse_keeper', 'sales_officer', 'treasurer', 'auditor_readonly']
         && isOptionalString(data, 'email', 200)
         && data.active is bool
         && data.permissions is map
@@ -1274,7 +1274,7 @@ service cloud.firestore {
         && data.ownerId == request.auth.uid
         && isValidId(data.ownerId)
         && isNonEmptyString(data.fullName, 140)
-        && data.role in ['finance_manager', 'accountant', 'warehouse_keeper', 'sales_officer', 'auditor']
+        && data.role in ['finance_manager', 'accountant', 'warehouse_keeper', 'sales_officer', 'treasurer', 'auditor_readonly']
         && isOptionalString(data, 'email', 200)
         && data.active is bool
         && data.permissions is map
@@ -2126,7 +2126,7 @@ service cloud.firestore {
         && data.ownerId == request.auth.uid
         && isValidId(data.ownerId)
         && isNonEmptyString(data.fullName, 140)
-        && data.role in ['finance_manager', 'accountant', 'warehouse_keeper', 'sales_officer', 'auditor']
+        && data.role in ['finance_manager', 'accountant', 'warehouse_keeper', 'sales_officer', 'treasurer', 'auditor_readonly']
         && isOptionalString(data, 'email', 200)
         && data.active is bool
         && data.permissions is map
