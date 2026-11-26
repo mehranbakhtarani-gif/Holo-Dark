@@ -50,9 +50,7 @@ import { computeFinancialForecast } from '../lib/financialForecastEngine';
 import { formatMoney, formatNumber, toPersianDigits } from '../lib/format';
 import {
   computeMultiWarehouseMatrix,
-  loadTrackedWarehouseTransfers,
   receiveTrackedWarehouseTransfer,
-  saveTrackedWarehouseTransfers,
   TrackedWarehouseTransfer,
 } from '../lib/multiWarehouseEngine';
 import { useWorkspaceExtensions } from '../context/WorkspaceExtensionsContext';
@@ -127,7 +125,7 @@ export const EnterpriseControlPanels: React.FC<{ activeTab: EnterpriseControlTab
     updateProduct,
     showToast,
   } = useAccounting();
-  const { reservedInvoices } = useWorkspaceExtensions();
+  const { reservedInvoices, trackedWarehouseTransfers, updateExtensions } = useWorkspaceExtensions();
 
   const unit = profile.currencyUnit;
 
@@ -391,7 +389,7 @@ export const EnterpriseControlPanels: React.FC<{ activeTab: EnterpriseControlTab
     [trialBalance, vouchers, invoices, cheques, products]
   );
 
-  const [trackedTransfers, setTrackedTransfers] = useState<TrackedWarehouseTransfer[]>(() => loadTrackedWarehouseTransfers());
+  const trackedTransfers = trackedWarehouseTransfers;
   const [transferReceivedDate, setTransferReceivedDate] = useState(() => new Date().toISOString().slice(0, 10));
   const [receivingTransferId, setReceivingTransferId] = useState<string | null>(null);
 
@@ -437,8 +435,10 @@ export const EnterpriseControlPanels: React.FC<{ activeTab: EnterpriseControlTab
       const nextTransfers = trackedTransfers.map((item) =>
         item.id === transfer.id ? result.updatedTransfer : item
       );
-      saveTrackedWarehouseTransfers(nextTransfers);
-      setTrackedTransfers(nextTransfers);
+      updateExtensions((prev) => ({
+        ...prev,
+        trackedWarehouseTransfers: nextTransfers.slice(0, 100),
+      }));
       showToast(
         `انتقال ${transfer.transferNumber} دریافت شد؛ موجودی کل و ارزش ریالی بدون تغییر ماند.`,
         'success'
