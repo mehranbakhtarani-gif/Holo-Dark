@@ -3826,6 +3826,8 @@ export const AccountingProvider: React.FC<{ children: React.ReactNode }> = ({ ch
             status: finalInvoice.status,
             voucherId: createdVoucherId ?? null,
             items: finalInvoice.items.slice(0, 100),
+            returnRevision: finalInvoice.returnRevision ?? 0,
+            activeReturnCount: finalInvoice.activeReturnCount ?? 0,
             _version: finalInvoice._version ?? (inv._version ?? 1) + 1,
             updatedByDevice: deviceId.slice(0, 64),
             updatedAt: serverTimestamp(),
