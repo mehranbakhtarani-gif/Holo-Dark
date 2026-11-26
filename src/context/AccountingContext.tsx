@@ -25,6 +25,7 @@ import {
   signOutAccount,
   testFirestoreConnection,
   resolveWorkspaceContext,
+  listWorkspaceCoreRecords,
 } from '../lib/firebase';
 import type { WorkspaceContextResult } from '../lib/firebase';
 import {
@@ -825,11 +826,30 @@ export const AccountingProvider: React.FC<{ children: React.ReactNode }> = ({ ch
       if (cancelled) return;
       setWorkspaceContext(resolvedWorkspace);
       if (resolvedWorkspace && resolvedWorkspace.workspaceId !== user.uid) {
-        showToast(
-          resolvedWorkspace.migrationStatus === 'verified'
-            ? 'عضویت فضای کاری تأیید شد؛ دسترسی به داده‌ها تا آماده‌شدن مسیر خواندن و نوشتن امن حسابداری محدود است.'
-            : 'عضویت فضای کاری تأیید شد؛ تا تکمیل و تأیید مهاجرت داده‌ها، دسترسی حسابداری غیرفعال است.'
-        );
+        if (!resolvedWorkspace.stagedReadsEnabled) {
+          setAccounts([]);
+          setProducts([]);
+          showToast('عضویت فضای کاری تأیید شد؛ تا تأیید مهاجرت و ثبت مانع همگام‌سازی، داده‌های حساب‌ها و کالاها قابل‌خواندن نیستند.');
+          return;
+        }
+        try {
+          // Fetch both collections completely before publishing either one to Context.
+          // The server rejects reads until the verified snapshot has an explicit freeze barrier.
+          const [accountRows, productRows] = await Promise.all([
+            listWorkspaceCoreRecords<Account>('accounts'),
+            listWorkspaceCoreRecords<Product>('products'),
+          ]);
+          if (cancelled) return;
+          setAccounts(accountRows.map(({ id, payload }) => ({ ...payload, id })));
+          setProducts(productRows.map(({ id, payload }) => ({ ...payload, id })));
+          showToast('حساب‌ها و کالاهای فضای کاری با موفقیت بارگذاری شدند.');
+        } catch (error) {
+          if (cancelled) return;
+          setAccounts([]);
+          setProducts([]);
+          console.error('Workspace core read adapter rejected the snapshot:', error);
+          showToast('خواندن امن حساب‌ها و کالاها ممکن نشد؛ هیچ داده ناقصی نمایش داده نشد.');
+        }
         return;
       }
 
