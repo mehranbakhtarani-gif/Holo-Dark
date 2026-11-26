@@ -105,8 +105,8 @@ AccountingContext resolves the authenticated caller's Workspace before cloud hyd
 - Draft creation assigns the next voucher number inside the same Firestore transaction that creates the workspace voucher and advances the migrated owner counter. It reads the current fiscal-year staged vouchers as a collision guard and never writes the legacy root `vouchers` or `counters` collections.
 - Finalization checks the expected record version, requires a draft, recomputes the deterministic integrity seal on the server, and commits the permanent status and new version in one transaction.
 - Both operations require the verified/frozen/native workspace state, active server-side membership, role authorization, and workspace-scoped idempotency keys. A repeated operation with changed content is rejected.
-- AccountingContext routes Workspace-native draft creation and finalization through this callable. Direct permanent creation remains blocked in Workspace mode; users must create a draft and finalize it. Draft editing/deletion and voucher reversal are still blocked pending their atomic migration.
-- Emulator test coverage has been authored for sequential numbering, replay, server-side integrity verification, version conflicts, and absence of legacy-root writes. Tests/build have not yet been executed.
+- AccountingContext routes Workspace-native draft creation, version-checked draft editing/deletion, and finalization through this callable. Direct permanent creation remains blocked in Workspace mode; users must create a draft and finalize it. Voucher reversal remains a separate, not-yet-migrated flow.
+- Emulator test coverage has been authored for sequential numbering, staged reads and version propagation, update/delete tombstones, replay, server-side integrity verification, version conflicts, and absence of legacy-root writes. Tests/build have not yet been executed.
 
 
 ### Workspace-native voucher draft lifecycle
