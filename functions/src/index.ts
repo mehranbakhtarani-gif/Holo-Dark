@@ -694,9 +694,11 @@ export const mutateWorkspaceVoucher = onCall({ region: REGION, timeoutSeconds: 6
     const sourceVoucherRef = operation === 'reverse'
       ? migrationDestination(workspaceId, 'vouchers').doc(String(sourceDocumentId))
       : null;
-    const [manifest, operationSnap, voucherSnap, counterSnap, sourceVoucherSnap] = await Promise.all([
+    const fiscalProfileRef = operation === 'reverse' ? db.collection('users').doc(workspaceId) : null;
+    const [manifest, operationSnap, voucherSnap, counterSnap, sourceVoucherSnap, fiscalProfileSnap] = await Promise.all([
       tx.get(manifestRef), tx.get(operationRef), tx.get(voucherRef), tx.get(counterRef),
       sourceVoucherRef ? tx.get(sourceVoucherRef) : Promise.resolve(null),
+      fiscalProfileRef ? tx.get(fiscalProfileRef) : Promise.resolve(null),
     ]);
     if (!manifest.exists || manifest.get('status') !== 'verified'
         || manifest.get('coreWritesFrozen') !== true || manifest.get('coreWriteMode') !== 'workspace_native'
@@ -766,6 +768,10 @@ export const mutateWorkspaceVoucher = onCall({ region: REGION, timeoutSeconds: 6
         ...(sourceVersion ? { sourceVersion } : {}), voucherNumber: currentPayload.voucherNumber };
     }
     if (operation === 'reverse') {
+      const closedFiscalYears = fiscalProfileSnap?.get('closedFiscalYears');
+      if (Array.isArray(closedFiscalYears) && closedFiscalYears.includes(String(input!.fiscalYear))) {
+        throw new HttpsError('failed-precondition', 'سال مالی سند معکوس بسته شده است؛ ثبت در این دوره مجاز نیست.');
+      }
       if (voucherSnap.exists) throw new HttpsError('already-exists', 'شناسه سند معکوس از قبل وجود دارد.');
       if (!sourceVoucherSnap?.exists || sourceVoucherSnap.get('deleted') === true) {
         throw new HttpsError('not-found', 'سند اصلی برای معکوس‌سازی یافت نشد.');
