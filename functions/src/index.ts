@@ -160,6 +160,72 @@ export const bootstrapWorkspace = onCall({ region: REGION }, async (request) => 
   return { workspaceId: uid, role: 'owner', claimsUpdated: true };
 });
 
+async function requireActiveWorkspaceMember(auth: CallableAuth) {
+  const workspaceId = auth.token.workspaceId;
+  if (typeof workspaceId !== 'string' || !workspaceId) {
+    throw new HttpsError('permission-denied', 'شناسه فضای کاری معتبر نیست.');
+  }
+  const membership = await getActiveMembership(auth.uid, workspaceId);
+  const workspace = await db.collection('workspaces').doc(workspaceId).get();
+  if (!workspace.exists || workspace.get('status') !== 'active') {
+    throw new HttpsError('permission-denied', 'فضای کاری فعال نیست.');
+  }
+  return { workspaceId, role: String(membership.data.role) as MemberRole | 'owner' };
+}
+
+const STAGED_READ_COLLECTIONS: Record<string, readonly string[]> = {
+  owner: WORKSPACE_MIGRATION_COLLECTIONS,
+  finance_manager: ['counters', 'accounts', 'parties', 'products', 'vouchers', 'invoices', 'cheques', 'employees', 'assets', 'costCenters', 'currencies', 'exchangeRates', 'importDossiers', 'salesOrders', 'subcontractJobs', 'auditLogs'],
+  accountant: ['counters', 'accounts', 'parties', 'products', 'vouchers', 'invoices', 'cheques', 'employees', 'assets', 'costCenters', 'currencies', 'exchangeRates', 'auditLogs'],
+  warehouse_keeper: ['products', 'importDossiers', 'salesOrders', 'subcontractJobs'],
+  sales_officer: ['parties', 'products', 'invoices', 'salesOrders'],
+  treasurer: ['counters', 'accounts', 'parties', 'vouchers', 'cheques', 'currencies', 'exchangeRates'],
+  auditor_readonly: ['counters', 'accounts', 'parties', 'products', 'vouchers', 'invoices', 'cheques', 'employees', 'assets', 'costCenters', 'currencies', 'exchangeRates', 'importDossiers', 'salesOrders', 'subcontractJobs', 'auditLogs'],
+};
+
+/**
+ * Read-only, role-scoped access to a fully verified staging snapshot.
+ * Membership document and workspace status are checked on every request;
+ * custom claims are used only to locate the workspace, never as authorization.
+ */
+export const listWorkspaceStagedRecords = onCall({ region: REGION, timeoutSeconds: 60 }, async (request) => {
+  const auth = request.auth as CallableAuth | undefined;
+  requireVerifiedAuth(auth);
+  const { workspaceId, role } = await requireActiveWorkspaceMember(auth);
+  const collectionName = request.data?.collection;
+  if (typeof collectionName !== 'string' || !/^[A-Za-z][A-Za-z0-9]{0,63}$/.test(collectionName)) {
+    throw new HttpsError('invalid-argument', 'نام مجموعه معتبر نیست.');
+  }
+  const allowed = STAGED_READ_COLLECTIONS[role] || [];
+  if (!allowed.includes(collectionName)) {
+    throw new HttpsError('permission-denied', 'نقش شما به مشاهده این مجموعه دسترسی ندارد.');
+  }
+  const manifest = await db.collection('workspaceMigrations').doc(workspaceId).get();
+  if (!manifest.exists || manifest.get('status') !== 'verified') {
+    throw new HttpsError('failed-precondition', 'نسخه staging هنوز به‌طور کامل بررسی و تأیید نشده است.');
+  }
+  const requestedLimit = Number(request.data?.limit ?? 50);
+  if (!Number.isInteger(requestedLimit) || requestedLimit < 1 || requestedLimit > 100) {
+    throw new HttpsError('invalid-argument', 'تعداد رکورد در هر صفحه باید بین ۱ تا ۱۰۰ باشد.');
+  }
+  const cursor = request.data?.cursor;
+  if (cursor !== undefined && cursor !== null && (typeof cursor !== 'string' || !/^[A-Za-z0-9_\-]{1,128}$/.test(cursor))) {
+    throw new HttpsError('invalid-argument', 'نشانگر صفحه‌بندی معتبر نیست.');
+  }
+  const records = migrationDestination(workspaceId, collectionName);
+  let query = records.orderBy(FieldPath.documentId()).limit(requestedLimit);
+  if (typeof cursor === 'string' && cursor) query = query.startAfter(cursor);
+  const snapshot = await query.get();
+  const items = snapshot.docs.map((doc) => ({ id: doc.id, payload: doc.get('payload') }));
+  return {
+    workspaceId,
+    collection: collectionName,
+    role,
+    items,
+    nextCursor: snapshot.size === requestedLimit ? snapshot.docs[snapshot.docs.length - 1].id : null,
+  };
+});
+
 /** Creates a short-lived, email-bound invitation. The raw token is returned only once. */
 export const createWorkspaceInvitation = onCall({ region: REGION }, async (request) => {
   const auth = request.auth as CallableAuth | undefined;
