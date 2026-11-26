@@ -219,3 +219,18 @@ test('workspace provisioning, invitation, owner-only RBAC and revocation', async
   await expectCallableError(call('listWorkspaceMembers', invitee.token), 'PERMISSION_DENIED');
   await expectCallableError(call('setWorkspaceMemberRole', owner.token, { uid: invitee.uid, role: 'accountant' }), 'FAILED_PRECONDITION');
 });
+
+
+test('workspace context resolves active membership from server, not a client-selected role', async () => {
+  const owner = await createVerifiedUser('context-owner');
+  await call('bootstrapWorkspace', owner.token);
+  await refreshUserToken(owner);
+  const ownerContext = await call('getWorkspaceContext', owner.token);
+  assert.equal(ownerContext.workspaceId, owner.uid);
+  assert.equal(ownerContext.role, 'owner');
+  assert.equal(ownerContext.migrationStatus, 'not_started');
+  assert.equal(ownerContext.stagedReadsEnabled, false);
+
+  const outsider = await createVerifiedUser('context-outsider');
+  await expectCallableError(call('getWorkspaceContext', outsider.token), 'FAILED_PRECONDITION');
+});
