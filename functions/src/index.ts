@@ -623,7 +623,7 @@ export const mutateWorkspaceVoucher = onCall({ region: REGION, timeoutSeconds: 6
   if (!['create', 'update', 'delete', 'finalize', 'reverse'].includes(operation)
       || typeof operationId !== 'string' || !/^[A-Za-z0-9_-]{16,128}$/.test(operationId)
       || typeof documentId !== 'string' || !/^[A-Za-z0-9_-]{1,128}$/.test(documentId)
-      || (['update', 'delete', 'finalize', 'reverse'].includes(String(operation))
+      || (['update', 'delete', 'finalize'].includes(String(operation))
         && (!Number.isInteger(expectedVersion) || expectedVersion < 1))) {
     throw new HttpsError('invalid-argument', 'پارامترهای عملیات سند معتبر نیستند.');
   }
@@ -637,7 +637,7 @@ export const mutateWorkspaceVoucher = onCall({ region: REGION, timeoutSeconds: 6
   if (operation === 'reverse'
       && (typeof sourceDocumentId !== 'string' || !/^[A-Za-z0-9_-]{1,128}$/.test(sourceDocumentId)
         || !Number.isInteger(expectedSourceVersion) || expectedSourceVersion < 1
-        || !input || typeof input.date !== 'string' || !/^\\d{4}\\/\\d{2}\\/\\d{2}$/.test(input.date)
+        || !input || typeof input.date !== 'string' || !/^\d{4}\/\d{2}\/\d{2}$/.test(input.date)
         || typeof input.fiscalYear !== 'string' || !input.fiscalYear || input.fiscalYear.length > 16
         || typeof input.description !== 'string' || input.description.length > 300
         || (input.updatedByDevice !== undefined && (typeof input.updatedByDevice !== 'string' || input.updatedByDevice.length > 64))
