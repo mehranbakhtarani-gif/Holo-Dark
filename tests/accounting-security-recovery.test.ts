@@ -1,6 +1,11 @@
 import assert from 'node:assert/strict';
-import { resolveVerifiedFirebaseIdentity } from '../server/authPolicy';
-import { hasSupabaseRevisionConflict } from '../server/authPolicy';
+import {
+  appendProcessedSyncOperation,
+  hasProcessedSyncOperation,
+  hasSupabaseRevisionConflict,
+  resolveVerifiedFirebaseIdentity,
+} from '../server/authPolicy';
+import { createSyncOperationId, fingerprintWorkspacePayload } from '../src/lib/syncFingerprint';
 import crypto from 'node:crypto';
 import { createHolooSeedData } from '../src/data/holooSeed';
 import {
@@ -54,6 +59,58 @@ test('Supabase first-write-wins detects stale revisions even when tabs share one
   assert.equal(hasSupabaseRevisionConflict(12, 11), true);
   assert.equal(hasSupabaseRevisionConflict(12, 12), false);
   assert.equal(hasSupabaseRevisionConflict(11, 12), false);
+});
+
+test('Sync SHA-256 fingerprint ignores exportedAt but detects content changes', async () => {
+  const first = await fingerprintWorkspacePayload(
+    JSON.stringify({ exportedAt: '2026-11-26T10:00:00.000Z', vouchers: [{ id: 'v1', debit: 100 }] })
+  );
+  const sameContent = await fingerprintWorkspacePayload(
+    JSON.stringify({ exportedAt: '2026-11-27T10:00:00.000Z', vouchers: [{ id: 'v1', debit: 100 }] })
+  );
+  const changedContent = await fingerprintWorkspacePayload(
+    JSON.stringify({ exportedAt: '2026-11-27T10:00:00.000Z', vouchers: [{ id: 'v1', debit: 101 }] })
+  );
+  assert.equal(first, sameContent);
+  assert.notEqual(first, changedContent);
+  assert.match(first, /^\d+_[0-9a-f]{64}$/);
+});
+
+test('Sync operation IDs are deterministic across reloads and scoped to the exact sync base', async () => {
+  const identity = {
+    target: 'supabase' as const,
+    workspaceId: 'workspace_1',
+    deviceId: 'device_1',
+    clientRevision: 7,
+    payloadHash: 'payload-sha256',
+  };
+  const first = await createSyncOperationId(identity);
+  const afterReload = await createSyncOperationId({ ...identity });
+  const changedRevision = await createSyncOperationId({ ...identity, clientRevision: 8 });
+  const changedPayload = await createSyncOperationId({ ...identity, payloadHash: 'other-payload' });
+  assert.equal(first, afterReload);
+  assert.notEqual(first, changedRevision);
+  assert.notEqual(first, changedPayload);
+  assert.match(first, /^op_[0-9a-f]{64}$/);
+});
+
+test('Supabase durable idempotency remembers older operations within its bounded replay window', () => {
+  const withHistory = appendProcessedSyncOperation(
+    { lastOperationId: 'op_previous', recentOperationIds: ['op_older', 'op_previous'] },
+    'op_current'
+  );
+  assert.equal(hasProcessedSyncOperation(withHistory, 'op_older'), true);
+  assert.equal(hasProcessedSyncOperation(withHistory, 'op_previous'), true);
+  assert.equal(hasProcessedSyncOperation(withHistory, 'op_current'), true);
+  assert.equal(hasProcessedSyncOperation(withHistory, 'op_unknown'), false);
+
+  const bounded = appendProcessedSyncOperation(
+    { recentOperationIds: Array.from({ length: 300 }, (_, index) => `op_${index}`) },
+    'op_latest'
+  );
+  assert.equal((bounded.recentOperationIds as string[]).length, 256);
+  assert.equal(hasProcessedSyncOperation(bounded, 'op_0'), false);
+  assert.equal(hasProcessedSyncOperation(bounded, 'op_latest'), true);
 });
 
 test('Server auth policy rejects Firebase accounts without verified email', () => {
