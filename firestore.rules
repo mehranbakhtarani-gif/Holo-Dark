@@ -32,6 +32,13 @@ service cloud.firestore {
       return isVerified() && request.auth.uid == uid;
     }
 
+
+    // Freeze legacy client writes to core collections during final snapshot reconciliation.
+    function coreWritesOpen(uid) {
+      return !exists(/databases/$(database)/documents/workspaceMigrations/$(uid))
+        || get(/databases/$(database)/documents/workspaceMigrations/$(uid)).data.coreWritesFrozen != true;
+    }
+
     function isAdmin() {
       // Admin status must come from a server-managed custom claim or a server-provisioned
       // admins/{uid} document. A hard-coded email address is not an authorization source.
@@ -609,11 +616,11 @@ service cloud.firestore {
     match /accounts/{accountId} {
       allow get: if isValidId(accountId) && isVerified() && (existing().ownerId == request.auth.uid || isAdmin());
       allow list: if isVerified() && resource.data.ownerId == request.auth.uid;
-      allow create: if isValidId(accountId) && isVerified()
+      allow create: if isValidId(accountId) && isVerified() && coreWritesOpen(request.auth.uid)
         && isValidAccount(incoming())
         && incoming().createdAt == request.time
         && incoming().updatedAt == request.time;
-      allow update: if isValidId(accountId) && isVerified() && isValidAccount(incoming()) && (
+      allow update: if isValidId(accountId) && isVerified() && coreWritesOpen(request.auth.uid) && isValidAccount(incoming()) && (
         isAdmin() || (
           existing().ownerId == request.auth.uid
           && incoming().ownerId == existing().ownerId
@@ -622,7 +629,7 @@ service cloud.firestore {
           && incoming().diff(existing()).affectedKeys().hasOnly(['title', 'parentCode', 'category', 'nature', 'updatedAt'])
         )
       );
-      allow delete: if isValidId(accountId) && isVerified() && (
+      allow delete: if isValidId(accountId) && isVerified() && coreWritesOpen(request.auth.uid) && (
         isAdmin() || (existing().ownerId == request.auth.uid && existing().isSystem == false)
       );
     }
@@ -649,11 +656,11 @@ service cloud.firestore {
     match /products/{productId} {
       allow get: if isValidId(productId) && isVerified() && (existing().ownerId == request.auth.uid || isAdmin());
       allow list: if isVerified() && resource.data.ownerId == request.auth.uid;
-      allow create: if isValidId(productId) && isVerified()
+      allow create: if isValidId(productId) && isVerified() && coreWritesOpen(request.auth.uid)
         && isValidProduct(incoming())
         && incoming().createdAt == request.time
         && incoming().updatedAt == request.time;
-      allow update: if isValidId(productId) && isVerified() && isValidProduct(incoming()) && (
+      allow update: if isValidId(productId) && isVerified() && coreWritesOpen(request.auth.uid) && isValidProduct(incoming()) && (
         isAdmin() || (
           existing().ownerId == request.auth.uid
           && incoming().ownerId == existing().ownerId
@@ -669,7 +676,7 @@ service cloud.firestore {
           )
         )
       );
-      allow delete: if isValidId(productId) && isVerified() && (existing().ownerId == request.auth.uid || isAdmin());
+      allow delete: if isValidId(productId) && isVerified() && coreWritesOpen(request.auth.uid) && (existing().ownerId == request.auth.uid || isAdmin());
     }
 
     match /vouchers/{voucherId} {
