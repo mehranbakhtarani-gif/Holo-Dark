@@ -209,6 +209,21 @@ service cloud.firestore {
         && data.createdAt is timestamp
         && data.updatedAt is timestamp;
     }
+    function isValidReturnSource(data) {
+      return !(data.invoiceType in ['sale_return', 'purchase_return']) || (
+        ('sourceInvoiceId' in data)
+        && isNonEmptyString(data.sourceInvoiceId, 128)
+        && exists(/databases/$(database)/documents/invoices/$(data.sourceInvoiceId))
+        && get(/databases/$(database)/documents/invoices/$(data.sourceInvoiceId)).data.ownerId == data.ownerId
+        && get(/databases/$(database)/documents/invoices/$(data.sourceInvoiceId)).data.status != 'cancelled'
+        && get(/databases/$(database)/documents/invoices/$(data.sourceInvoiceId)).data.partyId == data.partyId
+        && (
+          (data.invoiceType == 'sale_return' && get(/databases/$(database)/documents/invoices/$(data.sourceInvoiceId)).data.invoiceType == 'sale')
+          || (data.invoiceType == 'purchase_return' && get(/databases/$(database)/documents/invoices/$(data.sourceInvoiceId)).data.invoiceType == 'purchase')
+        )
+      );
+    }
+
     function isValidInvoice(data) {
       return data.keys().hasAll(['ownerId', 'invoiceNumber', 'invoiceType', 'date', 'partyId', 'partyName', 'warehouse', 'subtotal', 'discount', 'vatAmount', 'grandTotal', 'paidCash', 'paidBank', 'paidCheque', 'creditAmount', 'status', 'items', 'createdAt', 'updatedAt'])
         && data.keys().hasOnly(['ownerId', 'invoiceNumber', 'taxSerial', 'invoiceType', 'sourceInvoiceId', 'returnRevision', 'date', 'partyId', 'partyName', 'intermediaryId', 'intermediaryName', 'warehouse', 'costCenterId', 'currencyCode', 'exchangeRate', 'foreignSubtotal', 'foreignDiscount', 'foreignVatAmount', 'foreignGrandTotal', 'subtotal', 'discount', 'vatAmount', 'grandTotal', 'paidCash', 'paidBank', 'paidCheque', 'creditAmount', 'status', 'voucherId', 'items', '_version', 'updatedByDevice', 'createdAt', 'updatedAt'])
@@ -722,7 +737,7 @@ service cloud.firestore {
       allow list: if isVerified() && resource.data.ownerId == request.auth.uid;
       allow create: if isValidId(invoiceId) && isVerified()
         && isValidInvoice(incoming())
-        && (!(incoming().invoiceType in ['sale_return', 'purchase_return']) || ('sourceInvoiceId' in incoming() && isNonEmptyString(incoming().sourceInvoiceId, 128)))
+        && isValidReturnSource(incoming())
         && incoming().createdAt == request.time
         && incoming().updatedAt == request.time;
       allow update: if isValidId(invoiceId) && isVerified() && isValidInvoice(incoming()) && (
