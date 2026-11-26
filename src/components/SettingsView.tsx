@@ -32,6 +32,7 @@ import {
   XCircle,
 } from 'lucide-react';
 import { useAccounting } from '../context/AccountingContext';
+import { WorkspaceAccessPanel } from './WorkspaceAccessPanel';
 import type { DualCloudSyncController } from '../hooks/useDualCloudSync';
 import type { LocalFirstMeshController } from '../hooks/useLocalFirstMeshSync';
 import { RbacPermissions, RbacRoleKey } from '../types/accounting';
@@ -1386,7 +1387,11 @@ export const SettingsView: React.FC<{
           </div>
         </div>
 
-        {/* Add New Operator Form */}
+        <WorkspaceAccessPanel user={user} />
+
+      <div className="rounded-lg border border-amber-300 bg-amber-50/70 dark:bg-amber-950/20 p-3 text-xs text-amber-900 dark:text-amber-200">اپراتورهای زیر حالت قدیمی و محلی دارند؛ انتخاب آن‌ها هویت Firebase یا مجوز امنیتی سمت سرور محسوب نمی‌شود. مدیریت کاربران واقعی را از بخش فضای کاری انجام دهید.</div>
+
+      {/* Add New Operator Form */}
         <form
           onSubmit={handleAddOperator}
           className="grid grid-cols-1 md:grid-cols-12 gap-3 p-3.5 rounded-lg bg-slate-50 dark:bg-slate-950/60 border border-slate-200 dark:border-slate-800"
