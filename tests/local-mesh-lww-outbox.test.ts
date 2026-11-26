@@ -16,6 +16,7 @@ import {
   evaluateVectorExchangeDecision,
   getAcknowledgableMeshOperationIds,
   getOtherMeshPeerIds,
+  hydrateCompactedRelayPayload,
   HolooPeerMeshManager,
   isValidMeshPeerId,
   MeshUpdateBatcher,
@@ -255,6 +256,20 @@ runTest('3c. outbox ACKs are accepted only from required P2P peers', () => {
   assert.equal(isAuthorizedOutboxPeerAck(p2pItem, 'holoo-mesh-mehran-laptop'), false);
   assert.equal(isAuthorizedOutboxPeerAck(folderItem, 'holoo-mesh-mehran-phone1'), false);
   assert.equal(isAuthorizedOutboxPeerAck({ target: 'p2p_mesh', requiredPeers: [] }, 'holoo-mesh-mehran-phone2'), false);
+});
+
+runTest('3f. compacted relay payloads are hydrated with a matching final snapshot hash', () => {
+  const compacted = { operationId: 'relay-1', snapshotJson: '', payloadHash: 'stale-envelope-hash' };
+  const mergedSnapshot = '{"vouchers":[{"id":"v1"},{"id":"v2"}]}';
+  const mergedHash = 'final-merged-hash';
+  const hydrated = hydrateCompactedRelayPayload(compacted, mergedSnapshot, mergedHash);
+  assert.equal(hydrated.snapshotJson, mergedSnapshot);
+  assert.equal(hydrated.payloadHash, mergedHash);
+  assert.equal(compacted.snapshotJson, '');
+  assert.equal(compacted.payloadHash, 'stale-envelope-hash');
+
+  const explicit = { operationId: 'relay-2', snapshotJson: '{"vouchers":[]}', payloadHash: 'explicit-hash' };
+  assert.equal(hydrateCompactedRelayPayload(explicit, mergedSnapshot, mergedHash), explicit);
 });
 
 runTest('3e. relay outbox ACK gate requires a verified persisted operation', () => {
