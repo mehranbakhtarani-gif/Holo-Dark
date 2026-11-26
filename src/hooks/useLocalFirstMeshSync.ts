@@ -92,7 +92,7 @@ export function useLocalFirstMeshSync() {
     deviceId,
     setDeviceLabel,
     exportBackupJson,
-    importBackupJson,
+    importBackupJsonDurably,
     logActivity,
     showToast,
   } = useAccounting();
@@ -178,8 +178,8 @@ export function useLocalFirstMeshSync() {
   const latestExportRef = useRef(exportBackupJson);
   latestExportRef.current = exportBackupJson;
 
-  const latestImportRef = useRef(importBackupJson);
-  latestImportRef.current = importBackupJson;
+  const latestDurableImportRef = useRef(importBackupJsonDurably);
+  latestDurableImportRef.current = importBackupJsonDurably;
 
   const latestCountsRef = useRef({
     vouchers: vouchers.length,
@@ -493,7 +493,7 @@ export function useLocalFirstMeshSync() {
             // Anti-loop guard: suppress local mutation echo during remote import
             isRemoteUpdateRef.current = true;
             try {
-              const ok = latestImportRef.current(currentMergedJson);
+              const ok = await latestDurableImportRef.current(currentMergedJson);
               if (!ok) {
                 await recordSyncEvent({
                   eventId: `mevt_import_failed_${Date.now()}_${Math.random().toString(36).slice(2, 7)}`,
