@@ -77,6 +77,8 @@ async function startServer() {
   // Apply API throttling before JSON parsing so oversized or malformed bodies are rate-limited too.
   app.use('/api/ai', createRateLimiter(30));
   app.use('/api/supabase', createRateLimiter(80));
+  app.use('/api/live-fx', createRateLimiter(10));
+  app.use('/api/server', createRateLimiter(10));
   app.use(express.json({ limit: '10mb' }));
 
   app.get('/api/health', (_req: Request, res: Response) => {
