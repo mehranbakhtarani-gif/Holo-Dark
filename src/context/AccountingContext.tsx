@@ -25,6 +25,7 @@ import {
   signOutAccount,
   testFirestoreConnection,
   resolveWorkspaceContext,
+  migrateInvoiceReturnCounters,
   listWorkspaceCoreRecords,
   mutateWorkspaceCoreRecord,
   mutateWorkspaceVoucher,
@@ -869,6 +870,18 @@ export const AccountingProvider: React.FC<{ children: React.ReactNode }> = ({ ch
         }
         return;
       }
+
+      // Backfill legacy source invoices before owner-scoped listeners expose them to accounting actions.
+      if (typeof navigator === 'undefined' || navigator.onLine) {
+        try {
+          await migrateInvoiceReturnCounters();
+        } catch (error) {
+          if (cancelled) return;
+          console.error('Invoice return counter migration was not completed:', error);
+          showToast('به‌روزرسانی امن فاکتورهای قدیمی انجام نشد؛ ثبت یا ابطال برگشت برای فاکتورهای قدیمی تا تکمیل مهاجرت محدود می‌ماند.', 'error');
+        }
+      }
+      if (cancelled) return;
 
       await ensureCloudSeed(user);
       if (cancelled) return;
