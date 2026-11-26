@@ -258,3 +258,56 @@ test('core workspace reads require a verified snapshot and an explicit freeze ba
   assert.ok(page.items.some((item) => item.id === recordId && item.payload.title === 'Frozen snapshot account'));
   await expectCallableError(call('listWorkspaceCoreRecords', owner.token, { collection: 'vouchers' }), 'INVALID_ARGUMENT');
 });
+
+
+test('core freeze blocks bridge writes and reconciliation seals only an exact snapshot', async () => {
+  const owner = await createVerifiedUser('core-freeze-owner');
+  await call('bootstrapWorkspace', owner.token);
+  await refreshUserToken(owner);
+  const now = Timestamp.now();
+  const accountId = `freeze-account-${owner.uid}`;
+  const productId = `freeze-product-${owner.uid}`;
+  const account = { ownerId: owner.uid, code: '99301', title: 'Freeze fixture', level: 'kol', category: 'asset', nature: 'debit', isSystem: false, createdAt: now, updatedAt: now };
+  const product = { ownerId: owner.uid, sku: `SKU-${owner.uid}`, name: 'Freeze product', category: 'raw', warehouse: 'main', unit: 'kg', buyPrice: 10, sellPrice: 12, stock: 4, reorderPoint: 1, vatExempt: false, createdAt: now, updatedAt: now };
+  await firestore.collection('accounts').doc(accountId).set(account);
+  await firestore.collection('products').doc(productId).set(product);
+  const manifestRef = firestore.collection('workspaceMigrations').doc(owner.uid);
+  await manifestRef.set({ workspaceId: owner.uid, status: 'verified' });
+  for (const [collection, id, payload] of [['accounts', accountId, account], ['products', productId, product]]) {
+    await firestore.collection('workspaces').doc(owner.uid).collection('migrationData').doc(collection).collection('records').doc(id).set({
+      workspaceId: owner.uid, sourceCollection: collection, sourceId: id, sourceHash: require('node:crypto').createHash('sha256').update(JSON.stringify(payload)).digest('hex'), schemaVersion: 1, payload,
+    });
+  }
+  const freeze = await call('freezeWorkspaceCoreWrites', owner.token);
+  assert.equal(freeze.status, 'frozen_pending_reconciliation');
+  await expectCallableError(call('writeWorkspaceRecord', owner.token, {
+    collection: 'accounts', documentId: accountId, operation: 'update', operationId: randomUUID().replace(/-/g, ''),
+    data: { ...account, title: 'Should be blocked' },
+  }), 'FAILED_PRECONDITION');
+  const reconciled = await call('reconcileWorkspaceCoreSnapshot', owner.token);
+  assert.equal(reconciled.status, 'frozen');
+  assert.equal(reconciled.collections.accounts.sourceCount, 1);
+  assert.equal(reconciled.collections.products.sourceCount, 1);
+  const sealed = await manifestRef.get();
+  assert.equal(sealed.get('readBarrier.status'), 'frozen');
+  assert.equal(sealed.get('readBarrier.generation'), freeze.generation);
+  const page = await call('listWorkspaceCoreRecords', owner.token, { collection: 'accounts', limit: 10 });
+  assert.equal(page.generation, freeze.generation);
+});
+
+test('core reconciliation keeps the read barrier closed when source and staging differ', async () => {
+  const owner = await createVerifiedUser('core-freeze-mismatch');
+  await call('bootstrapWorkspace', owner.token);
+  await refreshUserToken(owner);
+  const now = Timestamp.now();
+  const id = `mismatch-account-${owner.uid}`;
+  await firestore.collection('accounts').doc(id).set({ ownerId: owner.uid, code: '99302', title: 'Missing stage', level: 'kol', category: 'asset', nature: 'debit', isSystem: false, createdAt: now, updatedAt: now });
+  const manifestRef = firestore.collection('workspaceMigrations').doc(owner.uid);
+  await manifestRef.set({ workspaceId: owner.uid, status: 'verified' });
+  await call('freezeWorkspaceCoreWrites', owner.token);
+  await expectCallableError(call('reconcileWorkspaceCoreSnapshot', owner.token), 'DATA_LOSS');
+  const manifest = await manifestRef.get();
+  assert.equal(manifest.get('coreWritesFrozen'), true);
+  assert.equal(manifest.get('readBarrier.status'), 'reconciling');
+  await expectCallableError(call('listWorkspaceCoreRecords', owner.token, { collection: 'accounts' }), 'FAILED_PRECONDITION');
+});
