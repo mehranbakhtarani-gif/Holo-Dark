@@ -1470,6 +1470,67 @@ test('Smart Audit Engine: Detects permanent voucher tamper-seal breach without m
   assert.equal(tampered.totalDebit, 99_000_000, 'Audit engine must remain strictly read-only');
 });
 
+test('Inventory normalization: Rebuilds FIFO layers when quantity matches but valuation drifts from snapshot', () => {
+  const seed = createHolooSeedData('test_owner');
+  const base = seed.products[0];
+  const inconsistent: Product = {
+    ...base,
+    stock: 10,
+    buyPrice: 100,
+    inventoryValueIrr: 1_000,
+    costLayers: [
+      {
+        layerId: 'lyr_stale_value',
+        date: '1405/01/01',
+        sourceRef: 'purchase_stale',
+        warehouse: base.warehouse,
+        originalQty: 10,
+        remainingQty: 10,
+        unitCostIrr: 50,
+        totalCostIrr: 500,
+      },
+    ],
+  };
+
+  const normalized = normalizeProductCostState(inconsistent, 'fifo');
+  assert.equal(normalized.stockQty, 10);
+  assert.equal(normalized.totalValueIrr, 1_000, 'Inventory snapshot value must remain authoritative');
+  assert.equal(
+    normalized.layers.reduce((sum, layer) => sum + layer.totalCostIrr, 0),
+    1_000,
+    'Rebuilt cost layers must reconcile exactly with inventoryValueIrr'
+  );
+  assert.equal(normalized.layers.length, 1);
+  assert.equal(normalized.layers[0].sourceRef, 'opening_balance');
+});
+
+test('Inventory normalization: Retains persisted FIFO layers when quantity and value both reconcile', () => {
+  const seed = createHolooSeedData('test_owner');
+  const base = seed.products[0];
+  const consistent: Product = {
+    ...base,
+    stock: 10,
+    buyPrice: 100,
+    inventoryValueIrr: 1_000,
+    costLayers: [
+      {
+        layerId: 'lyr_valid',
+        date: '1405/01/01',
+        sourceRef: 'purchase_valid',
+        warehouse: base.warehouse,
+        originalQty: 10,
+        remainingQty: 10,
+        unitCostIrr: 100,
+        totalCostIrr: 1_000,
+      },
+    ],
+  };
+
+  const normalized = normalizeProductCostState(consistent, 'fifo');
+  assert.equal(normalized.totalValueIrr, 1_000);
+  assert.equal(normalized.layers[0].layerId, 'lyr_valid', 'Valid FIFO provenance must be preserved');
+});
+
 // ============================================================================
 // RUNNER
 // ============================================================================
