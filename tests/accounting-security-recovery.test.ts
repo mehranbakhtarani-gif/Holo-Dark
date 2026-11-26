@@ -703,12 +703,14 @@ test('Invoice cancellation: cancelling a FIFO sales return removes only its rest
     deviceId: 'dev_test',
   });
 
-  assert.equal(plan.updatedProducts[0].stock, 80);
-  assert.equal(plan.updatedProducts[0].inventoryValueIrr, 120_000_000);
-  assert.equal(plan.updatedProducts[0].costLayers.length, 1);
-  assert.equal(plan.updatedProducts[0].costLayers[0].layerId, 'lyr_purchase_2');
-  assert.equal(plan.updatedProducts[0].costLayers[0].remainingQty, 80);
-  assert.equal(plan.updatedProducts[0].costLayers[0].totalCostIrr, 120_000_000);
+  const restoredProduct = plan.updatedProducts[0];
+  assert.ok(restoredProduct, 'cancellation plan must include the affected product');
+  assert.equal(restoredProduct.stock, 80);
+  assert.equal(restoredProduct.inventoryValueIrr, 120_000_000);
+  assert.equal(restoredProduct.costLayers.length, 1);
+  assert.equal(restoredProduct.costLayers[0].layerId, 'lyr_purchase_2');
+  assert.equal(restoredProduct.costLayers[0].remainingQty, 80);
+  assert.equal(restoredProduct.costLayers[0].totalCostIrr, 120_000_000);
 });
 
 test('Stage 10 [Scenario 8]: Mixed Settlement Sale (Cash + Bank + Cheque + Credit + 10% VAT) & Negative Stock Guard', () => {
