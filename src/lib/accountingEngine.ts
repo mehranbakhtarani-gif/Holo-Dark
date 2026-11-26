@@ -1157,7 +1157,10 @@ export function computeAuditReport(input: {
   const tamperedIssues: string[] = [];
   const tamperedRefs: string[] = [];
   for (const v of scopedVouchers) {
-    if (v.status === 'permanent' && v.integrityHash) {
+    if (v.status === 'permanent' && !v.integrityHash) {
+      tamperedIssues.push(`سند دائم #${v.voucherNumber} (${v.date}) فاقد مُهر اصالت است.`);
+      tamperedRefs.push(v.id);
+    } else if (v.status === 'permanent' && v.integrityHash) {
       const expected = computeVoucherIntegrityHash(v);
       if (expected !== v.integrityHash) {
         tamperedIssues.push(
