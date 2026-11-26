@@ -2051,7 +2051,7 @@ export const AccountingProvider: React.FC<{ children: React.ReactNode }> = ({ ch
         ...(product.costingMethod ? { costingMethod: product.costingMethod } : {}),
         ...(Array.isArray(product.costLayers) ? { costLayers: product.costLayers } : {}),
         ...(typeof product.inventoryValueIrr === 'number' && Number.isFinite(product.inventoryValueIrr) ? { inventoryValueIrr: Math.max(0, Math.round(product.inventoryValueIrr)) } : {}),
-        createdAt: existing.createdAt,
+        createdAt: new Date(),
         updatedAt: new Date(),
       };
       if (user && workspaceContext && (workspaceContext.workspaceId !== user.uid || workspaceContext.coreWritesFrozen || workspaceContext.coreWriteMode === 'workspace_native')) {
@@ -2092,7 +2092,7 @@ export const AccountingProvider: React.FC<{ children: React.ReactNode }> = ({ ch
         stock: Number((Number(next.stock) || 0).toFixed(4)),
         reorderPoint: Math.max(0, Number(next.reorderPoint) || 0),
         vatExempt: Boolean(next.vatExempt),
-        createdAt: new Date(),
+        createdAt: existing.createdAt || new Date(),
         updatedAt: new Date(),
         ...(next.secondaryUnit ? { secondaryUnit: next.secondaryUnit.trim().slice(0, 32) } : {}),
         ...(next.kgPerCarton !== undefined ? { kgPerCarton: Number(next.kgPerCarton) } : {}),
