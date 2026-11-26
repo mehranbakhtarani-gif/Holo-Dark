@@ -267,10 +267,12 @@ export async function mutateWorkspaceCoreRecord<T = Record<string, unknown>>(
 }
 
 export interface WorkspaceVoucherMutationInput {
-  operation: 'create' | 'update' | 'delete' | 'finalize';
+  operation: 'create' | 'update' | 'delete' | 'finalize' | 'reverse';
   documentId: string;
   operationId: string;
   expectedVersion?: number;
+  sourceDocumentId?: string;
+  expectedSourceVersion?: number;
   integrityHash?: string;
   data?: Record<string, unknown>;
 }
