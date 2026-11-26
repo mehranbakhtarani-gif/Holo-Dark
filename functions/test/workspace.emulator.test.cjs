@@ -63,6 +63,15 @@ async function call(name, token, data = {}) {
   return payload.result;
 }
 
+
+function stableTestValue(value) {
+  if (value === null || value === undefined || typeof value === 'string' || typeof value === 'number' || typeof value === 'boolean') return value;
+  if (value && typeof value.toMillis === 'function') return { __timestamp: value.toMillis() };
+  if (Array.isArray(value)) return value.map(stableTestValue);
+  if (typeof value === 'object') return Object.keys(value).sort().reduce((out, key) => { out[key] = stableTestValue(value[key]); return out; }, {});
+  return String(value);
+}
+
 async function expectCallableError(promise, status) {
   await assert.rejects(promise, (error) => {
     assert.equal(error.status, status);
@@ -275,7 +284,7 @@ test('core freeze blocks bridge writes and reconciliation seals only an exact sn
   await manifestRef.set({ workspaceId: owner.uid, status: 'verified' });
   for (const [collection, id, payload] of [['accounts', accountId, account], ['products', productId, product]]) {
     await firestore.collection('workspaces').doc(owner.uid).collection('migrationData').doc(collection).collection('records').doc(id).set({
-      workspaceId: owner.uid, sourceCollection: collection, sourceId: id, sourceHash: require('node:crypto').createHash('sha256').update(JSON.stringify(payload)).digest('hex'), schemaVersion: 1, payload,
+      workspaceId: owner.uid, sourceCollection: collection, sourceId: id, sourceHash: require('node:crypto').createHash('sha256').update(JSON.stringify(stableTestValue(payload))).digest('hex'), schemaVersion: 1, payload,
     });
   }
   const freeze = await call('freezeWorkspaceCoreWrites', owner.token);
