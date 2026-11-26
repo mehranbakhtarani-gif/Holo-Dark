@@ -639,14 +639,29 @@ export const mutateWorkspaceVoucher = onCall({ region: REGION, timeoutSeconds: 6
         || typeof input.description !== 'string' || input.description.length > 300
         || !['opening', 'general', 'sales', 'purchase', 'treasury', 'payroll', 'depreciation', 'closing'].includes(String(input.voucherType))
         || !Array.isArray(input.lines) || input.lines.length < 2 || input.lines.length > 100
+        || Object.keys(input).some((key) => ![
+          'ownerId', 'date', 'fiscalYear', 'description', 'voucherType', 'status',
+          'totalDebit', 'totalCredit', 'currencyCode', 'exchangeRate',
+          'foreignTotalDebit', 'foreignTotalCredit', 'referenceId', 'reversalOfVoucherId',
+          'lines', 'updatedByDevice',
+        ].includes(key))
+        || !/^\\d{4}\\/\\d{2}\\/\\d{2}$/.test(input.date)
         || input.lines.some((line) => !line || typeof line !== 'object'
+          || Object.keys(line as Record<string, unknown>).some((key) => ![
+            'accountCode', 'accountTitle', 'partyId', 'partyName', 'costCenterId',
+            'description', 'debit', 'credit', 'foreignDebit', 'foreignCredit', 'fxCurrencyCode',
+          ].includes(key))
           || typeof (line as Record<string, unknown>).accountCode !== 'string'
+          || !(line as Record<string, unknown>).accountCode
           || typeof (line as Record<string, unknown>).debit !== 'number'
           || typeof (line as Record<string, unknown>).credit !== 'number'
           || !Number.isFinite((line as Record<string, unknown>).debit as number)
           || !Number.isFinite((line as Record<string, unknown>).credit as number)
           || ((line as Record<string, unknown>).debit as number) < 0
-          || ((line as Record<string, unknown>).credit as number) < 0)
+          || ((line as Record<string, unknown>).credit as number) < 0
+          || ((line as Record<string, unknown>).debit as number) > 0 && ((line as Record<string, unknown>).credit as number) > 0)
+        || (input.currencyCode !== undefined && (typeof input.currencyCode !== 'string' || input.currencyCode.length > 10))
+        || (input.exchangeRate !== undefined && (typeof input.exchangeRate !== 'number' || !Number.isFinite(input.exchangeRate) || input.exchangeRate <= 0))
         || typeof input.totalDebit !== 'number' || typeof input.totalCredit !== 'number'
         || !Number.isFinite(input.totalDebit) || !Number.isFinite(input.totalCredit)
         || Math.abs(input.totalDebit - input.totalCredit) > 0.000001
