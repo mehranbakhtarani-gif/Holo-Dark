@@ -670,6 +670,7 @@ test('warehouse transfer creation splits source FIFO layers and persists the in-
   });
   assert.equal(result.status, 'committed');
   assert.equal(result.transfer.status, 'in_transit');
+  assert.ok(Number.isSafeInteger(result.transfer.eventSequence) && result.transfer.eventSequence > 0);
   assert.equal(result.transfer.qty, 4);
   assert.equal(result.transfer.transferredCostIrr, 4000);
   const productAfter = await firestore.collection('products').doc(productId).get();
@@ -690,6 +691,8 @@ test('warehouse transfer creation splits source FIFO layers and persists the in-
     productId, transferId, receivedDate: '1405/08/02',
   });
   assert.equal(received.status, 'committed');
+  assert.ok(Number.isSafeInteger(received.receivedEventSequence));
+  assert.ok(received.receivedEventSequence > result.transfer.eventSequence);
   const receivedProduct = await firestore.collection('products').doc(productId).get();
   const receivedExtension = await extensionRef.get();
   assert.equal(receivedProduct.get('stock'), 7);
@@ -700,7 +703,11 @@ test('warehouse transfer creation splits source FIFO layers and persists the in-
   assert.equal(receivedProduct.get('costLayers').find((layer) => layer.layerId === 'other-warehouse-layer').warehouse, 'انبار دیگر');
   assert.equal(receivedExtension.get('trackedWarehouseTransfers.0.status'), 'received');
   assert.equal(receivedExtension.get('trackedWarehouseTransfers.0.receivedDate'), '1405/08/02');
+  assert.equal(receivedExtension.get('trackedWarehouseTransfers.0.eventSequence'), result.transfer.eventSequence);
+  assert.equal(receivedExtension.get('trackedWarehouseTransfers.0.receivedEventSequence'), received.receivedEventSequence);
   assert.equal(receivedExtension.get('_version'), 3);
+  const inventoryCounter = await firestore.collection('counters').doc(owner.uid).get();
+  assert.equal(inventoryCounter.get('lastInventorySequence'), received.receivedEventSequence);
 
   const receiptReplay = await call('receiveTrackedWarehouseTransfer', owner.token, {
     productId, transferId, receivedDate: '1405/08/02',
