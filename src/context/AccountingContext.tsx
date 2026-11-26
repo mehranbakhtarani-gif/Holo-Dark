@@ -1771,13 +1771,16 @@ export const AccountingProvider: React.FC<{ children: React.ReactNode }> = ({ ch
       }
       if (workspaceNativeVoucher) {
         try {
-          await mutateWorkspaceVoucher({
+          const result = await mutateWorkspaceVoucher({
             operation: 'delete',
             documentId: voucherId,
             operationId: generateSafeId('op'),
             expectedVersion: existing._version ?? 1,
           });
-          setVouchers((prev) => prev.filter((v) => v.id !== voucherId));
+          setVouchers((prev) => prev
+            .filter((v) => v.id !== voucherId)
+            .map((v) => v.id === existing.reversalOfVoucherId && result.sourceVersion
+              ? { ...v, _version: result.sourceVersion } : v));
         } catch (err) {
           showToast(err instanceof Error ? err.message : 'حذف اتمیک پیش‌نویس در Workspace ناموفق بود.', 'error');
           return false;
