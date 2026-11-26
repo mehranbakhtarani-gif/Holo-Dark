@@ -268,6 +268,36 @@ service cloud.firestore {
         || (('sourceInvoiceId' in data) && isValidReturnSourceDocument(data));
     }
 
+    function isValidReturnSourceForMutation(sourceInvoiceId, ownerId, partyId, sourceType) {
+      let sourcePath = /databases/$(database)/documents/invoices/$(sourceInvoiceId);
+      let sourceSnapshot = get(sourcePath);
+      let source = sourceSnapshot.data;
+      return sourceSnapshot.exists()
+        && source.ownerId == ownerId
+        && source.partyId == partyId
+        && source.invoiceType == sourceType
+        && source.status != 'cancelled'
+        && source.activeReturnCount is int
+        && source.returnRevision is int;
+    }
+
+    function isValidProformaConversion(before, after, changed) {
+      return before.invoiceType == 'proforma'
+        && after.invoiceType == 'sale'
+        && changed.hasOnly(['invoiceNumber', 'invoiceType', 'date', 'status', 'voucherId', 'items', 'returnRevision', 'activeReturnCount', '_version', 'updatedByDevice', 'updatedAt'])
+        && after.invoiceNumber is string
+        && after.invoiceNumber.size() > 0
+        && after.date is string
+        && after.status in ['issued', 'settled']
+        && (!('voucherId' in after) || after.voucherId == null || after.voucherId is string)
+        && after.items is list
+        && after.items.size() > 0
+        && after.items.size() <= 100
+        && after.returnRevision == 0
+        && after.activeReturnCount == 0
+        && !('lastReturnMutationId' in after);
+    }
+
     function isValidInvoiceUpdate(invoiceId) {
       let before = existing();
       let after = incoming();
@@ -285,7 +315,7 @@ service cloud.firestore {
             && after.returnRevision == 0
             && after.activeReturnCount == 0
             && !('lastReturnMutationId' in after)
-            && isValidInvoice(after)
+            && isValidProformaConversion(before, after, changed)
           )
           || (
             ('activeReturnCount' in before)
@@ -334,13 +364,11 @@ service cloud.firestore {
             before.invoiceType in ['sale_return', 'purchase_return']
             && after.status == 'cancelled'
             && before.status != 'cancelled'
-            && hasSourceCounterBump(
+            && isValidReturnSourceForMutation(
               before.sourceInvoiceId,
-              invoiceId,
               before.ownerId,
               before.partyId,
-              before.invoiceType == 'sale_return' ? 'sale' : 'purchase',
-              -1
+              before.invoiceType == 'sale_return' ? 'sale' : 'purchase'
             )
           )
           || (
@@ -891,13 +919,11 @@ service cloud.firestore {
         )
         && (
           !(incoming().invoiceType in ['sale_return', 'purchase_return'])
-          || hasSourceCounterBump(
+          || isValidReturnSourceForMutation(
             incoming().sourceInvoiceId,
-            invoiceId,
             incoming().ownerId,
             incoming().partyId,
-            incoming().invoiceType == 'sale_return' ? 'sale' : 'purchase',
-            1
+            incoming().invoiceType == 'sale_return' ? 'sale' : 'purchase'
           )
         )
         && incoming().createdAt == request.time
