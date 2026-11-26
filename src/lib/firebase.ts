@@ -294,9 +294,9 @@ export interface CreateTrackedWarehouseTransferInput {
 }
 export async function createTrackedWarehouseTransferAtomic(
   input: CreateTrackedWarehouseTransferInput
-): Promise<{ status: 'committed'; transfer: Record<string, unknown>; productVersion: number }> {
+): Promise<{ status: 'committed' | 'replayed'; transfer: Record<string, unknown>; productVersion: number }> {
   const callable = httpsCallable<CreateTrackedWarehouseTransferInput, {
-    status: 'committed'; transfer: Record<string, unknown>; productVersion: number;
+    status: 'committed' | 'replayed'; transfer: Record<string, unknown>; productVersion: number;
   }>(functions, 'createTrackedWarehouseTransfer');
   const result = await callable(input);
   return result.data;
