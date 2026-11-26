@@ -174,7 +174,7 @@ async function requireActiveWorkspaceMember(auth: CallableAuth) {
 }
 
 const STAGED_READ_COLLECTIONS: Record<string, readonly string[]> = {
-  owner: WORKSPACE_MIGRATION_COLLECTIONS,
+  owner: ['counters', 'accounts', 'parties', 'products', 'vouchers', 'invoices', 'cheques', 'employees', 'assets', 'costCenters', 'currencies', 'exchangeRates', 'importDossiers', 'salesOrders', 'subcontractJobs', 'rbacOperators', 'auditLogs', 'workspaceExtensions', 'devicePresence', 'cloudBackups'],
   finance_manager: ['counters', 'accounts', 'parties', 'products', 'vouchers', 'invoices', 'cheques', 'employees', 'assets', 'costCenters', 'currencies', 'exchangeRates', 'importDossiers', 'salesOrders', 'subcontractJobs', 'auditLogs'],
   accountant: ['counters', 'accounts', 'parties', 'products', 'vouchers', 'invoices', 'cheques', 'employees', 'assets', 'costCenters', 'currencies', 'exchangeRates', 'auditLogs'],
   warehouse_keeper: ['products', 'importDossiers', 'salesOrders', 'subcontractJobs'],
@@ -216,13 +216,24 @@ export const listWorkspaceStagedRecords = onCall({ region: REGION, timeoutSecond
   let query = records.orderBy(FieldPath.documentId()).limit(requestedLimit);
   if (typeof cursor === 'string' && cursor) query = query.startAfter(cursor);
   const snapshot = await query.get();
-  const items = snapshot.docs.map((doc) => ({ id: doc.id, payload: doc.get('payload') }));
+  const items: Array<{ id: string; payload: unknown }> = [];
+  let responseBytes = 0;
+  for (const record of snapshot.docs) {
+    const item = { id: record.id, payload: record.get('payload') };
+    const itemBytes = Buffer.byteLength(JSON.stringify(item), 'utf8');
+    if (items.length > 0 && responseBytes + itemBytes > 7 * 1024 * 1024) break;
+    items.push(item);
+    responseBytes += itemBytes;
+  }
+  const hasMoreInPage = items.length < snapshot.size;
   return {
     workspaceId,
     collection: collectionName,
     role,
     items,
-    nextCursor: snapshot.size === requestedLimit ? snapshot.docs[snapshot.docs.length - 1].id : null,
+    nextCursor: items.length > 0 && (hasMoreInPage || snapshot.size === requestedLimit)
+      ? items[items.length - 1].id
+      : null,
   };
 });
 
