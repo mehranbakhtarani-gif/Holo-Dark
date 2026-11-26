@@ -1426,7 +1426,7 @@ export const adjustWorkspaceProductStockWithVoucher = onCall({ region: REGION, t
   const counterRef = migrationDestination(workspaceId, 'counters').doc(workspaceId);
   const profileRef = db.collection('users').doc(workspaceId);
   const operationRef = db.collection('workspaceWriteOperations').doc(workspaceId + '_inventory_adjustment_' + operationId);
-  const accountQuery = migrationDestination(workspaceId, 'accounts').where('deleted', '==', false);
+  const accountQuery = migrationDestination(workspaceId, 'accounts');
   const requestHash = createHash('sha256').update(JSON.stringify(stableMigrationValue({
     productId, voucherId, expectedVersion, countedStock, date, reason,
   }))).digest('hex');
