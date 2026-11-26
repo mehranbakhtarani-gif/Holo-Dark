@@ -268,6 +268,95 @@ service cloud.firestore {
         || (('sourceInvoiceId' in data) && isValidReturnSourceDocument(data));
     }
 
+    function isValidInvoiceUpdate(invoiceId) {
+      let before = existing();
+      let after = incoming();
+      let changed = after.diff(before).affectedKeys();
+      return before.ownerId == request.auth.uid
+        && before.status != 'cancelled'
+        && after.ownerId == before.ownerId
+        && after.createdAt == before.createdAt
+        && after.updatedAt == request.time
+        && (
+          !changed.hasAny(['returnRevision', 'activeReturnCount', 'lastReturnMutationId'])
+          || (
+            before.invoiceType == 'proforma'
+            && after.invoiceType == 'sale'
+            && after.returnRevision == 0
+            && after.activeReturnCount == 0
+            && !('lastReturnMutationId' in after)
+            && isValidInvoice(after)
+          )
+          || (
+            ('activeReturnCount' in before)
+            && ('returnRevision' in before)
+            && ('activeReturnCount' in after)
+            && ('returnRevision' in after)
+            && after.lastReturnMutationId is string
+            && (
+              after.activeReturnCount == before.activeReturnCount + 1
+              || after.activeReturnCount == before.activeReturnCount - 1
+            )
+            && isPairedReturnMutation(
+              invoiceId,
+              after.lastReturnMutationId,
+              before,
+              after,
+              after.activeReturnCount - before.activeReturnCount
+            )
+          )
+        )
+        && (
+          !(before.invoiceType in ['sale', 'purchase'])
+          || (
+            ('activeReturnCount' in before)
+            && before.activeReturnCount is int
+            && before.activeReturnCount == 0
+            && ('returnRevision' in before)
+            && before.returnRevision is int
+          )
+          || after.status != 'cancelled'
+        )
+        && (
+          !changed.hasAny(['returnRevision'])
+          || (
+            before.invoiceType == 'proforma'
+            && after.invoiceType == 'sale'
+            && after.returnRevision == 0
+          )
+          || (
+            after.returnRevision == (('returnRevision' in before) ? before.returnRevision : 0) + 1
+            && after.status == before.status
+          )
+        )
+        && (
+          (
+            before.invoiceType in ['sale_return', 'purchase_return']
+            && after.status == 'cancelled'
+            && before.status != 'cancelled'
+            && hasSourceCounterBump(
+              before.sourceInvoiceId,
+              invoiceId,
+              before.ownerId,
+              before.partyId,
+              before.invoiceType == 'sale_return' ? 'sale' : 'purchase',
+              -1
+            )
+          )
+          || (
+            !(before.invoiceType in ['sale_return', 'purchase_return'])
+            && (
+              !changed.hasAny(['activeReturnCount'])
+              || (
+                after.activeReturnCount is int
+                && after.activeReturnCount >= 0
+                && after.returnRevision is int
+              )
+            )
+          )
+        );
+    }
+
     function isValidInvoice(data) {
       return data.keys().hasAll(['ownerId', 'invoiceNumber', 'invoiceType', 'date', 'partyId', 'partyName', 'warehouse', 'subtotal', 'discount', 'vatAmount', 'grandTotal', 'paidCash', 'paidBank', 'paidCheque', 'creditAmount', 'status', 'items', 'createdAt', 'updatedAt'])
         && data.keys().hasOnly(['ownerId', 'invoiceNumber', 'taxSerial', 'invoiceType', 'sourceInvoiceId', 'returnRevision', 'activeReturnCount', 'lastReturnMutationId', 'date', 'partyId', 'partyName', 'intermediaryId', 'intermediaryName', 'warehouse', 'costCenterId', 'currencyCode', 'exchangeRate', 'foreignSubtotal', 'foreignDiscount', 'foreignVatAmount', 'foreignGrandTotal', 'subtotal', 'discount', 'vatAmount', 'grandTotal', 'paidCash', 'paidBank', 'paidCheque', 'creditAmount', 'status', 'voucherId', 'items', '_version', 'updatedByDevice', 'createdAt', 'updatedAt'])
@@ -813,99 +902,7 @@ service cloud.firestore {
         )
         && incoming().createdAt == request.time
         && incoming().updatedAt == request.time;
-      allow update: if isValidId(invoiceId) && isVerified() && (
-        (
-          existing().ownerId == request.auth.uid
-          && existing().status != 'cancelled'
-          && incoming().ownerId == existing().ownerId
-          && incoming().createdAt == existing().createdAt
-          && incoming().updatedAt == request.time
-          && (
-            !incoming().diff(existing()).affectedKeys().hasAny(['returnRevision', 'activeReturnCount', 'lastReturnMutationId'])
-            || (
-              existing().invoiceType == 'proforma'
-              && incoming().invoiceType == 'sale'
-              && incoming().returnRevision == 0
-              && incoming().activeReturnCount == 0
-              && !('lastReturnMutationId' in incoming())
-              && isValidInvoice(incoming())
-            )
-            || (
-              ('activeReturnCount' in existing())
-              && ('returnRevision' in existing())
-              && ('activeReturnCount' in incoming())
-              && ('returnRevision' in incoming())
-              && incoming().lastReturnMutationId is string
-              && (
-                incoming().activeReturnCount == existing().activeReturnCount + 1
-                || incoming().activeReturnCount == existing().activeReturnCount - 1
-              )
-              && isPairedReturnMutation(
-                invoiceId,
-                incoming().lastReturnMutationId,
-                existing(),
-                incoming(),
-                incoming().activeReturnCount - existing().activeReturnCount
-              )
-            )
-          )
-          && (
-            !(existing().invoiceType in ['sale', 'purchase'])
-            || (
-              ('activeReturnCount' in existing())
-              && existing().activeReturnCount is int
-              && existing().activeReturnCount == 0
-              && ('returnRevision' in existing())
-              && existing().returnRevision is int
-            )
-            || incoming().status != 'cancelled'
-          )
-          && (
-            !incoming().diff(existing()).affectedKeys().hasAny(['returnRevision'])
-            || (
-              existing().invoiceType == 'proforma'
-              && incoming().invoiceType == 'sale'
-              && incoming().returnRevision == 0
-            )
-            || (
-              incoming().returnRevision == (('returnRevision' in existing()) ? existing().returnRevision : 0) + 1
-              && incoming().status == existing().status
-            )
-          )
-          && (
-            (
-              existing().invoiceType in ['sale_return', 'purchase_return']
-              && incoming().status == 'cancelled'
-              && existing().status != 'cancelled'
-              && hasSourceCounterBump(
-                existing().sourceInvoiceId,
-                invoiceId,
-                existing().ownerId,
-                existing().partyId,
-                existing().invoiceType == 'sale_return' ? 'sale' : 'purchase',
-                -1
-              )
-            )
-            || !(existing().invoiceType in ['sale_return', 'purchase_return'])
-            || incoming().status != 'cancelled'
-            || existing().status == 'cancelled'
-          )
-          && (
-            incoming().diff(existing()).affectedKeys().hasOnly(['status', 'returnRevision', 'activeReturnCount', 'lastReturnMutationId', '_version', 'updatedByDevice', 'updatedAt']) ||
-            incoming().diff(existing()).affectedKeys().hasOnly(['paidCash', 'paidBank', 'paidCheque', 'creditAmount', 'status', 'returnRevision', 'activeReturnCount', 'lastReturnMutationId', '_version', 'updatedByDevice', 'updatedAt']) ||
-            (
-              existing().invoiceType == 'proforma'
-              && incoming().invoiceType == 'sale'
-              && incoming().diff(existing()).affectedKeys().hasOnly(['invoiceNumber', 'invoiceType', 'status', 'voucherId', 'items', 'returnRevision', 'activeReturnCount', '_version', 'updatedByDevice', 'updatedAt'])
-            )
-          )
-          && incoming().status in ['issued', 'settled', 'cancelled']
-          && incoming().paidCash is number && incoming().paidCash >= 0
-          && incoming().paidBank is number && incoming().paidBank >= 0
-          && incoming().paidCheque is number && incoming().paidCheque >= 0
-          && incoming().creditAmount is number && incoming().creditAmount >= 0
-        ) || isAdmin()
-      );
+      allow update: if isValidId(invoiceId) && isVerified() && isValidInvoiceUpdate(invoiceId);
       allow delete: if isValidId(invoiceId) && isVerified() && (isAdmin() || (existing().ownerId == request.auth.uid && existing().invoiceType == 'proforma'));
     }
 
