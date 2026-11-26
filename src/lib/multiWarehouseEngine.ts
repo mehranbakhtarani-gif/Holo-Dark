@@ -756,10 +756,13 @@ export function evaluateWarehouseShortageSurplus(params: {
       : product.warehouse === warehouse
         ? product.stock
         : 0,
-    2
+    4
   );
-  const cleanCounted = roundQtyFixed(Math.max(0, countedQty), 2);
-  const varianceQty = roundQtyFixed(cleanCounted - bookQty, 2);
+  if (!Number.isFinite(countedQty) || countedQty < 0) {
+    throw new Error('مقدار شمارش‌شده باید یک عدد متناهی و غیرمنفی باشد.');
+  }
+  const cleanCounted = roundQtyFixed(countedQty, 4);
+  const varianceQty = roundQtyFixed(cleanCounted - bookQty, 4);
   const unitCostIrr = state.weightedAvgUnitCostIrr || toExactIrr(product.buyPrice);
   const varianceValueIrr = mulQtyByIrr(varianceQty, unitCostIrr);
 
@@ -773,6 +776,6 @@ export function evaluateWarehouseShortageSurplus(params: {
     varianceQty,
     unitCostIrr,
     varianceValueIrr,
-    kind: Math.abs(varianceQty) < 0.005 ? 'exact' : varianceQty > 0 ? 'surplus' : 'shortage',
+    kind: Math.abs(varianceQty) < 0.00005 ? 'exact' : varianceQty > 0 ? 'surplus' : 'shortage',
   };
 }
