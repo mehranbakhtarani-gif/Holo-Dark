@@ -722,6 +722,7 @@ service cloud.firestore {
       allow list: if isVerified() && resource.data.ownerId == request.auth.uid;
       allow create: if isValidId(invoiceId) && isVerified()
         && isValidInvoice(incoming())
+        && (!(incoming().invoiceType in ['sale_return', 'purchase_return']) || ('sourceInvoiceId' in incoming() && isNonEmptyString(incoming().sourceInvoiceId, 128)))
         && incoming().createdAt == request.time
         && incoming().updatedAt == request.time;
       allow update: if isValidId(invoiceId) && isVerified() && isValidInvoice(incoming()) && (
