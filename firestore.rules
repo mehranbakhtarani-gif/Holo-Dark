@@ -213,13 +213,7 @@ service cloud.firestore {
       let returnPath = /databases/$(database)/documents/invoices/$(returnInvoiceId);
       let returnBefore = get(returnPath);
       let returnAfter = getAfter(returnPath).data;
-      return isValidId(returnInvoiceId)
-        && sourceBefore.activeReturnCount is int
-        && sourceBefore.returnRevision is int
-        && sourceAfter.activeReturnCount == sourceBefore.activeReturnCount + countDelta
-        && sourceAfter.returnRevision == sourceBefore.returnRevision + 1
-        && sourceAfter.lastReturnMutationId == returnInvoiceId
-        && returnAfter.sourceInvoiceId == sourceInvoiceId
+      return returnAfter.sourceInvoiceId == sourceInvoiceId
         && returnAfter.ownerId == sourceBefore.ownerId
         && returnAfter.partyId == sourceBefore.partyId
         && (
@@ -227,8 +221,8 @@ service cloud.firestore {
           || (sourceBefore.invoiceType == 'purchase' && returnAfter.invoiceType == 'purchase_return')
         )
         && (
-          (countDelta == 1 && !exists(returnPath) && returnAfter.status != 'cancelled')
-          || (countDelta == -1 && exists(returnPath) && returnBefore.data.status != 'cancelled' && returnAfter.status == 'cancelled')
+          (countDelta == 1 && !returnBefore.exists && returnAfter.status != 'cancelled')
+          || (countDelta == -1 && returnBefore.exists && returnBefore.data.status != 'cancelled' && returnAfter.status == 'cancelled')
         );
     }
 
