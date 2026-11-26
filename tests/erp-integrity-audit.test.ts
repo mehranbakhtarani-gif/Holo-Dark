@@ -1815,3 +1815,22 @@ async function run() {
 }
 
 run();
+
+test('Warehouse stocktake preserves four-decimal quantities and rejects invalid counts', () => {
+  const product: Product = {
+    id: 'prod_stocktake_fractional', ownerId: 'owner_test', sku: 'STK-004',
+    name: 'کالای شمارش کسری', category: 'آزمایشی', unit: 'کیلوگرم',
+    warehouse: 'انبار مرکزی', buyPrice: 1000, sellPrice: 1500, stock: 1,
+    reorderPoint: 0, vatExempt: true, inventoryValueIrr: 1000,
+    costingMethod: 'fifo',
+    costLayers: [{ layerId: 'stocktake_layer', date: '1405/01/01', sourceRef: 'opening',
+      warehouse: 'انبار مرکزی', originalQty: 1, remainingQty: 1, unitCostIrr: 1000, totalCostIrr: 1000 }],
+  };
+  const fractional = evaluateWarehouseShortageSurplus({ product, warehouse: 'انبار مرکزی', countedQty: 0.8765, defaultCostingMethod: 'fifo' });
+  assert.equal(fractional.bookQty, 1);
+  assert.equal(fractional.countedQty, 0.8765);
+  assert.equal(fractional.varianceQty, -0.1235);
+  assert.equal(fractional.kind, 'shortage');
+  assert.throws(() => evaluateWarehouseShortageSurplus({ product, warehouse: 'انبار مرکزی', countedQty: Number.NaN }), /متناهی و غیرمنفی/);
+  assert.throws(() => evaluateWarehouseShortageSurplus({ product, warehouse: 'انبار مرکزی', countedQty: -0.1 }), /متناهی و غیرمنفی/);
+});
