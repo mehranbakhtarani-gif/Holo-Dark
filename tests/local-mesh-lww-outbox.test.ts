@@ -1,6 +1,7 @@
 import assert from 'node:assert/strict';
 import {
   mergeWorkspacesDeterministicLWW,
+  SYNCABLE_WORKSPACE_COLLECTIONS,
   MESH_DEVICES,
   safeParseJsonObject,
   tagSnapshotWithSyncMetadata,
@@ -54,7 +55,60 @@ runTest('1. tagSnapshotWithSyncMetadata stamps uuid, deviceId, updatedAt, isDele
   assert.equal(parsed._meshSyncMeta.originDeviceId, 'holoo-mesh-mehran-laptop');
 });
 
-runTest('2. mergeWorkspacesDeterministicLWW converges deterministically across 3 devices (order-independent)', () => {
+runTest('2. tracked warehouse transfers are included in mesh sync and receipt updates converge by LWW', () => {
+  assert.equal(SYNCABLE_WORKSPACE_COLLECTIONS.includes('trackedWarehouseTransfers'), true);
+
+  const dispatch = {
+    id: 'tr_mesh_001',
+    uuid: 'tr_mesh_001',
+    deviceId: 'holoo-mesh-mehran-laptop',
+    updatedAt: '2026-11-26T10:00:00.000Z',
+    isDeleted: false,
+    transferNumber: 'TR-001',
+    productId: 'product_1',
+    fromWarehouse: 'انبار مرکزی',
+    toWarehouse: 'انبار شعبه',
+    qty: 12,
+    transferredCostIrr: 960000,
+    transferredLayers: [{ layerId: 'tr_layer_1', remainingQty: 12, totalCostIrr: 960000 }],
+    status: 'in_transit',
+  };
+  const received = {
+    ...dispatch,
+    deviceId: 'holoo-mesh-mehran-phone1',
+    updatedAt: '2026-11-26T10:15:00.000Z',
+    status: 'received',
+    receivedDate: '1405/09/05',
+    receivedEventSequence: 42,
+    receivedEventSequenceSource: 'sync',
+  };
+
+  const laptopSnapshot = JSON.stringify({ trackedWarehouseTransfers: [dispatch] });
+  const phoneSnapshot = JSON.stringify({ trackedWarehouseTransfers: [received] });
+  const laptopThenPhone = mergeWorkspacesDeterministicLWW(
+    laptopSnapshot,
+    phoneSnapshot,
+    'holoo-mesh-mehran-laptop'
+  );
+  const phoneThenLaptop = mergeWorkspacesDeterministicLWW(
+    phoneSnapshot,
+    laptopSnapshot,
+    'holoo-mesh-mehran-phone1'
+  );
+  const resultA = JSON.parse(laptopThenPhone.mergedSnapshotJson);
+  const resultB = JSON.parse(phoneThenLaptop.mergedSnapshotJson);
+
+  assert.equal(resultA.trackedWarehouseTransfers.length, 1);
+  assert.equal(resultB.trackedWarehouseTransfers.length, 1);
+  assert.equal(resultA.trackedWarehouseTransfers[0].status, 'received');
+  assert.equal(resultB.trackedWarehouseTransfers[0].status, 'received');
+  assert.equal(resultA.trackedWarehouseTransfers[0].receivedEventSequence, 42);
+  assert.equal(resultB.trackedWarehouseTransfers[0].receivedEventSequence, 42);
+  assert.equal(resultA.trackedWarehouseTransfers[0].transferredCostIrr, 960000);
+  assert.equal(resultB.trackedWarehouseTransfers[0].transferredCostIrr, 960000);
+});
+
+runTest('3. mergeWorkspacesDeterministicLWW converges deterministically across 3 devices (order-independent)', () => {
   const laptopSnap = JSON.stringify({
     profile: { companyName: 'پارس نخ مهران', updatedAt: '2026-11-24T10:00:00.000Z' },
     vouchers: [
@@ -149,7 +203,7 @@ runTest('2. mergeWorkspacesDeterministicLWW converges deterministically across 3
   assert.equal(parsedBA.profile.companyName, 'پارس نخ مهران (آپدیت موبایل)');
 });
 
-runTest('3. safeParseJsonObject strips prototype pollution payloads', () => {
+runTest('4. safeParseJsonObject strips prototype pollution payloads', () => {
   const malicious = '{"__proto__":{"polluted":true},"constructor":{"bad":1},"safe":42}';
   const parsed = safeParseJsonObject(malicious);
   assert.ok(parsed);
@@ -159,7 +213,7 @@ runTest('3. safeParseJsonObject strips prototype pollution payloads', () => {
   assert.equal(Object.prototype.hasOwnProperty.call(parsed, 'constructor'), false);
 });
 
-runTest('4. 3-device Peer ID allowlist & authTag validation', () => {
+runTest('5. 3-device Peer ID allowlist & authTag validation', () => {
   assert.equal(MESH_DEVICES.length, 3);
   assert.equal(isValidMeshPeerId('holoo-mesh-mehran-laptop'), true);
   assert.equal(isValidMeshPeerId('holoo-mesh-mehran-phone1'), true);
@@ -177,7 +231,7 @@ runTest('4. 3-device Peer ID allowlist & authTag validation', () => {
   assert.notEqual(tagA, tagC);
 });
 
-runTest('5. buildRelayEnvelopesFromOutbox selects only pending p2p_mesh operations for relay', () => {
+runTest('6. buildRelayEnvelopesFromOutbox selects only pending p2p_mesh operations for relay', () => {
   const sampleItems: MeshSyncOutboxItem[] = [
     {
       operationId: 'op_pending_p2p',
@@ -240,12 +294,12 @@ runTest('5. buildRelayEnvelopesFromOutbox selects only pending p2p_mesh operatio
   ]);
 });
 
-runTest('6. PeerMeshConnector is exported and extends HolooPeerMeshManager', () => {
+runTest('7. PeerMeshConnector is exported and extends HolooPeerMeshManager', () => {
   assert.equal(typeof PeerMeshConnector, 'function');
   assert.equal(Object.getPrototypeOf(PeerMeshConnector), HolooPeerMeshManager);
 });
 
-runTest('7. MeshUpdateBatcher coalesces bursts of small updates into fewer flushes and enforces maxBatchSize', () => {
+runTest('8. MeshUpdateBatcher coalesces bursts of small updates into fewer flushes and enforces maxBatchSize', () => {
   const flushes: BatchedUpdateFlushPayload[] = [];
   const batcher = new MeshUpdateBatcher(
     (payload) => {
