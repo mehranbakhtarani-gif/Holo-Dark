@@ -2762,6 +2762,7 @@ export const AccountingProvider: React.FC<{ children: React.ReactNode }> = ({ ch
                 throw err;
               }
               handleFirestoreError(err, OperationType.CREATE, `atomic-invoice/${id}`);
+              throw err;
             }
           }
         }
