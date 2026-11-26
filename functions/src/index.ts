@@ -1847,7 +1847,7 @@ async function validateWorkspaceVoucherReferences(
     }
     if (partyId) {
       const party = partiesById.get(partyId);
-      if (!party?.exists || party.get('payload.ownerId') !== workspaceId) {
+      if (!party || !party.exists || party.get('payload.ownerId') !== workspaceId) {
         throw new HttpsError('failed-precondition', `ردیف ${rowNumber}: طرف‌حساب انتخاب‌شده در فضای کاری یافت نشد.`);
       }
     }
@@ -1855,7 +1855,7 @@ async function validateWorkspaceVoucherReferences(
     const costCenterId = typeof line.costCenterId === 'string' ? line.costCenterId.trim() : '';
     if (costCenterId) {
       const costCenter = costCentersById.get(costCenterId);
-      if (!costCenter?.exists || costCenter.get('payload.ownerId') !== workspaceId
+      if (!costCenter || !costCenter.exists || costCenter.get('payload.ownerId') !== workspaceId
           || costCenter.get('payload.active') === false) {
         throw new HttpsError('failed-precondition', `ردیف ${rowNumber}: مرکز هزینه معتبر و فعال نیست.`);
       }
