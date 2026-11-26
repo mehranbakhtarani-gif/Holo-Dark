@@ -447,14 +447,6 @@ export const migrateWorkspaceDataBatch = onCall({ region: REGION, timeoutSeconds
     nextCounts[collectionName] = (nextCounts[collectionName] || 0) + page.size;
     const reachedEnd = page.size < MIGRATION_PAGE_SIZE;
     const nextIndex = reachedEnd ? index + 1 : index;
-    batch.update(migrationRef, {
-      copiedCounts: nextCounts,
-      collectionIndex: nextIndex,
-      lastDocumentId: reachedEnd ? null : page.docs[page.docs.length - 1].id,
-      status: nextIndex >= WORKSPACE_MIGRATION_COLLECTIONS.length ? 'verifying' : 'copying',
-      verifyCollectionIndex: nextIndex >= WORKSPACE_MIGRATION_COLLECTIONS.length ? 0 : manifest.get('verifyCollectionIndex') || 0,
-      updatedAt: FieldValue.serverTimestamp(),
-    });
     // Staged writes and cursor advance commit atomically.
     for (const sourceDoc of page.docs) {
       const payload = sourceDoc.data() as Record<string, unknown>;
