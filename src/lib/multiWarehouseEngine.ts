@@ -375,6 +375,7 @@ export function executeTrackedWarehouseTransfer(params: {
   notes?: string;
   defaultCostingMethod?: InventoryCostingMethod;
   eventSequence?: number;
+  eventSequenceSource?: 'online' | 'sync';
 }): {
   plan: WarehouseTransferPlan;
   updatedProduct: Product;
@@ -393,6 +394,7 @@ export function executeTrackedWarehouseTransfer(params: {
     notes,
     defaultCostingMethod = 'moving_average',
     eventSequence,
+    eventSequenceSource,
   } = params;
 
   const state = normalizeProductCostState(product, defaultCostingMethod);
@@ -456,7 +458,7 @@ export function executeTrackedWarehouseTransfer(params: {
     transferredLayers: plan.transferredLayers,
     status: mode === 'immediate' ? 'received' : 'in_transit',
     ...(Number.isSafeInteger(eventSequence) && Number(eventSequence) > 0
-      ? { eventSequence: Number(eventSequence) }
+      ? { eventSequence: Number(eventSequence), ...(eventSequenceSource ? { eventSequenceSource } : {}) }
       : {}),
     ...(mode === 'immediate' && Number.isSafeInteger(eventSequence) && Number(eventSequence) > 0
       ? { receivedEventSequence: Number(eventSequence) }
@@ -482,12 +484,13 @@ export function receiveTrackedWarehouseTransfer(params: {
   transfer: TrackedWarehouseTransfer;
   receivedDate: string;
   eventSequence?: number;
+  eventSequenceSource?: 'online' | 'sync';
 }): {
   updatedProduct: Product;
   updatedTransfer: TrackedWarehouseTransfer;
   pnlImpactIrr: 0;
 } {
-  const { product, transfer, receivedDate, eventSequence } = params;
+  const { product, transfer, receivedDate, eventSequence, eventSequenceSource } = params;
   if (!receivedDate.trim()) throw new Error('تاریخ دریافت انتقال الزامی است.');
   if (product.id !== transfer.productId) throw new Error('انتقال متعلق به این کالا نیست.');
   if (transfer.status !== 'in_transit') {
@@ -552,7 +555,7 @@ export function receiveTrackedWarehouseTransfer(params: {
     status: 'received',
     receivedDate,
     ...(Number.isSafeInteger(eventSequence) && Number(eventSequence) > 0
-      ? { receivedEventSequence: Number(eventSequence) }
+      ? { receivedEventSequence: Number(eventSequence), ...(eventSequenceSource ? { receivedEventSequenceSource: eventSequenceSource } : {}) }
       : {}),
   };
 
