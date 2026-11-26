@@ -673,7 +673,7 @@ service cloud.firestore {
             incoming().diff(existing()).affectedKeys().hasOnly(['voucherNumber', 'updatedAt']) ||
             (
               existing().status != 'permanent' && (
-                incoming().diff(existing()).affectedKeys().hasOnly(['status', 'integrityHash', '_version', 'updatedByDevice', 'updatedAt']) ||
+                incoming().diff(existing()).affectedKeys().hasOnly(['status', 'fiscalYear', 'integrityHash', '_version', 'updatedByDevice', 'updatedAt']) ||
                 incoming().diff(existing()).affectedKeys().hasOnly(['date', 'description', 'voucherType', 'lines', 'totalDebit', 'totalCredit', 'currencyCode', 'exchangeRate', 'foreignTotalDebit', 'foreignTotalCredit', 'status', '_version', 'updatedByDevice', 'updatedAt'])
               )
             )
