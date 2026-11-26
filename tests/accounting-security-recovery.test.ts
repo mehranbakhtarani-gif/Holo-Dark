@@ -1162,6 +1162,42 @@ test('Stage 10 [Scenario 12]: End-to-End Full Reconciliation (TB, BS, P&L, Cash 
   vouchers.push(sret1.voucher!);
   invoices.push(sret1.invoice);
 
+  // A second return cannot exceed the 120 units sold after 10 units were already returned.
+  assert.throws(
+    () =>
+      planAtomicInvoiceCommit({
+        invoiceId: 'inv_e2e_sr2',
+        voucherId: 'vch_e2e_sr2',
+        nextVoucherNumber: 6,
+        ownerId: 'test_owner',
+        deviceId: 'dev_e2e_2',
+        defaultCostingMethod: 'fifo',
+        originalInvoice: sal1.invoice,
+        existingInvoices: invoices,
+        products,
+        payload: {
+          invoiceNumber: 'E2E-SR2-OVER',
+          invoiceType: 'sale_return',
+          sourceInvoiceId: sal1.invoice.id,
+          date: '1405/01/23',
+          partyId: cust.id,
+          partyName: cust.name,
+          warehouse: sku.warehouse,
+          subtotal: 222_000_000,
+          discount: 0,
+          vatAmount: 22_200_000,
+          grandTotal: 244_200_000,
+          paidCash: 0,
+          paidBank: 0,
+          paidCheque: 0,
+          creditAmount: 244_200_000,
+          status: 'settled',
+          items: [{ productId: sku.id, sku: sku.sku, productName: sku.name, unit: sku.unit, quantity: 111, unitPrice: 2_000_000, discount: 0, vatAmount: 22_200_000, lineTotal: 244_200_000 }],
+        },
+      }),
+    /مقدار برگشت.*از مقدار فاکتور اصلی بیشتر است/
+  );
+
   // 5) Internal Cash -> Bank Transfer (100M) — must NOT inflate Cash Flow Statement!
   const trfBase: Voucher = {
     id: 'vch_e2e_trf',
