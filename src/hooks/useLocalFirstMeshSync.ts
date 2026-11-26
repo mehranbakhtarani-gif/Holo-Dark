@@ -488,24 +488,29 @@ export function useLocalFirstMeshSync() {
             }
           }
 
-          // 3) Advance vector clock deterministically
-          const nextClock: Record<string, number> = { ...vectorClockRef.current };
-          for (const [k, v] of Object.entries(remoteClock || {})) {
-            const num = Number(v) || 0;
-            if (num > (nextClock[k] || 0)) {
-              nextClock[k] = num;
-            }
-          }
-          vectorClockRef.current = nextClock;
-          setVectorClock(nextClock);
-          saveVectorClock(nextClock);
-
           if (anyChanged) {
             // Anti-loop guard: suppress local mutation echo during remote import
             isRemoteUpdateRef.current = true;
             try {
               const ok = latestImportRef.current(currentMergedJson);
-              if (ok) {
+              if (!ok) {
+                await recordSyncEvent({
+                  eventId: `mevt_import_failed_${Date.now()}_${Math.random().toString(36).slice(2, 7)}`,
+                  timestamp: new Date().toISOString(),
+                  peerId: fromPeerId,
+                  peerLabel,
+                  eventType: 'state_pull',
+                  status: 'failed',
+                  direction: 'inbound',
+                  localVectorClock: { ...vectorClockRef.current },
+                  remoteVectorClock: { ...(remoteClock || {}) },
+                  summary: `اعمال وضعیت دریافتی از «${peerLabel}» ناموفق بود؛ ACK ارسال نشد تا عملیات در صف فرستنده باقی بماند.`,
+                  errorDetail: 'importBackupJson returned false',
+                });
+                await refreshOutboxAndLogs();
+                return [];
+              }
+              {
                 const mergedSnapshot = safeParseJsonObject(currentMergedJson);
                 if (mergedSnapshot && Array.isArray(mergedSnapshot.trackedWarehouseTransfers)) {
                   const safeTransfers = mergedSnapshot.trackedWarehouseTransfers.filter((item): item is TrackedWarehouseTransfer => {
@@ -562,6 +567,19 @@ export function useLocalFirstMeshSync() {
               }, 1600);
             }
           }
+
+          // 3) Advance the vector clock only after the received state has been applied
+          // successfully (or no data change was required).
+          const nextClock: Record<string, number> = { ...vectorClockRef.current };
+          for (const [k, v] of Object.entries(remoteClock || {})) {
+            const num = Number(v) || 0;
+            if (num > (nextClock[k] || 0)) {
+              nextClock[k] = num;
+            }
+          }
+          vectorClockRef.current = nextClock;
+          setVectorClock(nextClock);
+          saveVectorClock(nextClock);
 
           await recordSyncEvent({
             eventId: `mevt_pull_${Date.now()}_${Math.random().toString(36).slice(2, 7)}`,
