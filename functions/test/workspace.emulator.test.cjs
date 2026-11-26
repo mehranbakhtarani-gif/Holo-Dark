@@ -766,10 +766,10 @@ test('warehouse transfer creation splits source FIFO layers and persists the in-
     .reduce((sum, layer) => sum + layer.remainingQty, 0), 4);
   assert.equal(receivedProduct.get('costLayers').filter((layer) => layer.warehouse === 'در راه → انبار مقصد').length, 0);
   assert.equal(receivedProduct.get('costLayers').find((layer) => layer.layerId === 'other-warehouse-layer').warehouse, 'انبار دیگر');
-  assert.equal(receivedExtension.get('trackedWarehouseTransfers.0.status'), 'received');
-  assert.equal(receivedExtension.get('trackedWarehouseTransfers.0.receivedDate'), '1405/08/02');
-  assert.equal(receivedExtension.get('trackedWarehouseTransfers.0.eventSequence'), result.transfer.eventSequence);
-  assert.equal(receivedExtension.get('trackedWarehouseTransfers.0.receivedEventSequence'), received.receivedEventSequence);
+  assert.equal(receivedExtension.get('trackedWarehouseTransfers')[0].status, 'received');
+  assert.equal(receivedExtension.get('trackedWarehouseTransfers')[0].receivedDate, '1405/08/02');
+  assert.equal(receivedExtension.get('trackedWarehouseTransfers')[0].eventSequence, result.transfer.eventSequence);
+  assert.equal(receivedExtension.get('trackedWarehouseTransfers')[0].receivedEventSequence, received.receivedEventSequence);
   assert.equal(receivedExtension.get('_version'), 3);
   const inventoryCounter = await firestore.collection('counters').doc(owner.uid).get();
   assert.equal(inventoryCounter.get('lastInventorySequence'), received.receivedEventSequence);
