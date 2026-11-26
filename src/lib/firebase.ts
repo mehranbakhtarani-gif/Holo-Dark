@@ -210,6 +210,7 @@ export async function resolveWorkspaceContext(): Promise<WorkspaceContextResult>
 export interface WorkspaceCoreRecord<T = Record<string, unknown>> {
   id: string;
   payload: T;
+  version: number;
 }
 
 /** Reads a complete, frozen Workspace snapshot. Partial pages are never returned. */
@@ -235,4 +236,30 @@ export async function listWorkspaceCoreRecords<T = Record<string, unknown>>(
     cursor = data.nextCursor;
   }
   throw new Error('Workspace collection exceeds the safe pagination limit; no partial result was returned.');
+}
+
+export interface WorkspaceCoreMutationInput<T = Record<string, unknown>> {
+  collection: 'accounts' | 'products';
+  documentId: string;
+  operation: 'create' | 'update' | 'delete';
+  operationId: string;
+  expectedVersion: number;
+  data?: T;
+}
+export interface WorkspaceCoreMutationResult {
+  status: 'committed' | 'replayed';
+  operationId: string;
+  version: number;
+}
+
+/** Calls the versioned Workspace-native gateway; never falls back to legacy root writes. */
+export async function mutateWorkspaceCoreRecord<T = Record<string, unknown>>(
+  input: WorkspaceCoreMutationInput<T>
+): Promise<WorkspaceCoreMutationResult> {
+  const callable = httpsCallable<WorkspaceCoreMutationInput<T>, WorkspaceCoreMutationResult>(
+    functions,
+    'mutateWorkspaceCoreRecord'
+  );
+  const result = await callable(input);
+  return result.data;
 }
