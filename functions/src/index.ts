@@ -2,7 +2,7 @@ import { Buffer } from 'node:buffer';
 import { createHash, randomBytes } from 'node:crypto';
 import { initializeApp } from 'firebase-admin/app';
 import { getAuth } from 'firebase-admin/auth';
-import { FieldPath, FieldValue, Firestore } from '@google-cloud/firestore';
+import { FieldPath, FieldValue, Firestore, QueryDocumentSnapshot } from '@google-cloud/firestore';
 import { HttpsError, onCall } from 'firebase-functions/v2/https';
 
 const app = initializeApp();
@@ -38,6 +38,105 @@ function requireVerifiedAuth(auth: CallableAuth | undefined): asserts auth is Ca
     throw new HttpsError('permission-denied', 'حساب کاربری باید ایمیل تأییدشده داشته باشد.');
   }
 }
+
+/**
+ * Backfills return counters on legacy sale/purchase invoices.
+ * Client rules intentionally block return writes while either counter field is absent,
+ * so the set of linked active returns remains stable during this owner-scoped migration.
+ */
+export const migrateInvoiceReturnCounters = onCall(
+  { region: REGION, timeoutSeconds: 120 },
+  async (request) => {
+    const auth = request.auth as CallableAuth | undefined;
+    requireVerifiedAuth(auth);
+    const uid = auth.uid;
+    const markerRef = db.collection('invoiceReturnCounterMigrations').doc(uid);
+    const markerSnap = await markerRef.get();
+    if (markerSnap.exists && markerSnap.get('status') === 'completed') {
+      return {
+        status: 'already-completed',
+        migratedCount: Number(markerSnap.get('migratedCount')) || 0,
+      };
+    }
+
+    const invoiceQuery = db.collection('invoices')
+      .where('ownerId', '==', uid)
+      .orderBy(FieldPath.documentId())
+      .limit(400);
+    const activeReturnCounts = new Map<string, number>();
+    const legacySourceIds: string[] = [];
+    let cursor: QueryDocumentSnapshot | undefined;
+    let scannedInvoiceCount = 0;
+
+    while (true) {
+      const page = await (cursor ? invoiceQuery.startAfter(cursor) : invoiceQuery).get();
+      if (page.empty) break;
+      scannedInvoiceCount += page.size;
+      for (const invoiceDoc of page.docs) {
+        const data = invoiceDoc.data();
+        if (
+          (data.invoiceType === 'sale_return' || data.invoiceType === 'purchase_return')
+          && data.status !== 'cancelled'
+          && typeof data.sourceInvoiceId === 'string'
+          && data.sourceInvoiceId.length > 0
+        ) {
+          activeReturnCounts.set(
+            data.sourceInvoiceId,
+            (activeReturnCounts.get(data.sourceInvoiceId) || 0) + 1,
+          );
+        }
+        if (
+          (data.invoiceType === 'sale' || data.invoiceType === 'purchase')
+          && (!Number.isInteger(data.returnRevision) || !Number.isInteger(data.activeReturnCount))
+        ) {
+          legacySourceIds.push(invoiceDoc.id);
+        }
+      }
+      cursor = page.docs[page.docs.length - 1];
+      if (page.size < 400) break;
+    }
+
+    let migratedCount = 0;
+    for (let offset = 0; offset < legacySourceIds.length; offset += 10) {
+      const results = await Promise.all(legacySourceIds.slice(offset, offset + 10).map(async (sourceId) => {
+        const sourceRef = db.collection('invoices').doc(sourceId);
+        return db.runTransaction(async (tx) => {
+          const sourceSnap = await tx.get(sourceRef);
+          if (!sourceSnap.exists || sourceSnap.get('ownerId') !== uid) return 0;
+          const sourceType = sourceSnap.get('invoiceType');
+          if (sourceType !== 'sale' && sourceType !== 'purchase') return 0;
+          if (
+            Number.isInteger(sourceSnap.get('returnRevision'))
+            && Number.isInteger(sourceSnap.get('activeReturnCount'))
+          ) return 0;
+
+          const currentRevision = sourceSnap.get('returnRevision');
+          const currentVersion = Number(sourceSnap.get('_version'));
+          tx.update(sourceRef, {
+            returnRevision: Number.isInteger(currentRevision) ? currentRevision : 0,
+            activeReturnCount: activeReturnCounts.get(sourceId) || 0,
+            _version: (Number.isFinite(currentVersion) && currentVersion >= 1 ? currentVersion : 1) + 1,
+            updatedByDevice: 'server-return-counter-migration',
+            updatedAt: FieldValue.serverTimestamp(),
+          });
+          return 1;
+        });
+      }));
+      migratedCount += results.reduce((total, value) => total + value, 0);
+    }
+
+    await markerRef.set({
+      ownerId: uid,
+      status: 'completed',
+      migratedCount,
+      scannedInvoiceCount,
+      completedAt: FieldValue.serverTimestamp(),
+    }, { merge: true });
+
+    return { status: 'completed', migratedCount, scannedInvoiceCount };
+  },
+);
+
 
 function normalizeEmail(value: unknown): string {
   if (typeof value !== 'string') throw new HttpsError('invalid-argument', 'ایمیل معتبر نیست.');
