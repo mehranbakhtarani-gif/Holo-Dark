@@ -2,7 +2,9 @@
   "name": "holo-dark-functions",
   "private": true,
   "main": "lib/index.js",
-  "engines": { "node": "22" },
+  "engines": {
+    "node": "22"
+  },
   "scripts": {
     "build": "tsc",
     "build:watch": "tsc --watch",
@@ -12,7 +14,8 @@
   },
   "dependencies": {
     "firebase-admin": "^13.6.0",
-    "firebase-functions": "^6.4.0"
+    "firebase-functions": "^6.4.0",
+    "@google-cloud/firestore": "^7.11.0"
   },
   "devDependencies": {
     "typescript": "^5.8.3"
