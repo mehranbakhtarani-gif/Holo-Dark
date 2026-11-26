@@ -2010,6 +2010,49 @@ export function planAtomicInvoiceCommit(input: AtomicInvoicePlanInput): AtomicIn
     throw new Error('برای این فاکتور قبلاً سند حسابداری صادر شده است.');
   }
 
+  // 1. Validate each invoice line and reconcile line-level totals to the header.
+  // Values are stored in IRR even when the invoice also carries foreign-currency display totals.
+  const lineTotals = payload.items.reduce(
+    (totals, item) => {
+      const qty = Number(item.quantity);
+      const unitPrice = Number(item.unitPrice);
+      const discount = Number(item.discount) || 0;
+      const vat = Number(item.vatAmount) || 0;
+      const lineTotal = Number(item.lineTotal);
+      if (
+        !Number.isFinite(qty) || qty <= 0 ||
+        !Number.isFinite(unitPrice) || unitPrice < 0 ||
+        !Number.isFinite(discount) || discount < 0 ||
+        !Number.isFinite(vat) || vat < 0 ||
+        !Number.isFinite(lineTotal) || lineTotal < 0
+      ) {
+        throw new Error(\`مقادیر مالی یا تعداد ردیف «\${item.productName}» نامعتبر است.\`);
+      }
+      const gross = Math.round(qty * unitPrice);
+      if (discount > gross + 1 || Math.abs(lineTotal - (Math.max(0, gross - discount) + vat)) > 1) {
+        throw new Error(\`محاسبات مبلغ، تخفیف و مالیات ردیف «\${item.productName}» با هم سازگار نیست.\`);
+      }
+      totals.subtotal += gross;
+      totals.discount += discount;
+      totals.vat += vat;
+      totals.grandTotal += lineTotal;
+      return totals;
+    },
+    { subtotal: 0, discount: 0, vat: 0, grandTotal: 0 }
+  );
+  const headerAmounts = [payload.subtotal, payload.discount, payload.vatAmount, payload.grandTotal];
+  if (headerAmounts.some((amount) => !Number.isFinite(Number(amount)) || Number(amount) < 0)) {
+    throw new Error('مبالغ سربرگ فاکتور باید عددی، محدود و غیرمنفی باشند.');
+  }
+  if (
+    Math.abs(lineTotals.subtotal - Number(payload.subtotal)) > 1 ||
+    Math.abs(lineTotals.discount - Number(payload.discount)) > 1 ||
+    Math.abs(lineTotals.vat - Number(payload.vatAmount)) > 1 ||
+    Math.abs(lineTotals.grandTotal - Number(payload.grandTotal)) > 1
+  ) {
+    throw new Error('جمع ردیف‌های فاکتور با جمع، تخفیف، مالیات یا مبلغ نهایی سربرگ برابر نیست؛ ثبت متوقف شد.');
+  }
+
   // 1. Validate arithmetic & settlement totals strictly before any mutation
   if (payload.invoiceType !== 'proforma' && payload.invoiceType !== 'waste') {
     const expectedGrand = Math.max(
