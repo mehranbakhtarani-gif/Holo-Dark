@@ -33,8 +33,13 @@ import {
 import { fuzzyFilterAndRank } from '../lib/fuzzySearch';
 import { mulQtyByIrr } from '../lib/moneyMath';
 import {
+  createTrackedWarehouseTransferAtomic,
+  receiveTrackedWarehouseTransferAtomic,
+} from '../lib/firebase';
+import {
   executeTrackedWarehouseTransfer,
   receiveTrackedWarehouseTransfer,
+  TrackedWarehouseTransfer,
 } from '../lib/multiWarehouseEngine';
 import { useDebouncedValue } from '../hooks/useDebouncedValue';
 import {
@@ -93,6 +98,7 @@ export const InventoryView: React.FC<{ initialIntent?: string; clearIntent?: () 
   const {
     products,
     invoices,
+    user,
     importDossiers,
     subcontractJobs,
     vouchers,
@@ -376,32 +382,52 @@ export const InventoryView: React.FC<{ initialIntent?: string; clearIntent?: () 
       return;
     }
     try {
-      const result = executeTrackedWarehouseTransfer({
+      const date = getTodayShamsi();
+      const transferNumber = `TR-${Date.now()}`;
+      const planned = executeTrackedWarehouseTransfer({
         product: selectedProduct,
         fromWarehouse: selectedProduct.warehouse,
         toWarehouse: destination,
         qty: quantity,
-        date: getTodayShamsi(),
-        transferNumber: `TR-${Date.now()}`,
+        date,
+        transferNumber,
         mode: 'in_transit',
         defaultCostingMethod: profile.defaultCostingMethod || 'moving_average',
       });
-      const saved = await updateProduct(selectedProduct.id, {
-        stock: result.updatedProduct.stock,
-        warehouse: result.updatedProduct.warehouse,
-        costLayers: result.updatedProduct.costLayers,
-        inventoryValueIrr: result.updatedProduct.inventoryValueIrr,
-      });
-      if (!saved) return;
+      let transferRecord: TrackedWarehouseTransfer;
+      if (user && typeof navigator !== 'undefined' && navigator.onLine) {
+        const committed = await createTrackedWarehouseTransferAtomic({
+          productId: selectedProduct.id,
+          transferId: planned.transferRecord.id,
+          transferNumber,
+          fromWarehouse: selectedProduct.warehouse,
+          toWarehouse: destination,
+          qty: quantity,
+          date,
+        });
+        transferRecord = committed.transfer as unknown as TrackedWarehouseTransfer;
+      } else {
+        const saved = await updateProduct(selectedProduct.id, {
+          stock: planned.updatedProduct.stock,
+          warehouse: planned.updatedProduct.warehouse,
+          costLayers: planned.updatedProduct.costLayers,
+          inventoryValueIrr: planned.updatedProduct.inventoryValueIrr,
+        });
+        if (!saved) return;
+        transferRecord = {
+          ...planned.transferRecord,
+          eventSequenceSource: user ? 'sync' : undefined,
+        };
+      }
       updateExtensions((prev) => ({
         ...prev,
         trackedWarehouseTransfers: [
-          result.transferRecord,
-          ...prev.trackedWarehouseTransfers.filter((item) => item.id !== result.transferRecord.id),
+          transferRecord,
+          ...prev.trackedWarehouseTransfers.filter((item) => item.id !== transferRecord.id),
         ].slice(0, 100),
       }));
       setTransferQty('');
-      showToast(`حواله ${result.transferRecord.transferNumber} ثبت شد؛ ${quantity} ${selectedProduct.unit} در وضعیت «در راه» قرار گرفت.`);
+      showToast(`حواله ${transferRecord.transferNumber} ثبت شد؛ ${quantity} ${selectedProduct.unit} در وضعیت «در راه» قرار گرفت.`);
     } catch (error) {
       showToast(error instanceof Error ? error.message : 'ثبت انتقال انجام نشد.', 'error');
     }
@@ -417,22 +443,45 @@ export const InventoryView: React.FC<{ initialIntent?: string; clearIntent?: () 
       return;
     }
     try {
-      const result = receiveTrackedWarehouseTransfer({
-        product: selectedProduct,
-        transfer,
-        receivedDate: getTodayShamsi(),
-      });
-      const saved = await updateProduct(selectedProduct.id, {
-        stock: result.updatedProduct.stock,
-        warehouse: result.updatedProduct.warehouse,
-        costLayers: result.updatedProduct.costLayers,
-        inventoryValueIrr: result.updatedProduct.inventoryValueIrr,
-      });
-      if (!saved) return;
+      const receivedDate = getTodayShamsi();
+      let updatedTransfer: TrackedWarehouseTransfer;
+      if (user && typeof navigator !== 'undefined' && navigator.onLine) {
+        const committed = await receiveTrackedWarehouseTransferAtomic({
+          productId: selectedProduct.id,
+          transferId,
+          receivedDate,
+        });
+        updatedTransfer = {
+          ...transfer,
+          status: 'received',
+          receivedDate,
+          ...(committed.receivedEventSequence ? {
+            receivedEventSequence: committed.receivedEventSequence,
+            receivedEventSequenceSource: 'online' as const,
+          } : {}),
+        };
+      } else {
+        const result = receiveTrackedWarehouseTransfer({
+          product: selectedProduct,
+          transfer,
+          receivedDate,
+        });
+        const saved = await updateProduct(selectedProduct.id, {
+          stock: result.updatedProduct.stock,
+          warehouse: result.updatedProduct.warehouse,
+          costLayers: result.updatedProduct.costLayers,
+          inventoryValueIrr: result.updatedProduct.inventoryValueIrr,
+        });
+        if (!saved) return;
+        updatedTransfer = {
+          ...result.updatedTransfer,
+          receivedEventSequenceSource: user ? 'sync' : undefined,
+        };
+      }
       updateExtensions((prev) => ({
         ...prev,
         trackedWarehouseTransfers: prev.trackedWarehouseTransfers.map((item) =>
-          item.id === transferId ? result.updatedTransfer : item
+          item.id === transferId ? updatedTransfer : item
         ),
       }));
       showToast(`دریافت حواله ${transfer.transferNumber} در ${transfer.toWarehouse} ثبت شد.`);
