@@ -538,7 +538,7 @@ function validateCoreWorkspacePayload(collectionName: string, value: unknown, wo
     throw new HttpsError('invalid-argument', 'ساختار رکورد با قرارداد داده مجموعه سازگار نیست.');
   }
   if (collectionName === 'accounts') {
-    if (typeof data.code !== 'string' || !/^\\d+$/.test(data.code)
+    if (typeof data.code !== 'string' || !/^\d+$/.test(data.code)
         || typeof data.title !== 'string' || !['group', 'kol', 'moein', 'tafsili'].includes(String(data.level))
         || !['asset', 'liability', 'equity', 'revenue', 'cogs', 'expense', 'memo'].includes(String(data.category))
         || !['debit', 'credit', 'both'].includes(String(data.nature)) || typeof data.isSystem !== 'boolean'
