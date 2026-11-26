@@ -345,6 +345,7 @@ interface AccountingContextValue {
   // Backup, Restore & Comprehensive Data Reset
   exportBackupJson: () => string;
   importBackupJson: (jsonText: string) => boolean;
+  importBackupJsonDurably: (jsonText: string) => Promise<boolean>;
   resetWorkspaceTables: (options: {
     mode: 'blank' | 'demo';
     keepChartOfAccounts?: boolean;
@@ -409,6 +410,7 @@ export const AccountingProvider: React.FC<{ children: React.ReactNode }> = ({ ch
   const [rbacOperators, setRbacOperators] = useState<RbacOperator[]>(initialSeed.rbacOperators);
   const [activeOperatorId, setActiveOperatorId] = useState<string>(initialSeed.rbacOperators[0].id);
   const [auditLogs, setAuditLogs] = useState<AuditActivityLog[]>(initialSeed.auditLogs);
+  const pendingDurableImportRef = useRef<((success: boolean) => void) | null>(null);
 
   const activeOperator = useMemo(
     () =>
@@ -6091,6 +6093,26 @@ export const AccountingProvider: React.FC<{ children: React.ReactNode }> = ({ ch
     [showToast]
   );
 
+  /**
+   * Imports a remote workspace and resolves only after the primary operational
+   * IndexedDB transaction has committed. A failed or unavailable commit rejects
+   * the sync acceptance so the sender keeps its outbox operation pending.
+   */
+  const importBackupJsonDurably = useCallback(
+    (jsonText: string): Promise<boolean> => {
+      if (pendingDurableImportRef.current) return Promise.resolve(false);
+      return new Promise<boolean>((resolve) => {
+        pendingDurableImportRef.current = resolve;
+        const imported = importBackupJson(jsonText);
+        if (!imported) {
+          pendingDurableImportRef.current = null;
+          resolve(false);
+        }
+      });
+    },
+    [importBackupJson]
+  );
+
   const resetWorkspaceTables = useCallback(
     async (options: {
       mode: 'blank' | 'demo';
@@ -6275,38 +6297,56 @@ export const AccountingProvider: React.FC<{ children: React.ReactNode }> = ({ ch
   // Primary Operational IndexedDB Persistence + Fast offline-first mirror after any data change
   const hasMountedBackupRef = useRef(false);
   useEffect(() => {
+    const pendingDurableImport = pendingDurableImportRef.current;
     if (!hasMountedBackupRef.current) {
       hasMountedBackupRef.current = true;
-      return;
+      if (!pendingDurableImport) return;
     }
 
-    const opDbTimer = window.setTimeout(async () => {
-      try {
-        await saveOperationalWorkspaceTx({
-          profile,
-          accounts,
-          parties,
-          products,
-          vouchers,
-          invoices,
-          cheques,
-          employees,
-          assets,
-          costCenters,
-          currencies,
-          exchangeRates,
-          importDossiers,
-          salesOrders,
-          subcontractJobs,
-          rbacOperators,
-          auditLogs,
-        });
-        const stats = await getOperationalDbStats();
-        setOperationalDbStats(stats);
-      } catch {
-        // Ignore transient IndexedDB quota/lock issues
-      }
-    }, 650);
+    const operationalWorkspaceData = {
+      profile,
+      accounts,
+      parties,
+      products,
+      vouchers,
+      invoices,
+      cheques,
+      employees,
+      assets,
+      costCenters,
+      currencies,
+      exchangeRates,
+      importDossiers,
+      salesOrders,
+      subcontractJobs,
+      rbacOperators,
+      auditLogs,
+    };
+
+    if (pendingDurableImport) {
+      pendingDurableImportRef.current = null;
+      void saveOperationalWorkspaceTx(operationalWorkspaceData)
+        .then(async (result) => {
+          if (result) {
+            const stats = await getOperationalDbStats();
+            setOperationalDbStats(stats);
+          }
+          pendingDurableImport(result !== null);
+        })
+        .catch(() => pendingDurableImport(false));
+    }
+
+    const opDbTimer = pendingDurableImport
+      ? null
+      : window.setTimeout(async () => {
+          try {
+            await saveOperationalWorkspaceTx(operationalWorkspaceData);
+            const stats = await getOperationalDbStats();
+            setOperationalDbStats(stats);
+          } catch {
+            // Ignore transient IndexedDB quota/lock issues
+          }
+        }, 650);
 
     const fastTimer = window.setTimeout(() => {
       try {
@@ -6344,7 +6384,7 @@ export const AccountingProvider: React.FC<{ children: React.ReactNode }> = ({ ch
       : undefined;
 
     return () => {
-      window.clearTimeout(opDbTimer);
+      if (opDbTimer !== null) window.clearTimeout(opDbTimer);
       window.clearTimeout(fastTimer);
       if (idbTimer !== undefined) window.clearTimeout(idbTimer);
     };
@@ -6537,6 +6577,7 @@ export const AccountingProvider: React.FC<{ children: React.ReactNode }> = ({ ch
         logActivity,
         exportBackupJson,
         importBackupJson,
+        importBackupJsonDurably,
         resetWorkspaceTables,
       }}
     >
