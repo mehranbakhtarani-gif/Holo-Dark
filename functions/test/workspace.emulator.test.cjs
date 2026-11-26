@@ -1,7 +1,7 @@
 const { test } = require('node:test');
 const assert = require('node:assert/strict');
 const { randomUUID } = require('node:crypto');
-const { initializeApp } = require('firebase-admin/app');
+const { deleteApp, initializeApp } = require('firebase-admin/app');
 const { getFirestore, Timestamp } = require('firebase-admin/firestore');
 
 const PROJECT_ID = process.env.FIREBASE_PROJECT_ID || 'elaborate-hash-368613';
@@ -12,6 +12,7 @@ const DATABASE_ID = 'ai-studio-remixapex-83053e73-77ed-4f64-8f70-f22da529446b';
 process.env.FIRESTORE_EMULATOR_HOST = FIRESTORE_EMULATOR;
 const adminApp = initializeApp({ projectId: PROJECT_ID }, 'workspace-migration-emulator-test');
 const firestore = getFirestore(adminApp, DATABASE_ID);
+test.after(async () => { await firestore.terminate(); await deleteApp(adminApp); });
 const API_KEY = 'fake-api-key';
 const base = `http://${FUNCTIONS_EMULATOR}/${PROJECT_ID}/us-central1`;
 
@@ -162,6 +163,7 @@ test('workspace provisioning, invitation, owner-only RBAC and revocation', async
   assert.equal(stagedOwnerAccount.exists, true);
   assert.equal(stagedOwnerAccount.get('payload').ownerId, owner.uid);
   assert.equal(stagedForeignAccount.exists, false);
+  assert.equal((await firestore.collection('accounts').doc(ownerAccountId).get()).exists, true);
 
   await call('revokeWorkspaceMember', owner.token, { uid: invitee.uid });
   const revoked = await call('listWorkspaceMembers', owner.token);
