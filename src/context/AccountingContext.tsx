@@ -1132,7 +1132,7 @@ export const AccountingProvider: React.FC<{ children: React.ReactNode }> = ({ ch
       if (user && workspaceContext) {
         const version = workspaceCoreVersionsRef.current.get(`accounts:${accountId}`);
         if (!version) throw new Error('نسخه معتبر حساب در فضای کاری موجود نیست؛ ابتدا داده‌ها را تازه‌سازی کنید.');
-        const payload = { ...existing, ...updatePayload, ownerId: workspaceContext.workspaceId, updatedAt: new Date() };
+        const payload = { ...existing, ...updatePayload, ownerId: workspaceContext.workspaceId, createdAt: new Date(), updatedAt: new Date() };
         delete (payload as Record<string, unknown>).id;
         await mutateWorkspaceCoreRecord({ collection: 'accounts', documentId: accountId, operation: 'update', operationId: generateSafeId('op'), expectedVersion: version, data: payload });
         workspaceCoreVersionsRef.current.set(`accounts:${accountId}`, version + 1);
@@ -1942,7 +1942,7 @@ export const AccountingProvider: React.FC<{ children: React.ReactNode }> = ({ ch
       if (user && workspaceContext) {
         const version = workspaceCoreVersionsRef.current.get(`products:${productId}`);
         if (!version) throw new Error('نسخه معتبر کالا در فضای کاری موجود نیست؛ ابتدا داده‌ها را تازه‌سازی کنید.');
-        const payload: Record<string, unknown> = { ...product, ownerId: workspaceContext.workspaceId, stock: Number(newStock), updatedAt: new Date() };
+        const payload: Record<string, unknown> = { ...product, ownerId: workspaceContext.workspaceId, createdAt: new Date(), stock: Number(newStock), updatedAt: new Date() };
         delete payload.id;
         await mutateWorkspaceCoreRecord({ collection: 'products', documentId: productId, operation: 'update', operationId: generateSafeId('op'), expectedVersion: version, data: payload });
         workspaceCoreVersionsRef.current.set(`products:${productId}`, version + 1);
@@ -2291,7 +2291,7 @@ export const AccountingProvider: React.FC<{ children: React.ReactNode }> = ({ ch
       if (user && workspaceContext) {
         const version = workspaceCoreVersionsRef.current.get(`products:${productId}`);
         if (!version) throw new Error('نسخه معتبر کالا در فضای کاری موجود نیست؛ ابتدا داده‌ها را تازه‌سازی کنید.');
-        const payload: Record<string, unknown> = { ...prod, ownerId: workspaceContext.workspaceId, warehouse: cleanWh, updatedAt: new Date() };
+        const payload: Record<string, unknown> = { ...prod, ownerId: workspaceContext.workspaceId, createdAt: new Date(), warehouse: cleanWh, updatedAt: new Date() };
         delete payload.id;
         await mutateWorkspaceCoreRecord({ collection: 'products', documentId: productId, operation: 'update', operationId: generateSafeId('op'), expectedVersion: version, data: payload });
         workspaceCoreVersionsRef.current.set(`products:${productId}`, version + 1);
