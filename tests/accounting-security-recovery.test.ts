@@ -104,6 +104,10 @@ test('Supabase durable idempotency remembers older operations within its bounded
   assert.equal(hasProcessedSyncOperation(withHistory, 'op_current'), true);
   assert.equal(hasProcessedSyncOperation(withHistory, 'op_unknown'), false);
 
+  const legacyOnly = appendProcessedSyncOperation({ lastOperationId: 'op_legacy' }, 'op_next');
+  assert.equal(hasProcessedSyncOperation(legacyOnly, 'op_legacy'), true);
+  assert.equal(hasProcessedSyncOperation(legacyOnly, 'op_next'), true);
+
   const bounded = appendProcessedSyncOperation(
     { recentOperationIds: Array.from({ length: 300 }, (_, index) => `op_${index}`) },
     'op_latest'
