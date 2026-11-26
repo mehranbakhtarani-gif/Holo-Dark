@@ -2846,6 +2846,7 @@ export const AccountingProvider: React.FC<{ children: React.ReactNode }> = ({ ch
         invoiceNumber: inv.invoiceNumber.slice(0, 48),
         ...(inv.taxSerial ? { taxSerial: inv.taxSerial.slice(0, 64) } : {}),
         invoiceType: inv.invoiceType,
+        ...(inv.sourceInvoiceId ? { sourceInvoiceId: inv.sourceInvoiceId.slice(0, 128) } : {}),
         date: inv.date.slice(0, 20),
         partyId: inv.partyId.slice(0, 128),
         partyName: inv.partyName.slice(0, 160),
