@@ -395,7 +395,6 @@ test('workspace voucher create, numbering, finalize and replay are atomic', asyn
       { accountCode: '101', debit: 1250, credit: 0, description: 'Debit' },
       { accountCode: '401', debit: 0, credit: 1250, description: 'Credit' },
     ],
-    createdAt: now, updatedAt: now,
   };
   const created = await call('mutateWorkspaceVoucher', owner.token, {
     operation: 'create', documentId: voucherId, operationId, data: draft,
