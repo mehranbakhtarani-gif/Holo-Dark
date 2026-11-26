@@ -396,6 +396,11 @@ export const writeWorkspaceRecord = onCall({ region: REGION, timeoutSeconds: 60 
   const documentId = request.data?.documentId;
   const operation = request.data?.operation;
   const operationId = request.data?.operationId;
+  // Invoice writes carry inventory, voucher, return-counter and concurrency invariants.
+  // The generic workspace bridge is not an accounting transaction and must never bypass them.
+  if (collectionName === 'invoices') {
+    throw new HttpsError('failed-precondition', 'تغییر فاکتور فقط از مسیر تراکنش اتمیک حسابداری مجاز است.');
+  }
   const allowed = WORKSPACE_WRITE_COLLECTIONS[role] || [];
   if (typeof collectionName !== 'string' || !allowed.includes(collectionName)
       || typeof documentId !== 'string' || !/^[A-Za-z0-9_\-]{1,128}$/.test(documentId)
