@@ -409,15 +409,6 @@ export const AccountingProvider: React.FC<{ children: React.ReactNode }> = ({ ch
     [rbacOperators, activeOperatorId, initialSeed.rbacOperators]
   );
 
-  const requirePermission = useCallback(
-    (permission: keyof RbacPermissions, operation: string): boolean => {
-      if (activeOperator?.active && activeOperator.permissions?.[permission] === true) return true;
-      showToast(\`اپراتور فعال مجوز «\${operation}» را ندارد؛ عملیات انجام نشد.\`, 'error');
-      return false;
-    },
-    [activeOperator, showToast]
-  );
-
   const showToast = useCallback((msg: string, explicitTone?: AudioFeedbackTone) => {
     setToast(msg);
     const resolvedTone = explicitTone ?? inferToastTone(msg);
@@ -426,6 +417,15 @@ export const AccountingProvider: React.FC<{ children: React.ReactNode }> = ({ ch
       setToast((prev) => (prev === msg ? null : prev));
     }, 4500);
   }, []);
+
+  const requirePermission = useCallback(
+    (permission: keyof RbacPermissions, operation: string): boolean => {
+      if (activeOperator?.active && activeOperator.permissions?.[permission] === true) return true;
+      showToast(\`اپراتور فعال مجوز «\${operation}» را ندارد؛ عملیات انجام نشد.\`, 'error');
+      return false;
+    },
+    [activeOperator, showToast]
+  );
 
   const setAudioEnabled = useCallback((enabled: boolean) => {
     setAudioFeedbackEnabled(enabled);
