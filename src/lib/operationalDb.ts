@@ -417,33 +417,36 @@ export async function loadOperationalWorkspace(): Promise<OperationalWorkspaceDa
 }
 
 export async function enqueueSyncOutboxOperation(op: SyncOutboxOperation): Promise<void> {
-  if (!isIndexedDbAvailable()) return;
+  if (!isIndexedDbAvailable()) {
+    throw new Error('IndexedDB is unavailable; a durable sync operation cannot be recorded.');
+  }
+  const db = await openOperationalDb();
   try {
-    const db = await openOperationalDb();
     await new Promise<void>((resolve, reject) => {
       const tx = db.transaction('syncOutbox', 'readwrite');
       tx.objectStore('syncOutbox').put(op);
       tx.oncomplete = () => resolve();
-      tx.onerror = () => reject(tx.error);
+      tx.onerror = () => reject(tx.error ?? new Error('Failed to persist sync outbox operation'));
+      tx.onabort = () => reject(tx.error ?? new Error('Sync outbox transaction aborted'));
     });
+  } finally {
     db.close();
-  } catch {
-    // Ignore silently
   }
 }
 
 export async function listPendingSyncOutboxOperations(): Promise<SyncOutboxOperation[]> {
-  if (!isIndexedDbAvailable()) return [];
+  if (!isIndexedDbAvailable()) {
+    throw new Error('IndexedDB is unavailable; pending sync operations cannot be inspected.');
+  }
+  const db = await openOperationalDb();
   try {
-    const db = await openOperationalDb();
     const tx = db.transaction('syncOutbox', 'readonly');
     const all = await readAllFromStore<SyncOutboxOperation>(tx, 'syncOutbox');
-    db.close();
     return all
       .filter((item) => item.status === 'pending')
       .sort((a, b) => a.createdAt.localeCompare(b.createdAt));
-  } catch {
-    return [];
+  } finally {
+    db.close();
   }
 }
 
@@ -474,6 +477,38 @@ export async function markSyncOutboxOperationStatus(
     db.close();
   } catch {
     // Ignore silently
+  }
+}
+
+/** Removes operations superseded by an accepted full-workspace snapshot for one sync scope. */
+export async function clearSyncOutboxOperationsForScope(
+  target: SyncOutboxOperation['target'],
+  workspaceId: string,
+  deviceId: string,
+): Promise<void> {
+  if (!isIndexedDbAvailable()) {
+    throw new Error('IndexedDB is unavailable; sync outbox cleanup cannot be verified.');
+  }
+  const db = await openOperationalDb();
+  try {
+    await new Promise<void>((resolve, reject) => {
+      const tx = db.transaction('syncOutbox', 'readwrite');
+      const store = tx.objectStore('syncOutbox');
+      const req = store.getAll();
+      req.onsuccess = () => {
+        for (const item of (req.result as SyncOutboxOperation[])) {
+          if (item.target === target && item.workspaceId === workspaceId && item.deviceId === deviceId) {
+            store.delete(item.operationId);
+          }
+        }
+      };
+      req.onerror = () => reject(req.error ?? new Error('Failed to inspect sync outbox'));
+      tx.oncomplete = () => resolve();
+      tx.onerror = () => reject(tx.error ?? new Error('Sync outbox cleanup failed'));
+      tx.onabort = () => reject(tx.error ?? new Error('Sync outbox cleanup aborted'));
+    });
+  } finally {
+    db.close();
   }
 }
 
