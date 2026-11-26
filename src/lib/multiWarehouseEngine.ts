@@ -266,7 +266,7 @@ export function computeMultiWarehouseMatrix(params: {
         productName: p.name,
         unit: p.unit,
         costingMethod: state.costingMethod,
-        physicalQty: roundQtyFixed(bucket.qty, 2),
+        physicalQty: roundQtyFixed(bucket.qty, 4),
         reservedQty: roundQtyFixed(reservedQty, 2),
         availableToSellQty: roundQtyFixed(availableToSellQty, 2),
         inTransitInQty: roundQtyFixed(inTransitInQty, 2),
