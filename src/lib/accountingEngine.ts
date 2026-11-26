@@ -2026,7 +2026,7 @@ export function planAtomicInvoiceCommit(input: AtomicInvoicePlanInput): AtomicIn
         !Number.isFinite(vat) || vat < 0 ||
         !Number.isFinite(lineTotal) || lineTotal < 0
       ) {
-        throw new Error(\`مقادیر مالی یا تعداد ردیف «\${item.productName}» نامعتبر است.\`);
+        throw new Error(`مقادیر مالی یا تعداد ردیف «${item.productName}» نامعتبر است.`);
       }
       const gross = Math.round(lineTotal - vat + discount);
       if (gross < 0 || discount > gross + 1) {
