@@ -478,12 +478,13 @@ export function receiveTrackedWarehouseTransfer(params: {
   product: Product;
   transfer: TrackedWarehouseTransfer;
   receivedDate: string;
+  eventSequence?: number;
 }): {
   updatedProduct: Product;
   updatedTransfer: TrackedWarehouseTransfer;
   pnlImpactIrr: 0;
 } {
-  const { product, transfer, receivedDate } = params;
+  const { product, transfer, receivedDate, eventSequence } = params;
   if (!receivedDate.trim()) throw new Error('تاریخ دریافت انتقال الزامی است.');
   if (product.id !== transfer.productId) throw new Error('انتقال متعلق به این کالا نیست.');
   if (transfer.status !== 'in_transit') {
@@ -547,6 +548,9 @@ export function receiveTrackedWarehouseTransfer(params: {
     ...transfer,
     status: 'received',
     receivedDate,
+    ...(Number.isSafeInteger(eventSequence) && Number(eventSequence) > 0
+      ? { receivedEventSequence: Number(eventSequence) }
+      : {}),
   };
 
   return { updatedProduct, updatedTransfer, pnlImpactIrr: 0 };
@@ -646,34 +650,34 @@ export function computeWarehouseProductKardex(params: {
     }
   }
 
-  events.sort((a, b) => {
-    const dateOrder = a.date.localeCompare(b.date);
-    if (dateOrder !== 0) return dateOrder;
-    if (Number.isSafeInteger(a.eventSequence) && Number.isSafeInteger(b.eventSequence)) {
-      return Number(a.eventSequence) - Number(b.eventSequence);
-    }
-    // Legacy events without a server sequence retain source order; the returned flag exposes ambiguity.
-    return 0;
-  });
-
-  const ambiguousDates = new Set<string>();
   const eventsByDate = new Map<string, RawEvent[]>();
   for (const event of events) {
     const dayEvents = eventsByDate.get(event.date) ?? [];
     dayEvents.push(event);
     eventsByDate.set(event.date, dayEvents);
   }
-  for (const [date, dayEvents] of eventsByDate) {
-    if (dayEvents.length < 2) continue;
-    const sequences = dayEvents.map((event) => event.eventSequence);
-    if (sequences.some((sequence) => !Number.isSafeInteger(sequence))
-        || new Set(sequences).size !== sequences.length) {
-      ambiguousDates.add(date);
+
+  const ambiguousDates = new Set<string>();
+  const orderedEvents: RawEvent[] = [];
+  for (const date of Array.from(eventsByDate.keys()).sort((a, b) => a.localeCompare(b))) {
+    const dayEvents = eventsByDate.get(date)!;
+    if (dayEvents.length > 1) {
+      const sequences = dayEvents.map((event) => event.eventSequence);
+      const hasCompleteUniqueSequence =
+        sequences.every((sequence) => Number.isSafeInteger(sequence) && Number(sequence) > 0) &&
+        new Set(sequences).size === sequences.length;
+      if (hasCompleteUniqueSequence) {
+        dayEvents.sort((a, b) => Number(a.eventSequence) - Number(b.eventSequence));
+      } else {
+        // Do not fabricate chronology for legacy records; preserve source order and flag the day.
+        ambiguousDates.add(date);
+      }
     }
+    orderedEvents.push(...dayEvents);
   }
 
   let runningQty = 0;
-  return events.map((ev) => {
+  return orderedEvents.map((ev) => {
     runningQty = roundQtyFixed(runningQty + ev.inQty - ev.outQty, 4);
     return {
       ...ev,
