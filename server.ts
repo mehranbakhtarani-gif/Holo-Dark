@@ -5,7 +5,7 @@ import http from 'http';
 import express, { Request, Response } from 'express';
 import path from 'path';
 import { fileURLToPath } from 'url';
-import { hasSupabaseRevisionConflict, resolveVerifiedFirebaseIdentity } from './server/authPolicy';
+import { appendProcessedSyncOperation, hasProcessedSyncOperation, hasSupabaseRevisionConflict, resolveVerifiedFirebaseIdentity } from './server/authPolicy';
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
@@ -1992,28 +1992,28 @@ async function startServer() {
       const existing = existingRows?.[0];
       const serverRev = Number(existing?.revision) || 0;
 
-      // Durable idempotent replay check against persisted _syncMeta.lastOperationId
-      if (operationId && existing?.snapshot_json) {
+      // Persisted replay window: retries remain idempotent after later snapshots are accepted.
+      let existingSyncMeta: unknown;
+      if (existing?.snapshot_json) {
         const existingObj =
           typeof existing.snapshot_json === 'string'
             ? (JSON.parse(existing.snapshot_json) as Record<string, unknown>)
             : existing.snapshot_json;
-        const lastOp = (existingObj?._syncMeta as { lastOperationId?: string } | undefined)
-          ?.lastOperationId;
-        if (lastOp && lastOp === operationId) {
-          const backupState = await listAndPruneSupabaseBackups(cfg, verified.uid);
-          res.json({
-            status: 'idempotent_replay',
-            idempotentReplay: true,
-            operationId,
-            serverRevision: serverRev,
-            conflictPolicy,
-            syncedAt: existing.updated_at || new Date().toISOString(),
-            retainedBackups: backupState.backups,
-            prunedBackupsCount: 0,
-          });
-          return;
-        }
+        existingSyncMeta = existingObj?._syncMeta;
+      }
+      if (operationId && hasProcessedSyncOperation(existingSyncMeta, operationId)) {
+        const backupState = await listAndPruneSupabaseBackups(cfg, verified.uid);
+        res.json({
+          status: 'idempotent_replay',
+          idempotentReplay: true,
+          operationId,
+          serverRevision: serverRev,
+          conflictPolicy,
+          syncedAt: existing?.updated_at || new Date().toISOString(),
+          retainedBackups: backupState.backups,
+          prunedBackupsCount: 0,
+        });
+        return;
       }
 
       const hasRemoteConflict = Boolean(existing) && hasSupabaseRevisionConflict(serverRev, clientRevision);
@@ -2072,7 +2072,7 @@ async function startServer() {
         ? {
             ...parsedSnapshot,
             _syncMeta: {
-              lastOperationId: operationId,
+              ...appendProcessedSyncOperation(existingSyncMeta, operationId),
               revision: nextRevision,
               deviceId,
               syncedAt: nowIso,
