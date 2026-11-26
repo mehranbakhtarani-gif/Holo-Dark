@@ -1326,7 +1326,11 @@ export const listTrackedWarehouseTransferHistory = onCall({ region: REGION, time
 
   const cursor = request.data?.cursor;
   if (cursor !== undefined && cursor !== null
-      && (typeof cursor !== 'string' || !/^[A-Za-z0-9_-]{1,220}$/.test(cursor))) {
+      && (typeof cursor !== 'string'
+        || cursor.length > 300
+        || !cursor.startsWith(`${workspaceId}_`)
+        || !cursor.endsWith('_dispatch')
+        || !/^[A-Za-z0-9_-]+$/.test(cursor))) {
     throw new HttpsError('invalid-argument', 'نشانگر صفحه تاریخچه معتبر نیست.');
   }
 
