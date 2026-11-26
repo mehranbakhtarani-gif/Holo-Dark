@@ -2105,7 +2105,18 @@ export const AccountingProvider: React.FC<{ children: React.ReactNode }> = ({ ch
         ...(Array.isArray(next.costLayers) ? { costLayers: next.costLayers } : {}),
         ...(typeof next.inventoryValueIrr === 'number' && Number.isFinite(next.inventoryValueIrr) ? { inventoryValueIrr: Math.max(0, Math.round(next.inventoryValueIrr)) } : {}),
       };
-      if (user && workspaceContext && (workspaceContext.workspaceId !== user.uid || workspaceContext.coreWritesFrozen || workspaceContext.coreWriteMode === 'workspace_native')) {
+      const requiresWorkspaceGateway = Boolean(
+        user && workspaceContext && (
+          workspaceContext.workspaceId !== user.uid ||
+          workspaceContext.coreWritesFrozen ||
+          workspaceContext.coreWriteMode === 'workspace_native'
+        )
+      );
+      if (requiresWorkspaceGateway && typeof navigator !== 'undefined' && !navigator.onLine) {
+        // Keep workspace-native edits local while disconnected; the local-first mesh
+        // transports the resulting product + transfer snapshot when peers reconnect.
+        setProducts((prev) => prev.map((p) => (p.id === productId ? { ...p, ...patch } : p)));
+      } else if (requiresWorkspaceGateway) {
         const version = workspaceCoreVersionsRef.current.get(`products:${productId}`);
         if (!version) throw new Error('نسخه معتبر کالا در فضای کاری موجود نیست؛ ابتدا داده‌ها را تازه‌سازی کنید.');
         await mutateWorkspaceCoreRecord({ collection: 'products', documentId: productId, operation: 'update', operationId: generateSafeId('op'), expectedVersion: version, data: payload });
