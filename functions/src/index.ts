@@ -113,9 +113,18 @@ export const bootstrapWorkspace = onCall({ region: REGION }, async (request) => 
 
   const workspaceRef = db.collection('workspaces').doc(uid);
   const membershipRef = db.collection('workspaceMemberships').doc(`${uid}_${uid}`);
+  const activeMembershipsQuery = db.collection('workspaceMemberships')
+    .where('uid', '==', uid)
+    .where('active', '==', true);
   await db.runTransaction(async (tx) => {
-    const workspaceSnap = await tx.get(workspaceRef);
-    const membershipSnap = await tx.get(membershipRef);
+    const [workspaceSnap, membershipSnap, activeMemberships] = await Promise.all([
+      tx.get(workspaceRef),
+      tx.get(membershipRef),
+      tx.get(activeMembershipsQuery),
+    ]);
+    if (activeMemberships.docs.some((member) => member.get('workspaceId') !== uid)) {
+      throw new HttpsError('already-exists', 'این حساب عضو فضای کاری دیگری است و نمی‌تواند فضای کاری مستقل بسازد.');
+    }
     if (workspaceSnap.exists && workspaceSnap.get('ownerUid') !== uid) {
       throw new HttpsError('permission-denied', 'شناسه فضای کاری در اختیار این حساب نیست.');
     }
