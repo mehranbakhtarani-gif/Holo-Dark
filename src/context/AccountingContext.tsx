@@ -1485,6 +1485,10 @@ export const AccountingProvider: React.FC<{ children: React.ReactNode }> = ({ ch
           });
           }
         } catch (err) {
+          if (workspaceNativeVoucher) {
+            showToast(err instanceof Error ? err.message : 'ثبت اتمیک سند در Workspace ناموفق بود.', 'error');
+            throw err;
+          }
           handleFirestoreError(err, OperationType.CREATE, `vouchers/${id}`);
         }
       } else {
