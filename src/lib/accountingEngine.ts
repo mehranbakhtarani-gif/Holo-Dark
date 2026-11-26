@@ -2427,6 +2427,9 @@ export function planAtomicInvoiceCommit(input: AtomicInvoicePlanInput): AtomicIn
     id: invoiceId,
     ownerId,
     voucherId: voucher?.id,
+    ...(payload.invoiceType === 'sale' || payload.invoiceType === 'purchase'
+      ? { returnRevision: 0, activeReturnCount: 0 }
+      : {}),
     _version: 1,
     updatedByDevice: deviceId,
   };
