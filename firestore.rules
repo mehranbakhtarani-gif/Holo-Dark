@@ -691,6 +691,7 @@ service cloud.firestore {
           'volumeDiscountRules',
           'moadianLinks',
           'fiscalArchives',
+          'trackedWarehouseTransfers',
           '_version',
           'updatedByDevice',
           'createdAt',
@@ -712,6 +713,7 @@ service cloud.firestore {
         && isOptionalMapList(data, 'volumeDiscountRules', 50)
         && (!('moadianLinks' in data) || (data.moadianLinks is map && data.moadianLinks.size() <= 500))
         && isOptionalMapList(data, 'fiscalArchives', 25)
+        && isOptionalMapList(data, 'trackedWarehouseTransfers', 100)
         && isOptionalVersion(data)
         && data.createdAt is timestamp
         && data.updatedAt is timestamp;
@@ -1204,6 +1206,7 @@ service cloud.firestore {
             'volumeDiscountRules',
             'moadianLinks',
             'fiscalArchives',
+            'trackedWarehouseTransfers',
             '_version',
             'updatedByDevice',
             'updatedAt'
