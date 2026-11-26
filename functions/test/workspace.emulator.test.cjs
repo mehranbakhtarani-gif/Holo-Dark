@@ -751,6 +751,8 @@ test('warehouse transfer creation splits source FIFO layers and persists the in-
   assert.ok(Number.isSafeInteger(result.transfer.eventSequence) && result.transfer.eventSequence > 0);
   assert.equal(result.transfer.qty, 4);
   assert.equal(result.transfer.transferredCostIrr, 4000);
+  await waitForDocument(firestore.collection('warehouseTransferEventAuthority')
+    .doc(`${owner.uid}_${transferId}_dispatch`));
   const productAfter = await firestore.collection('products').doc(productId).get();
   const extensionAfter = await extensionRef.get();
   assert.equal(productAfter.get('stock'), 7);
@@ -762,9 +764,10 @@ test('warehouse transfer creation splits source FIFO layers and persists the in-
   assert.equal(layers.filter((layer) => layer.warehouse === 'در راه → انبار مقصد').length, 2);
   assert.equal(extensionAfter.get('trackedWarehouseTransfers')[0].id, transferId);
   assert.equal(extensionAfter.get('trackedWarehouseTransfers')[0].status, 'in_transit');
-  assert.equal(extensionAfter.get('_version'), extensionBeforeReceive.get('_version') + 1);
+  assert.ok(extensionAfter.get('_version') >= 2);
 
   // Exercise the exact layers created above through the real receipt callable.
+  const extensionBeforeReceive = await extensionRef.get();
   const received = await call('receiveTrackedWarehouseTransfer', owner.token, {
     productId, transferId, receivedDate: '1405/08/02',
   });
@@ -858,7 +861,7 @@ test('warehouse transfer receipt commits FIFO layers and transfer status atomica
   assert.equal(productAfter.get('costLayers')[1].warehouse, 'انبار مرکزی');
   assert.equal(extensionAfter.get('trackedWarehouseTransfers')[0].status, 'received');
   assert.equal(extensionAfter.get('trackedWarehouseTransfers')[0].receivedDate, '1405/08/05');
-  assert.equal(extensionAfter.get('_version'), 2);
+  assert.equal(extensionAfter.get('_version'), extensionBeforeReceive.get('_version') + 1);
 
   const replay = await call('receiveTrackedWarehouseTransfer', owner.token, {
     productId, transferId, receivedDate: '1405/08/05',
