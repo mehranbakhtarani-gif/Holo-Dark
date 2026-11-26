@@ -63,3 +63,10 @@ This callable does not implement dual-write or replace the application's legacy 
 `writeWorkspaceRecord` is an idempotent callable bridge for the initial core collections (`accounts`, `products`, `vouchers`, `invoices`). It checks live membership/role, validates a conservative subset of each core schema, and commits the root record plus its staging envelope and operation ledger in one transaction in the same named Firestore database.
 
 The callable is **not yet wired into AccountingContext**. Do not use it as a production cutover: invoice posting, inventory/voucher multi-document operations, cancellation, counters, and the remaining collections still require transaction-aware adapters. Only call it after staging verification; a verified snapshot can become stale if legacy writes continue.
+
+
+### Workspace context resolver
+- `getWorkspaceContext` returns the caller's workspace ID, authoritative active-membership role, and migration status.
+- The workspace claim is treated only as a locator; active membership and workspace lifecycle are re-read on every call.
+- `src/lib/firebase.ts` exports the regional Functions client and a typed `resolveWorkspaceContext()` client helper.
+- This is a context-resolution foundation only. It does not change AccountingContext ownership, root-collection listeners, CRUD routing, or multi-document accounting transactions.
