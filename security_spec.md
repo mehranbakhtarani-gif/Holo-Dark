@@ -195,3 +195,8 @@ The `mutateWorkspaceVoucher` callable is the only supported Workspace-native pat
 Finalization is a version-checked transaction. The server verifies the current record is a draft and independently recomputes the voucher integrity seal from the persisted voucher number, date, type, totals, and canonical lines before setting permanent status. Operation IDs are workspace-scoped and request-hashed for idempotent retries. Workspace-native draft creation and finalization are routed through this callable in AccountingContext.
 
 This is a deliberately partial migration: draft edits/deletes, reversals, voucher-backed inventory, invoice posting/cancellation, cheque/payment links, and all related multi-document flows remain blocked or unsupported in Workspace mode until their complete transaction boundaries are migrated. Emulator tests are authored but not run; no deployment, activation, live migration, or merge is authorized by this change.
+
+
+### Atomic voucher draft mutation controls
+
+Workspace-native voucher draft edits and deletes are performed only through `mutateWorkspaceVoucher`. The server validates the draft payload, active membership and finance-role allowlist, migration manifest and frozen read barrier, and enforces optimistic concurrency with the staged envelope version. Idempotency is scoped to the workspace and operation ID with a request hash. Draft edits preserve the allocated voucher number and creation timestamp; draft deletion writes a versioned tombstone. Permanent vouchers remain immutable and must be offset through a separate reversing voucher. No legacy-root write fallback is permitted.
