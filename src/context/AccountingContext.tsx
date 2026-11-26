@@ -1840,27 +1840,96 @@ export const AccountingProvider: React.FC<{ children: React.ReactNode }> = ({ ch
         return;
       }
 
-      await updateProduct(prod.id, {
-        stock: plan.productDelta.stock,
-        buyPrice: plan.productDelta.buyPrice,
-        costLayers: plan.productDelta.costLayers,
-        inventoryValueIrr: plan.productDelta.inventoryValueIrr,
-      });
-
-      if (plan.voucher) {
-        await createVoucher({
-          date: plan.voucher.date,
-          description: plan.voucher.description,
-          voucherType: 'general',
-          status: 'permanent',
-          lines: plan.voucher.lines,
-          referenceId: refId,
-        });
-      } else {
-        showToast('موجودی انبارگردانی با موفقیت تعدیل شد.');
+      if (!plan.voucher) {
+        showToast('برنامه تعدیل فاقد سند حسابداری است؛ عملیات انجام نشد.', 'error');
+        return;
       }
+
+      const voucherPayload = {
+        date: plan.voucher.date,
+        description: plan.voucher.description,
+        voucherType: 'general' as const,
+        status: 'permanent' as const,
+        lines: plan.voucher.lines,
+        referenceId: refId,
+      };
+      const validation = validateVoucherPayload({
+        payload: voucherPayload,
+        accounts,
+        parties,
+        existingVouchers: vouchers,
+        closedFiscalYears: profile.closedFiscalYears,
+      });
+      if (!validation.valid) {
+        throw new Error(validation.errors[0] || 'سند تعدیل موجودی معتبر نیست.');
+      }
+      const fiscalYear = validation.fiscalYear;
+      const sameYearMax = vouchers
+        .filter((v) => (v.fiscalYear || extractFiscalYearFromDate(v.date)) === fiscalYear)
+        .reduce((max, v) => Math.max(max, v.voucherNumber || 0), 0);
+      const voucherNumber = fiscalYear === profile.fiscalYear
+        ? await reserveNextVoucherNumber(sameYearMax)
+        : sameYearMax + 1;
+      const voucherId = plan.voucher.id || generateSafeId('vch');
+      const baseVoucher: Voucher = {
+        id: voucherId,
+        ownerId,
+        voucherNumber,
+        date: voucherPayload.date,
+        fiscalYear,
+        description: voucherPayload.description.trim().slice(0, 300),
+        voucherType: 'general',
+        status: 'permanent',
+        totalDebit: validation.totalDebit,
+        totalCredit: validation.totalCredit,
+        referenceId: refId,
+        lines: validation.sanitizedLines.slice(0, 100),
+        _version: 1,
+        updatedByDevice: deviceId,
+      };
+      const fullVoucher: Voucher = {
+        ...baseVoucher,
+        integrityHash: computeVoucherIntegrityHash(baseVoucher),
+      };
+
+      if (user) {
+        const batch = writeBatch(db);
+        batch.update(doc(db, 'products', prod.id), {
+          stock: plan.productDelta.stock,
+          buyPrice: plan.productDelta.buyPrice,
+          costingMethod: prod.costingMethod ?? profile.defaultCostingMethod ?? 'fifo',
+          costLayers: plan.productDelta.costLayers,
+          inventoryValueIrr: plan.productDelta.inventoryValueIrr,
+          _version: (prod._version ?? 1) + 1,
+          updatedByDevice: deviceId.slice(0, 64),
+          updatedAt: serverTimestamp(),
+        });
+        batch.set(doc(db, 'vouchers', voucherId), {
+          ownerId,
+          voucherNumber,
+          date: fullVoucher.date.slice(0, 20),
+          description: fullVoucher.description,
+          voucherType: fullVoucher.voucherType,
+          status: fullVoucher.status,
+          totalDebit: fullVoucher.totalDebit,
+          totalCredit: fullVoucher.totalCredit,
+          referenceId: refId.slice(0, 128),
+          lines: fullVoucher.lines,
+          _version: 1,
+          updatedByDevice: deviceId.slice(0, 64),
+          createdAt: serverTimestamp(),
+          updatedAt: serverTimestamp(),
+        });
+        await batch.commit();
+      } else {
+        setProducts((prev) => prev.map((p) => p.id === prod.id
+          ? { ...p, ...plan.productDelta, costingMethod: p.costingMethod ?? profile.defaultCostingMethod ?? 'fifo' }
+          : p));
+        setVouchers((prev) => [...prev, fullVoucher]);
+      }
+      showToast('تعدیل موجودی و سند حسابداری به‌صورت یکپارچه ثبت شد.');
     },
-    [products, profile, accounts, ownerId, vouchers, deviceId, updateProduct, createVoucher, showToast]
+    [products, profile, accounts, parties, ownerId, vouchers, deviceId, user, reserveNextVoucherNumber, showToast]
   );
 
   const bulkStocktakingWithVoucher = useCallback(
