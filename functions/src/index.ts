@@ -102,7 +102,8 @@ export const migrateInvoiceReturnCounters = onCall(
             .where('sourceInvoiceId', '==', sourceId);
           const linkedReturnsSnap = await tx.get(linkedReturnsQuery);
           const activeReturnCount = linkedReturnsSnap.docs.filter((returnDoc) => (
-            (returnDoc.get('invoiceType') === 'sale_return' || returnDoc.get('invoiceType') === 'purchase_return')
+            returnDoc.get('ownerId') === uid
+            && (returnDoc.get('invoiceType') === 'sale_return' || returnDoc.get('invoiceType') === 'purchase_return')
             && returnDoc.get('status') !== 'cancelled'
           )).length;
           const currentRevision = sourceSnap.get('returnRevision');
