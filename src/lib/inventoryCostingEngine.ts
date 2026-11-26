@@ -957,6 +957,7 @@ export function recalculateInventoryLedger(input: {
   let netOutflowsIrr = 0;
 
   for (const m of sorted) {
+    let movementForStep = m;
     if (m.kind === 'sale_return' && m.sourceRefId) {
       const originalSale = saleHistoryByRef.get(m.sourceRefId);
       if (!originalSale) {
@@ -969,10 +970,45 @@ export function recalculateInventoryLedger(input: {
           `مقدار برگشت از فروش از مقدار فروش‌رفتهٔ باقی‌مانده بیشتر است (باقی‌مانده: ${roundQty2(remainingReturnableQty)}، برگشتی: ${roundQty2(m.qty)}).`
         );
       }
+
+      // Allocate each partial return to the next unreturned portion of the original
+      // sale's FIFO consumption, starting with the last layer consumed.
+      const originalAllocations = m.originalConsumedLayers || originalSale.consumedLayers || [];
+      if (costingMethod === 'fifo' && originalAllocations.length > 0) {
+        let skipQty = alreadyReturned;
+        let remainingQty = roundQty(m.qty);
+        const selectedInReverse: ConsumedCostLayerAllocation[] = [];
+        for (let i = originalAllocations.length - 1; i >= 0 && remainingQty > 0.00005; i--) {
+          const allocation = originalAllocations[i];
+          const allocationQty = roundQty(allocation.qty);
+          if (skipQty >= allocationQty - 0.00005) {
+            skipQty = roundQty(Math.max(0, skipQty - allocationQty));
+            continue;
+          }
+          const offsetInLayer = skipQty;
+          const availableInLayer = roundQty(allocationQty - offsetInLayer);
+          const takeQty = roundQty(Math.min(availableInLayer, remainingQty));
+          const startCost = Math.round((allocation.totalCostIrr * offsetInLayer) / allocationQty);
+          const endCost = Math.round((allocation.totalCostIrr * (offsetInLayer + takeQty)) / allocationQty);
+          const takeCost = Math.max(0, endCost - startCost);
+          selectedInReverse.push({
+            layerId: allocation.layerId,
+            qty: takeQty,
+            unitCostIrr: takeQty > 0 ? Math.round(takeCost / takeQty) : allocation.unitCostIrr,
+            totalCostIrr: takeCost,
+          });
+          remainingQty = roundQty(Math.max(0, remainingQty - takeQty));
+          skipQty = 0;
+        }
+        if (remainingQty > 0.00005) {
+          throw new Error('اطلاعات لایه‌های بهای تمام‌شدهٔ فاکتور فروش برای محاسبهٔ برگشت ناقص است.');
+        }
+        movementForStep = { ...m, originalConsumedLayers: selectedInReverse.reverse() };
+      }
       returnedQtyBySaleRef.set(m.sourceRefId, roundQty(alreadyReturned + m.qty));
     }
 
-    const step = applyInventoryMovementStep(state, m, saleHistoryByRef);
+    const step = applyInventoryMovementStep(state, movementForStep, saleHistoryByRef);
     state = step.nextState;
 
     if (m.kind === 'sale') {
