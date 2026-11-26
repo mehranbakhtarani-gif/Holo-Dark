@@ -732,8 +732,8 @@ service cloud.firestore {
           && incoming().createdAt == existing().createdAt
           && incoming().updatedAt == request.time
           && (
-            incoming().diff(existing()).affectedKeys().hasOnly(['status', '_version', 'updatedByDevice', 'updatedAt']) ||
-            incoming().diff(existing()).affectedKeys().hasOnly(['paidCash', 'paidBank', 'paidCheque', 'creditAmount', 'status', '_version', 'updatedByDevice', 'updatedAt']) ||
+            incoming().diff(existing()).affectedKeys().hasOnly(['status', 'returnRevision', '_version', 'updatedByDevice', 'updatedAt']) ||
+            incoming().diff(existing()).affectedKeys().hasOnly(['paidCash', 'paidBank', 'paidCheque', 'creditAmount', 'status', 'returnRevision', '_version', 'updatedByDevice', 'updatedAt']) ||
             (
               existing().invoiceType == 'proforma'
               && incoming().diff(existing()).affectedKeys().hasOnly(['invoiceNumber', 'invoiceType', 'status', 'voucherId', 'items', '_version', 'updatedByDevice', 'updatedAt'])
