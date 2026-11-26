@@ -25,8 +25,8 @@ import {
   signOutAccount,
   testFirestoreConnection,
   resolveWorkspaceContext,
-  WorkspaceContextResult,
 } from '../lib/firebase';
+import type { WorkspaceContextResult } from '../lib/firebase';
 import {
   Account,
   AuditActivityLog,
