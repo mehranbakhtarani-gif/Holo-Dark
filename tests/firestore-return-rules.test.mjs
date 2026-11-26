@@ -68,6 +68,41 @@ after(async () => {
   await testEnv?.cleanup();
 });
 
+test('invoice and workspace counter enforce monotonic inventory event sequences', async () => {
+  await testEnv.clearFirestore();
+  const uid = 'rules_inventory_sequence';
+  const db = testEnv.authenticatedContext(uid, { email_verified: true }).firestore();
+
+  await assertSucceeds(setDoc(doc(db, 'invoices', 'sale_with_sequence'), invoiceBase(uid, 'sale', {
+    returnRevision: 0,
+    activeReturnCount: 0,
+    eventSequence: 7,
+  })));
+  await assertFails(setDoc(doc(db, 'invoices', 'sale_with_fractional_sequence'), invoiceBase(uid, 'sale', {
+    returnRevision: 0,
+    activeReturnCount: 0,
+    eventSequence: 7.5,
+  })));
+
+  const counterRef = doc(db, 'counters', uid);
+  await assertSucceeds(setDoc(counterRef, {
+    ownerId: uid,
+    lastVoucherNumber: 0,
+    lastInvoiceSeq: 102,
+    lastInventorySequence: 7,
+    createdAt: serverTimestamp(),
+    updatedAt: serverTimestamp(),
+  }));
+  await assertSucceeds(updateDoc(counterRef, {
+    lastInventorySequence: 8,
+    updatedAt: serverTimestamp(),
+  }));
+  await assertFails(updateDoc(counterRef, {
+    lastInventorySequence: 6,
+    updatedAt: serverTimestamp(),
+  }));
+});
+
 test('return counter ACL requires exact atomic return creation and cancellation pairs', async () => {
   await testEnv.clearFirestore();
   const uid = 'rules_owner';
