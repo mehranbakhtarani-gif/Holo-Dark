@@ -502,8 +502,9 @@ test('workspace voucher create, numbering, finalize and replay are atomic', asyn
   assert.equal(reversalSnap.get('payload.reversalOfVoucherId'), voucherId);
   assert.equal(reversalSnap.get('payload.totalDebit'), 1250);
   assert.equal(reversalSnap.get('payload.totalCredit'), 1250);
-  assert.equal(reversalSnap.get('payload.lines.0.debit'), 0);
-  assert.equal(reversalSnap.get('payload.lines.0.credit'), 1250);
+  const reversalPayload = reversalSnap.get('payload');
+  assert.equal(reversalPayload.lines[0].debit, 0);
+  assert.equal(reversalPayload.lines[0].credit, 1250);
   const sourceAfterReverse = await voucherRef.get();
   assert.equal(sourceAfterReverse.get('reversedByVoucherId'), reversalId);
   assert.equal(sourceAfterReverse.get('version'), 3);
