@@ -669,6 +669,12 @@ test('workspace-native warehouse transfer receipt updates staged product and ext
     }],
     status: 'in_transit',
   };
+  const manifestRef = firestore.collection('workspaceMigrations').doc(owner.uid);
+  await manifestRef.set({
+    workspaceId: owner.uid, status: 'verified', coreWritesFrozen: true,
+    coreWriteMode: 'workspace_native',
+    readBarrier: { status: 'open', generation: 'native-receipt-generation-1', frozenAt: now },
+  });
   const extensionRef = firestore.collection('workspaceExtensions').doc(owner.uid);
   await extensionRef.set({
     ownerId: owner.uid, trackedWarehouseTransfers: [transfer], _version: 3,
@@ -678,12 +684,6 @@ test('workspace-native warehouse transfer receipt updates staged product and ext
     .doc(`${owner.uid}_${transferId}_dispatch`);
   await waitForDocument(dispatchAuthorityRef);
   const extensionBeforeReceive = await extensionRef.get();
-  const manifestRef = firestore.collection('workspaceMigrations').doc(owner.uid);
-  await manifestRef.set({
-    workspaceId: owner.uid, status: 'verified', coreWritesFrozen: true,
-    coreWriteMode: 'workspace_native',
-    readBarrier: { status: 'open', generation: 'native-receipt-generation-1', frozenAt: now },
-  });
 
   await expectCallableError(call('receiveTrackedWarehouseTransfer', owner.token, {
     productId, transferId, receivedDate: '1405/08/05',
