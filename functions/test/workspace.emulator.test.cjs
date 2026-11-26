@@ -484,4 +484,40 @@ test('workspace voucher create, numbering, finalize and replay are atomic', asyn
     operation: 'finalize', documentId: voucherId, operationId: randomUUID().replace(/-/g, ''),
     expectedVersion: 1, integrityHash,
   }), 'ABORTED');
+
+  const reversalId = `reversal-${owner.uid}`;
+  const reversalOperationId = randomUUID().replace(/-/g, '');
+  const reversal = await call('mutateWorkspaceVoucher', owner.token, {
+    operation: 'reverse', documentId: reversalId, operationId: reversalOperationId,
+    sourceDocumentId: voucherId, expectedSourceVersion: 2,
+    data: { date: '1405/08/06', fiscalYear: '1405', description: 'Atomic reversal of voucher 1' },
+  });
+  assert.equal(reversal.status, 'committed');
+  assert.equal(reversal.version, 1);
+  assert.equal(reversal.voucherNumber, 3);
+  const reversalRef = firestore.collection('workspaces').doc(owner.uid)
+    .collection('migrationData').doc('vouchers').collection('records').doc(reversalId);
+  const reversalSnap = await reversalRef.get();
+  assert.equal(reversalSnap.get('payload.status'), 'draft');
+  assert.equal(reversalSnap.get('payload.reversalOfVoucherId'), voucherId);
+  assert.equal(reversalSnap.get('payload.totalDebit'), 1250);
+  assert.equal(reversalSnap.get('payload.totalCredit'), 1250);
+  assert.equal(reversalSnap.get('payload.lines.0.debit'), 0);
+  assert.equal(reversalSnap.get('payload.lines.0.credit'), 1250);
+  const sourceAfterReverse = await voucherRef.get();
+  assert.equal(sourceAfterReverse.get('reversedByVoucherId'), reversalId);
+  assert.equal(sourceAfterReverse.get('version'), 3);
+  assert.equal((await firestore.collection('vouchers').doc(reversalId).get()).exists, false);
+  const reversalReplay = await call('mutateWorkspaceVoucher', owner.token, {
+    operation: 'reverse', documentId: reversalId, operationId: reversalOperationId,
+    sourceDocumentId: voucherId, expectedSourceVersion: 2,
+    data: { date: '1405/08/06', fiscalYear: '1405', description: 'Atomic reversal of voucher 1' },
+  });
+  assert.equal(reversalReplay.status, 'replayed');
+  await expectCallableError(call('mutateWorkspaceVoucher', owner.token, {
+    operation: 'reverse', documentId: `duplicate-reversal-${owner.uid}`,
+    operationId: randomUUID().replace(/-/g, ''),
+    sourceDocumentId: voucherId, expectedSourceVersion: 3,
+    data: { date: '1405/08/06', fiscalYear: '1405', description: 'Duplicate reversal attempt' },
+  }), 'ALREADY_EXISTS');
 });
