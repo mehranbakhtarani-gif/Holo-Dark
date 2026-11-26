@@ -76,6 +76,7 @@ test('return counter ACL requires exact atomic return creation and cancellation 
   const returnRef = doc(db, 'invoices', 'sale_return_1');
 
   await assertFails(setDoc(doc(db, 'invoices', 'sale_source_without_counters'), invoiceBase(uid, 'sale')));
+  await assertFails(setDoc(doc(db, 'invoices', 'sale_source_forged_counter'), invoiceBase(uid, 'sale', { returnRevision: 0, activeReturnCount: 5 })));
   await assertSucceeds(setDoc(sourceRef, invoiceBase(uid, 'sale', {
     returnRevision: 0,
     activeReturnCount: 0,
