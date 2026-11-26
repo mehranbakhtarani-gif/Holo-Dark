@@ -1776,7 +1776,7 @@ export const AccountingProvider: React.FC<{ children: React.ReactNode }> = ({ ch
           showToast(err instanceof Error ? err.message : 'حذف اتمیک پیش‌نویس در Workspace ناموفق بود.', 'error');
           return false;
         }
-      } else       if (user) {
+      } else if (user) {
         try {
           await deleteDoc(doc(db, 'vouchers', voucherId));
         } catch (err) {
