@@ -791,7 +791,7 @@ service cloud.firestore {
                 existing().invoiceType == 'sale_return' ? 'sale' : 'purchase'
               )
             )
-            || existing().invoiceType not in ['sale_return', 'purchase_return']
+            || !(existing().invoiceType in ['sale_return', 'purchase_return'])
             || incoming().status != 'cancelled'
             || existing().status == 'cancelled'
           )
