@@ -1,5 +1,7 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { useAccounting } from '../context/AccountingContext';
+import { useWorkspaceExtensions } from '../context/WorkspaceExtensionsContext';
+import type { TrackedWarehouseTransfer } from '../lib/multiWarehouseEngine';
 import { useOnlineStatus } from './usePWAInstall';
 import {
   appendMeshSyncEventLog,
@@ -92,6 +94,11 @@ export function useLocalFirstMeshSync() {
     logActivity,
     showToast,
   } = useAccounting();
+
+  const {
+    trackedWarehouseTransfers,
+    updateExtensions,
+  } = useWorkspaceExtensions();
 
   const isOnline = useOnlineStatus();
 
@@ -232,7 +239,11 @@ export function useLocalFirstMeshSync() {
 
   // ---- Helper: Build tagged local snapshot ----
   const buildTaggedSnapshot = useCallback(() => {
-    const raw = latestExportRef.current();
+    const accountingSnapshot = safeParseJsonObject(latestExportRef.current()) || {};
+    const raw = JSON.stringify({
+      ...accountingSnapshot,
+      trackedWarehouseTransfers,
+    });
     const nowIso = new Date().toISOString();
     const tagged = tagSnapshotWithSyncMetadata(raw, activeDeviceIdentity, nowIso);
     const payloadHash = computePayloadFingerprint(raw);
@@ -243,7 +254,7 @@ export function useLocalFirstMeshSync() {
       updatedAt: nowIso,
       vectorClock: vectorClockRef.current,
     };
-  }, [activeDeviceIdentity]);
+  }, [activeDeviceIdentity, trackedWarehouseTransfers]);
 
   // ---- Helper: Mirror snapshot into selected local folder ----
   const writeSnapshotToLocalFolder = useCallback(
@@ -492,6 +503,30 @@ export function useLocalFirstMeshSync() {
             try {
               const ok = latestImportRef.current(currentMergedJson);
               if (ok) {
+                const mergedSnapshot = safeParseJsonObject(currentMergedJson);
+                if (mergedSnapshot && Array.isArray(mergedSnapshot.trackedWarehouseTransfers)) {
+                  const safeTransfers = mergedSnapshot.trackedWarehouseTransfers.filter((item): item is TrackedWarehouseTransfer => {
+                    if (!item || typeof item !== 'object') return false;
+                    const transfer = item as Partial<TrackedWarehouseTransfer>;
+                    return typeof transfer.id === 'string'
+                      && transfer.id.length > 0
+                      && typeof transfer.productId === 'string'
+                      && transfer.productId.length > 0
+                      && typeof transfer.transferNumber === 'string'
+                      && typeof transfer.fromWarehouse === 'string'
+                      && typeof transfer.toWarehouse === 'string'
+                      && Number.isFinite(Number(transfer.qty))
+                      && Number(transfer.qty) > 0
+                      && Number.isFinite(Number(transfer.transferredCostIrr))
+                      && Number(transfer.transferredCostIrr) >= 0
+                      && Array.isArray(transfer.transferredLayers)
+                      && (transfer.status === 'in_transit' || transfer.status === 'received' || transfer.status === 'cancelled');
+                  }).slice(-100);
+                  updateExtensions((prev) => ({
+                    ...prev,
+                    trackedWarehouseTransfers: safeTransfers,
+                  }));
+                }
                 lastObservedFingerprintRef.current = computePayloadFingerprint(currentMergedJson);
                 const savedCount = await persistTaggedSnapshotToDexie(
                   currentMergedJson,
@@ -653,6 +688,8 @@ export function useLocalFirstMeshSync() {
         salesOrders.length,
         subcontractJobs.length,
         rbacOperators.length,
+        trackedWarehouseTransfers.length,
+        trackedWarehouseTransfers.map((transfer) => `${transfer.id}:${transfer.status}:${transfer.updatedAt || transfer.receivedDate || transfer.date}`).join(','),
       ].join('|'),
     [
       profile.companyName,
@@ -673,6 +710,7 @@ export function useLocalFirstMeshSync() {
       salesOrders,
       subcontractJobs,
       rbacOperators,
+      trackedWarehouseTransfers,
     ]
   );
 
@@ -745,6 +783,7 @@ export function useLocalFirstMeshSync() {
     return () => window.clearTimeout(timer);
   }, [
     stateRevisionSignal,
+    trackedWarehouseTransfers,
     accounts,
     vouchers,
     invoices,
@@ -757,6 +796,7 @@ export function useLocalFirstMeshSync() {
     buildTaggedSnapshot,
     writeSnapshotToLocalFolder,
     refreshOutboxAndLogs,
+    trackedWarehouseTransfers,
   ]);
 
   // ==================== USER ACTIONS ====================
