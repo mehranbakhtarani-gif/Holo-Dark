@@ -34,3 +34,7 @@ Membership authority is stored in `workspaceMemberships/{workspaceId}_{uid}`. Cl
 5. Migrate records to a workspace-aware schema with backup and dry-run verification.
 6. Add membership checks to every Firestore path and move sensitive accounting transitions to trusted functions.
 7. Deploy Functions, then rules and client only after successful staging verification.
+
+
+## Named database SDK note
+The Functions use the supported `@google-cloud/firestore` client with an explicit `projectId` and `databaseId`. The Admin SDK's named-database `getFirestore(app, databaseId)` API is documented as preview, so it is deliberately not used here. The Firebase Admin SDK is retained only for Auth custom-claims management.
