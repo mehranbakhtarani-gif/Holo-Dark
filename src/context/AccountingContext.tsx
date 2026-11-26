@@ -3043,45 +3043,31 @@ export const AccountingProvider: React.FC<{ children: React.ReactNode }> = ({ ch
               const liveNextVoucherNum = currentMax + 1;
 
               let liveOriginalInvoice = linkedOriginalInvoice;
-              let transactionExistingInvoices = invoices;
               let sourceInvoiceReturnRevision: number | null = null;
               let sourceInvoiceVersion: number | null = null;
               const isLinkedReturn =
                 (payload.invoiceType === 'sale_return' || payload.invoiceType === 'purchase_return') &&
                 Boolean(payload.sourceInvoiceId);
 
-              // Read and lock the source invoice plus its existing returns inside the same transaction.
-              // Updating returnRevision on the source invoice serializes concurrent return attempts.
+              // The source invoice revision is the transaction lock. A changed revision means
+              // another device created/cancelled a return after this client's invoice snapshot.
               if (isLinkedReturn && payload.sourceInvoiceId) {
-                const sourceInvoiceRef = doc(db, 'invoices', payload.sourceInvoiceId);
-                const linkedReturnsQuery = query(
-                  collection(db, 'invoices'),
-                  where('ownerId', '==', user.uid),
-                  where('sourceInvoiceId', '==', payload.sourceInvoiceId)
-                );
-                const [sourceInvoiceSnap, linkedReturnsSnap] = await Promise.all([
-                  tx.get(sourceInvoiceRef),
-                  tx.get(linkedReturnsQuery),
-                ]);
+                const sourceInvoiceSnap = await tx.get(doc(db, 'invoices', payload.sourceInvoiceId));
                 if (!sourceInvoiceSnap.exists()) {
                   throw new Error('فاکتور مرجع برگشت در پایگاه داده یافت نشد.');
+                }
+                const liveRevision = Number(sourceInvoiceSnap.data().returnRevision) || 0;
+                const knownRevision = Number(linkedOriginalInvoice?.returnRevision) || 0;
+                if (liveRevision !== knownRevision) {
+                  throw new Error('اطلاعات برگشت این فاکتور در دستگاه دیگری تغییر کرده است؛ اطلاعات را تازه‌سازی و دوباره تلاش کنید.');
                 }
                 liveOriginalInvoice = {
                   ...(linkedOriginalInvoice || {}),
                   ...sourceInvoiceSnap.data(),
                   id: sourceInvoiceSnap.id,
                 } as Invoice;
-                sourceInvoiceReturnRevision = Number(sourceInvoiceSnap.data().returnRevision) || 0;
+                sourceInvoiceReturnRevision = liveRevision;
                 sourceInvoiceVersion = Number(sourceInvoiceSnap.data()._version) || 1;
-                const liveLinkedReturns = linkedReturnsSnap.docs.map((snap) => ({
-                  ...(invoices.find((inv) => inv.id === snap.id) || {}),
-                  ...snap.data(),
-                  id: snap.id,
-                }) as Invoice);
-                transactionExistingInvoices = [
-                  ...invoices.filter((inv) => inv.sourceInvoiceId !== payload.sourceInvoiceId),
-                  ...liveLinkedReturns,
-                ];
               }
 
               // Read live products for every item in the invoice
@@ -3130,7 +3116,7 @@ export const AccountingProvider: React.FC<{ children: React.ReactNode }> = ({ ch
                 enforceCashOverdraftGuard: true,
                 defaultCostingMethod: profile.defaultCostingMethod,
                 originalInvoice: liveOriginalInvoice,
-                existingInvoices: transactionExistingInvoices,
+                existingInvoices: invoices,
                 existingVouchers: vouchers,
                 closedFiscalYears: profile.closedFiscalYears,
                 fxDecimals,
@@ -3217,7 +3203,8 @@ export const AccountingProvider: React.FC<{ children: React.ReactNode }> = ({ ch
                   err.message.includes('تراز') ||
                   err.message.includes('مقدار برگشت') ||
                   err.message.includes('فاکتور مرجع') ||
-                  err.message.includes('طرف حساب فاکتور برگشت'))
+                  err.message.includes('طرف حساب فاکتور برگشت') ||
+                  err.message.includes('اطلاعات برگشت'))
                   ? err.message
                   : null;
               if (msg) {
@@ -3360,25 +3347,6 @@ export const AccountingProvider: React.FC<{ children: React.ReactNode }> = ({ ch
             const liveInvoice = { ...inv, ...invoiceSnap.data(), id: invoiceId } as Invoice;
             if (liveInvoice.status === 'cancelled') return { alreadyCancelled: true as const };
 
-            let cancellationExistingInvoices = invoices;
-            if (liveInvoice.invoiceType === 'sale' || liveInvoice.invoiceType === 'purchase') {
-              const linkedReturnsQuery = query(
-                collection(db, 'invoices'),
-                where('ownerId', '==', user.uid),
-                where('sourceInvoiceId', '==', invoiceId)
-              );
-              const linkedReturnsSnap = await tx.get(linkedReturnsQuery);
-              const liveLinkedReturns = linkedReturnsSnap.docs.map((snap) => ({
-                ...(invoices.find((candidate) => candidate.id === snap.id) || {}),
-                ...snap.data(),
-                id: snap.id,
-              }) as Invoice);
-              cancellationExistingInvoices = [
-                ...invoices.filter((candidate) => candidate.sourceInvoiceId !== invoiceId),
-                ...liveLinkedReturns,
-              ];
-            }
-
             let sourceInvoiceReturnRevision: number | null = null;
             let sourceInvoiceVersion: number | null = null;
             if (
@@ -3389,8 +3357,20 @@ export const AccountingProvider: React.FC<{ children: React.ReactNode }> = ({ ch
               if (!sourceInvoiceSnap.exists()) {
                 throw new Error('فاکتور مرجع برگشت یافت نشد؛ ابطال برگشت متوقف شد.');
               }
-              sourceInvoiceReturnRevision = Number(sourceInvoiceSnap.data().returnRevision) || 0;
+              const sourceInState = invoices.find((candidate) => candidate.id === liveInvoice.sourceInvoiceId);
+              const liveRevision = Number(sourceInvoiceSnap.data().returnRevision) || 0;
+              const knownRevision = Number(sourceInState?.returnRevision) || 0;
+              if (liveRevision !== knownRevision) {
+                throw new Error('اطلاعات برگشت فاکتور مرجع در دستگاه دیگری تغییر کرده است؛ اطلاعات را تازه‌سازی و دوباره تلاش کنید.');
+              }
+              sourceInvoiceReturnRevision = liveRevision;
               sourceInvoiceVersion = Number(sourceInvoiceSnap.data()._version) || 1;
+            } else if (liveInvoice.invoiceType === 'sale' || liveInvoice.invoiceType === 'purchase') {
+              const liveRevision = Number(invoiceSnap.data().returnRevision) || 0;
+              const knownRevision = Number(inv.returnRevision) || 0;
+              if (liveRevision !== knownRevision) {
+                throw new Error('اطلاعات برگشت فاکتور در دستگاه دیگری تغییر کرده است؛ اطلاعات را تازه‌سازی و دوباره تلاش کنید.');
+              }
             }
 
             const reversalSnap = await tx.get(reversalRef);
@@ -3430,7 +3410,7 @@ export const AccountingProvider: React.FC<{ children: React.ReactNode }> = ({ ch
               products: liveProducts,
               vouchers: liveVouchers,
               cheques: liveCheques,
-              existingInvoices: cancellationExistingInvoices,
+              existingInvoices: invoices,
               costingMethod: profile.defaultCostingMethod ?? 'fifo',
               closedFiscalYears: profile.closedFiscalYears ?? [],
               ownerId,
