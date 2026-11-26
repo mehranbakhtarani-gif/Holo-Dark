@@ -270,6 +270,14 @@ function validateCoreWorkspacePayload(collectionName: string, value: unknown, wo
   }
 }
 
+const WORKSPACE_MIGRATION_COLLECTIONS = [
+  'counters', 'accounts', 'parties', 'products', 'vouchers', 'invoices',
+  'cheques', 'employees', 'assets', 'costCenters', 'currencies',
+  'exchangeRates', 'importDossiers', 'salesOrders', 'subcontractJobs',
+  'rbacOperators', 'auditLogs', 'workspaceExtensions', 'devicePresence',
+  'cloudBackups',
+] as const;
+
 const WORKSPACE_WRITE_COLLECTIONS: Record<string, readonly string[]> = {
   owner: WORKSPACE_MIGRATION_COLLECTIONS,
   finance_manager: ['accounts', 'products', 'vouchers', 'invoices'],
@@ -1169,13 +1177,6 @@ export const listWorkspaceMembers = onCall({ region: REGION }, async (request) =
 });
 
 
-const WORKSPACE_MIGRATION_COLLECTIONS = [
-  'counters', 'accounts', 'parties', 'products', 'vouchers', 'invoices',
-  'cheques', 'employees', 'assets', 'costCenters', 'currencies',
-  'exchangeRates', 'importDossiers', 'salesOrders', 'subcontractJobs',
-  'rbacOperators', 'auditLogs', 'workspaceExtensions', 'devicePresence',
-  'cloudBackups',
-] as const;
 const MIGRATION_PAGE_SIZE = 200;
 
 function stableMigrationValue(value: unknown): unknown {
