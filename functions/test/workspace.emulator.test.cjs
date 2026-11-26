@@ -786,7 +786,7 @@ test('warehouse transfer creation splits source FIFO layers and persists the in-
   assert.equal(receivedExtension.get('trackedWarehouseTransfers')[0].receivedDate, '1405/08/02');
   assert.equal(receivedExtension.get('trackedWarehouseTransfers')[0].eventSequence, result.transfer.eventSequence);
   assert.equal(receivedExtension.get('trackedWarehouseTransfers')[0].receivedEventSequence, received.receivedEventSequence);
-  assert.equal(receivedExtension.get('_version'), 3);
+  assert.equal(receivedExtension.get('_version'), extensionBeforeReceive.get('_version') + 1);
   const inventoryCounter = await firestore.collection('counters').doc(owner.uid).get();
   assert.equal(inventoryCounter.get('lastInventorySequence'), received.receivedEventSequence);
 
