@@ -281,6 +281,20 @@ export async function mutateWorkspaceCoreRecord<T = Record<string, unknown>>(
   return result.data;
 }
 
+export interface ReceiveTrackedWarehouseTransferInput {
+  productId: string;
+  transferId: string;
+  receivedDate: string;
+}
+export async function receiveTrackedWarehouseTransferAtomic(
+  input: ReceiveTrackedWarehouseTransferInput
+): Promise<{ status: 'committed' | 'replayed'; productVersion: number; transferId?: string }> {
+  const callable = httpsCallable<ReceiveTrackedWarehouseTransferInput, {
+    status: 'committed' | 'replayed'; productVersion: number; transferId?: string;
+  }>(functions, 'receiveTrackedWarehouseTransfer');
+  const result = await callable(input);
+  return result.data;
+}
 export interface WorkspaceVoucherMutationInput {
   operation: 'create' | 'update' | 'delete' | 'finalize' | 'reverse';
   documentId: string;
