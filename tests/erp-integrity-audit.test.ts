@@ -962,8 +962,10 @@ test('Tracked warehouse transfer preserves fractional FIFO quantity through rece
     product: dispatched.updatedProduct,
     transfer: dispatched.transferRecord,
     receivedDate: '1405/01/03',
+    eventSequence: 22,
   });
   assert.equal(received.updatedTransfer.status, 'received');
+  assert.equal(received.updatedTransfer.receivedEventSequence, 22);
   const destinationKardex = computeWarehouseProductKardex({
     product: received.updatedProduct,
     warehouse: 'انبار مقصد',
@@ -1018,6 +1020,53 @@ test('Warehouse Kardex preserves four-decimal fractional quantities', () => {
   assert.equal(kardex[0].inQty, 0.1234);
   assert.equal(kardex[0].balanceQty, 0.1234,
     'Kardex running balances must preserve the same four-decimal precision as FIFO layers');
+});
+
+test('Same-day warehouse Kardex uses the shared event sequence and flags legacy ambiguity', () => {
+  const product: Product = {
+    id: 'prod_same_day_sequence', ownerId: 'owner_test', sku: 'SEQ-01',
+    name: 'کالای ترتیب رویداد', category: 'آزمایشی', unit: 'عدد',
+    warehouse: 'انبار مرکزی', buyPrice: 100, sellPrice: 150,
+    stock: 8, reorderPoint: 0, vatExempt: true, inventoryValueIrr: 800,
+    costingMethod: 'fifo',
+    costLayers: [
+      { layerId: 'seq-layer', date: '1405/01/01', sourceRef: 'PUR-SEQ', warehouse: 'انبار مرکزی',
+        originalQty: 10, remainingQty: 8, unitCostIrr: 100, totalCostIrr: 800 },
+    ],
+  };
+  const sale = {
+    id: 'sale-seq', ownerId: 'owner_test', invoiceNumber: 'S-SEQ',
+    invoiceType: 'sale' as const, date: '1405/02/01', eventSequence: 30,
+    partyId: 'party', partyName: 'مشتری', warehouse: 'انبار مرکزی',
+    subtotal: 300, discount: 0, vatAmount: 0, grandTotal: 300,
+    paidCash: 300, paidBank: 0, paidCheque: 0, creditAmount: 0,
+    status: 'issued' as const,
+    items: [{ productId: product.id, sku: product.sku, productName: product.name,
+      unit: 'عدد', quantity: 2, unitPrice: 150, unitCostSnapshot: 100,
+      totalCostIrr: 200, discount: 0, vatAmount: 0, lineTotal: 300 }],
+  };
+  const transfer = {
+    id: 'transfer-seq', transferNumber: 'TR-SEQ', date: '1405/02/01',
+    productId: product.id, sku: product.sku, productName: product.name,
+    fromWarehouse: 'انبار مرکزی', toWarehouse: 'انبار مقصد',
+    qty: 3, transferredCostIrr: 300, transferredLayers: [],
+    status: 'in_transit' as const, eventSequence: 20,
+  };
+  const ordered = computeWarehouseProductKardex({
+    product, warehouse: 'انبار مرکزی', invoices: [sale], transfers: [transfer],
+  });
+  assert.deepEqual(ordered.map((row) => row.movementType), ['transfer_out', 'sale']);
+  assert.deepEqual(ordered.map((row) => row.eventSequence), [20, 30]);
+  assert.equal(ordered.every((row) => !row.orderIsAmbiguous), true);
+
+  const legacy = computeWarehouseProductKardex({
+    product, warehouse: 'انبار مرکزی',
+    invoices: [{ ...sale, eventSequence: undefined }],
+    transfers: [{ ...transfer, eventSequence: undefined }],
+  });
+  assert.equal(legacy.length, 2);
+  assert.equal(legacy.every((row) => row.orderIsAmbiguous), true,
+    'Same-day legacy events without a shared sequence must be visibly flagged');
 });
 
 test('Receiving an in-transit transfer moves only its exact FIFO layers and preserves valuation', () => {
