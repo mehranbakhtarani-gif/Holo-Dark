@@ -387,6 +387,11 @@ export interface WorkspaceInventoryAdjustmentResult {
   version: number;
   voucherNumber?: number | null;
   adjustmentCostIrr: number;
+  product?: {
+    stock: number; buyPrice: number; costingMethod?: string;
+    costLayers?: unknown[]; inventoryValueIrr?: number; _version?: number;
+  };
+  voucher?: Record<string, unknown>;
 }
 export async function adjustWorkspaceProductStockWithVoucher(
   input: WorkspaceInventoryAdjustmentInput
