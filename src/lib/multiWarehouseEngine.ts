@@ -389,6 +389,88 @@ export function executeTrackedWarehouseTransfer(params: {
 }
 
 /**
+ * Receives a tracked in-transit transfer without changing total stock or valuation.
+ * Only the exact layer IDs created by the transfer may be moved into the destination.
+ */
+export function receiveTrackedWarehouseTransfer(params: {
+  product: Product;
+  transfer: TrackedWarehouseTransfer;
+  receivedDate: string;
+}): {
+  updatedProduct: Product;
+  updatedTransfer: TrackedWarehouseTransfer;
+  pnlImpactIrr: 0;
+} {
+  const { product, transfer, receivedDate } = params;
+  if (!receivedDate.trim()) throw new Error('تاریخ دریافت انتقال الزامی است.');
+  if (product.id !== transfer.productId) throw new Error('انتقال متعلق به این کالا نیست.');
+  if (transfer.status !== 'in_transit') {
+    throw new Error('فقط انتقالی که در وضعیت «در راه» است قابل دریافت است.');
+  }
+  if (!transfer.transferredLayers.length) {
+    throw new Error('لایه‌های بهای تمام‌شده انتقال موجود نیستند.');
+  }
+
+  const expectedById = new Map(transfer.transferredLayers.map((layer) => [layer.layerId, layer]));
+  if (expectedById.size !== transfer.transferredLayers.length) {
+    throw new Error('شناسه لایه در اطلاعات انتقال تکراری است.');
+  }
+
+  const layers = product.costLayers || [];
+  const actualIndexes = new Map<string, number>();
+  layers.forEach((layer, index) => {
+    if (expectedById.has(layer.layerId)) {
+      if (actualIndexes.has(layer.layerId)) {
+        throw new Error('شناسه لایه انتقال در موجودی کالا تکراری است.');
+      }
+      actualIndexes.set(layer.layerId, index);
+    }
+  });
+
+  if (actualIndexes.size !== expectedById.size) {
+    throw new Error('تمام لایه‌های انتقال در موجودی در راه یافت نشدند؛ دریافت انجام نشد.');
+  }
+
+  let actualQty = 0;
+  let actualValue = 0;
+  const nextLayers = layers.map((layer) => {
+    const expected = expectedById.get(layer.layerId);
+    if (!expected) return layer;
+    if (
+      layer.warehouse !== `در راه → ${transfer.toWarehouse}` ||
+      layer.sourceRef !== expected.sourceRef ||
+      Math.abs(layer.remainingQty - expected.remainingQty) > 0.00005 ||
+      layer.totalCostIrr !== expected.totalCostIrr
+    ) {
+      throw new Error('اطلاعات لایه انتقال با سند انتقال مطابقت ندارد؛ دریافت متوقف شد.');
+    }
+    actualQty += layer.remainingQty;
+    actualValue += layer.totalCostIrr;
+    return { ...layer, warehouse: transfer.toWarehouse };
+  });
+
+  if (
+    Math.abs(actualQty - transfer.qty) > 0.0001 ||
+    actualValue !== transfer.transferredCostIrr
+  ) {
+    throw new Error('مقدار یا ارزش لایه‌های انتقال با سند انتقال مغایرت دارد.');
+  }
+
+  const updatedProduct: Product = {
+    ...product,
+    costLayers: nextLayers,
+    // Receiving only changes the warehouse tag; total quantity and value remain unchanged.
+  };
+  const updatedTransfer: TrackedWarehouseTransfer = {
+    ...transfer,
+    status: 'received',
+    receivedDate,
+  };
+
+  return { updatedProduct, updatedTransfer, pnlImpactIrr: 0 };
+}
+
+/**
  * Builds an independent per-warehouse Kardex for a specific product.
  */
 export function computeWarehouseProductKardex(params: {
