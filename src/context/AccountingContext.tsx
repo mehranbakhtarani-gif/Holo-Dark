@@ -1953,7 +1953,7 @@ export const AccountingProvider: React.FC<{ children: React.ReactNode }> = ({ ch
           : {}),
       });
     },
-    [vouchers, createVoucher, user, workspaceContext, profile.fiscalYear, deviceId, requirePermission, showToast]
+    [vouchers, accounts, parties, createVoucher, user, workspaceContext, profile.fiscalYear, profile.closedFiscalYears, deviceId, requirePermission, showToast]
   );
 
   const renumberVouchersChronologically = useCallback(async () => {
