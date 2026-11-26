@@ -636,7 +636,7 @@ export const mutateWorkspaceVoucher = onCall({ region: REGION, timeoutSeconds: 6
         || typeof input.date !== 'string' || typeof input.fiscalYear !== 'string'
         || !input.fiscalYear || input.fiscalYear.length > 16
         || typeof input.description !== 'string' || input.description.length > 300
-        || !['general', 'opening', 'closing', 'adjustment'].includes(String(input.voucherType))
+        || !['opening', 'general', 'sales', 'purchase', 'treasury', 'payroll', 'depreciation', 'closing'].includes(String(input.voucherType))
         || !Array.isArray(input.lines) || input.lines.length < 2 || input.lines.length > 100
         || input.lines.some((line) => !line || typeof line !== 'object'
           || typeof (line as Record<string, unknown>).accountCode !== 'string'
