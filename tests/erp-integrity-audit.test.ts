@@ -952,7 +952,11 @@ test('Tracked warehouse transfer preserves fractional FIFO quantity through rece
     transferNumber: 'TRF-FRAC-001',
     mode: 'in_transit',
     defaultCostingMethod: 'fifo',
+    eventSequence: 21,
+    eventSequenceSource: 'sync',
   });
+  assert.equal(dispatched.transferRecord.eventSequence, 21);
+  assert.equal(dispatched.transferRecord.eventSequenceSource, 'sync');
   assert.equal(dispatched.plan.qty, 0.1234);
   assert.equal(dispatched.transferRecord.qty, 0.1234);
   assert.equal(dispatched.updatedProduct.stock, 0.1234);
@@ -963,9 +967,11 @@ test('Tracked warehouse transfer preserves fractional FIFO quantity through rece
     transfer: dispatched.transferRecord,
     receivedDate: '1405/01/03',
     eventSequence: 22,
+    eventSequenceSource: 'sync',
   });
   assert.equal(received.updatedTransfer.status, 'received');
   assert.equal(received.updatedTransfer.receivedEventSequence, 22);
+  assert.equal(received.updatedTransfer.receivedEventSequenceSource, 'sync');
   const destinationKardex = computeWarehouseProductKardex({
     product: received.updatedProduct,
     warehouse: 'انبار مقصد',
@@ -974,6 +980,8 @@ test('Tracked warehouse transfer preserves fractional FIFO quantity through rece
   });
   assert.equal(destinationKardex[0].inQty, 0.1234);
   assert.equal(destinationKardex[0].balanceQty, 0.1234);
+  assert.equal(destinationKardex[0].eventSequence, 22);
+  assert.equal(destinationKardex[0].eventSequenceSource, 'sync');
 });
 
 test('Warehouse Kardex preserves four-decimal fractional quantities', () => {
