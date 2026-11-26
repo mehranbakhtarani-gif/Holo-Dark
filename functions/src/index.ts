@@ -197,6 +197,9 @@ export const sequenceSyncedWarehouseTransferEvents = onDocumentWritten(
             || !['online', 'sync'].includes(String(snap.get('source')))) continue;
         const sequence = Number(snap.get('eventSequence'));
         const source = String(snap.get('source'));
+        if (!snap.get('transferSnapshot')) {
+          tx.set(item.ref, { transferSnapshot: item.transfer }, { merge: true });
+        }
         const sequenceKey = item.kind === 'dispatch' ? 'eventSequence' : 'receivedEventSequence';
         const sourceKey = item.kind === 'dispatch' ? 'eventSequenceSource' : 'receivedEventSequenceSource';
         if (item.transfer[sequenceKey] !== sequence || item.transfer[sourceKey] !== source) {
@@ -220,6 +223,7 @@ export const sequenceSyncedWarehouseTransferEvents = onDocumentWritten(
           kind: pending.kind,
           eventSequence: nextSequence,
           source,
+          transferSnapshot: pending.transfer,
           createdAt: FieldValue.serverTimestamp(),
         });
         changed = true;
