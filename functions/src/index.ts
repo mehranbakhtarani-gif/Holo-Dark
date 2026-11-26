@@ -1333,6 +1333,7 @@ export const listTrackedWarehouseTransferHistory = onCall({ region: REGION, time
   const PAGE_DOCUMENTS = 100;
   let query = db.collection('warehouseTransferEventAuthority')
     .where('ownerId', '==', workspaceId)
+    .where('kind', '==', 'dispatch')
     .orderBy(FieldPath.documentId(), 'desc')
     .limit(PAGE_DOCUMENTS);
   if (typeof cursor === 'string' && cursor) query = query.startAfter(cursor);
