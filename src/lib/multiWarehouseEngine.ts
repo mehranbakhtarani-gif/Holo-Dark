@@ -47,6 +47,7 @@ export interface TrackedWarehouseTransfer {
   eventSequenceSource?: 'online' | 'sync';
   receivedEventSequence?: number; // Server-allocated receipt order; distinct from dispatch
   receivedEventSequenceSource?: 'online' | 'sync';
+  updatedAt?: string;
   voucherId?: string;
   operatorName?: string;
   notes?: string;
