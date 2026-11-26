@@ -92,6 +92,27 @@ service cloud.firestore {
         && data.updatedAt is timestamp;
     }
 
+    // Client-created online invoices must reserve their sequence in the same atomic
+    // write as the counter update. Offline invoices omit both fields; the trusted
+    // Firestore trigger assigns their sequence after synchronization.
+    function hasOnlineInventorySequence(data) {
+      let counterPath = /databases/$(database)/documents/counters/$(request.auth.uid);
+      return (
+        !('eventSequence' in data) && !('eventSequenceSource' in data)
+      ) || (
+        ('eventSequence' in data)
+        && ('eventSequenceSource' in data)
+        && data.eventSequenceSource == 'online'
+        && existsAfter(counterPath)
+        && getAfter(counterPath).data.lastInventorySequence == data.eventSequence
+        && (
+          !exists(counterPath)
+          || !('lastInventorySequence' in get(counterPath).data)
+          || get(counterPath).data.lastInventorySequence < data.eventSequence
+        )
+      );
+    }
+
     function isValidAccount(data) {
       return data.keys().hasAll(['ownerId', 'code', 'title', 'level', 'category', 'nature', 'isSystem', 'createdAt', 'updatedAt'])
         && data.keys().hasOnly(['ownerId', 'code', 'title', 'level', 'parentCode', 'category', 'nature', 'isSystem', 'createdAt', 'updatedAt'])
@@ -310,6 +331,7 @@ service cloud.firestore {
         && after.ownerId == before.ownerId
         && after.createdAt == before.createdAt
         && after.updatedAt == request.time
+        && !changed.hasAny(['eventSequence', 'eventSequenceSource'])
         && (
           !changed.hasAny(['returnRevision', 'activeReturnCount', 'lastReturnMutationId'])
           || (
@@ -399,6 +421,7 @@ service cloud.firestore {
         && (!('activeReturnCount' in data) || (data.activeReturnCount is int && data.activeReturnCount >= 0))
         && (!('eventSequence' in data) || (data.eventSequence is int && data.eventSequence > 0))
         && (!('eventSequenceSource' in data) || data.eventSequenceSource in ['online', 'sync'])
+        && hasOnlineInventorySequence(data)
         && isOptionalString(data, 'lastReturnMutationId', 128)
         && (!(data.invoiceType in ['sale_return', 'purchase_return']) || (!('returnRevision' in data) && !('activeReturnCount' in data) && !('lastReturnMutationId' in data)))
         && data.invoiceType in ['sale', 'purchase', 'proforma', 'sale_return', 'purchase_return', 'waste']
