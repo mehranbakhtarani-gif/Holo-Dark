@@ -77,6 +77,13 @@ test('invoice and workspace counter enforce monotonic inventory event sequences'
     returnRevision: 0,
     activeReturnCount: 0,
     eventSequence: 7,
+    eventSequenceSource: 'sync',
+  })));
+  await assertFails(setDoc(doc(db, 'invoices', 'sale_with_invalid_sequence_source'), invoiceBase(uid, 'sale', {
+    returnRevision: 0,
+    activeReturnCount: 0,
+    eventSequence: 8,
+    eventSequenceSource: 'client-clock',
   })));
   await assertFails(setDoc(doc(db, 'invoices', 'sale_with_fractional_sequence'), invoiceBase(uid, 'sale', {
     returnRevision: 0,
