@@ -4,7 +4,7 @@ import { initializeApp } from 'firebase-admin/app';
 import { getAuth } from 'firebase-admin/auth';
 import { FieldPath, FieldValue, Firestore, QueryDocumentSnapshot } from '@google-cloud/firestore';
 import { HttpsError, onCall } from 'firebase-functions/v2/https';
-import { onDocumentCreated } from 'firebase-functions/v2/firestore';
+import { onDocumentCreated, onDocumentWritten } from 'firebase-functions/v2/firestore';
 
 const app = initializeApp();
 const db = new Firestore({
@@ -81,6 +81,94 @@ export const sequenceOfflineInventoryInvoice = onDocumentCreated(
       });
       tx.set(counterRef, {
         ownerId,
+        lastVoucherNumber: Math.max(0, Number(counterSnap.data()?.lastVoucherNumber) || 0),
+        lastInvoiceSeq: Math.max(0, Number(counterSnap.data()?.lastInvoiceSeq) || 102),
+        lastInventorySequence: nextSequence,
+        updatedAt: now,
+        ...(!counterSnap.exists ? { createdAt: now } : {}),
+      }, { merge: true });
+    });
+  },
+);
+
+/**
+ * Assigns server acceptance order to warehouse transfer events first synchronized
+ * from an offline device. The sequence is explicitly marked "sync": it is not proof
+ * of the original action order on disconnected devices.
+ */
+export const sequenceSyncedWarehouseTransferEvents = onDocumentWritten(
+  {
+    document: 'workspaceExtensions/{workspaceId}',
+    database: 'ai-studio-remixapex-83053e73-77ed-4f64-8f70-f22da529446b',
+    region: REGION,
+    retry: true,
+  },
+  async (event) => {
+    const after = event.data?.after;
+    const workspaceId = String(event.params.workspaceId || '');
+    if (!after?.exists || !workspaceId) return;
+
+    const extensionRef = after.ref;
+    const manifestRef = db.collection('workspaceMigrations').doc(workspaceId);
+    await db.runTransaction(async (tx) => {
+      const [manifestSnap, extensionSnap] = await Promise.all([
+        tx.get(manifestRef),
+        tx.get(extensionRef),
+      ]);
+      if (!extensionSnap.exists) return;
+      const extension = extensionSnap.data() || {};
+      if (extension.ownerId !== workspaceId) return;
+
+      const transfers = Array.isArray(extension.trackedWarehouseTransfers)
+        ? extension.trackedWarehouseTransfers as Record<string, unknown>[]
+        : [];
+      if (!transfers.length) return;
+
+      const nextTransfers = transfers.map((transfer) => ({ ...transfer }));
+      const hasPendingSequence = nextTransfers.some((transfer) =>
+        transfer && typeof transfer.id === 'string' && (
+          !Number.isSafeInteger(transfer.eventSequence) ||
+          (transfer.status === 'received' && !Number.isSafeInteger(transfer.receivedEventSequence))
+        )
+      );
+      if (!hasPendingSequence) return;
+
+      const nativeMode = manifestSnap.exists && manifestSnap.get('coreWriteMode') === 'workspace_native';
+      const counterRef = nativeMode
+        ? migrationDestination(workspaceId, 'counters').doc(workspaceId)
+        : db.collection('counters').doc(workspaceId);
+      const counterSnap = await tx.get(counterRef);
+      let nextSequence = Math.max(0, Number(counterSnap.data()?.lastInventorySequence) || 0);
+
+      // Extension arrays are newest-first in the UI. Reverse traversal gives the
+      // oldest visible pending transfer first, while the sync provenance preserves ambiguity.
+      for (let i = nextTransfers.length - 1; i >= 0; i -= 1) {
+        const transfer = nextTransfers[i];
+        if (!transfer || typeof transfer.id !== 'string' || !transfer.id
+            || typeof transfer.productId !== 'string' || !transfer.productId
+            || !Number.isFinite(Number(transfer.qty)) || Number(transfer.qty) <= 0) continue;
+
+        if (!Number.isSafeInteger(transfer.eventSequence)) {
+          nextSequence += 1;
+          transfer.eventSequence = nextSequence;
+          transfer.eventSequenceSource = 'sync';
+        }
+        if (transfer.status === 'received' && !Number.isSafeInteger(transfer.receivedEventSequence)) {
+          nextSequence += 1;
+          transfer.receivedEventSequence = nextSequence;
+          transfer.receivedEventSequenceSource = 'sync';
+        }
+      }
+
+      if (nextSequence === Math.max(0, Number(counterSnap.data()?.lastInventorySequence) || 0)) return;
+      const now = FieldValue.serverTimestamp();
+      tx.update(extensionRef, {
+        trackedWarehouseTransfers: nextTransfers,
+        _version: Math.max(0, Number(extension._version) || 0) + 1,
+        updatedAt: now,
+      });
+      tx.set(counterRef, {
+        ownerId: workspaceId,
         lastVoucherNumber: Math.max(0, Number(counterSnap.data()?.lastVoucherNumber) || 0),
         lastInvoiceSeq: Math.max(0, Number(counterSnap.data()?.lastInvoiceSeq) || 102),
         lastInventorySequence: nextSequence,
