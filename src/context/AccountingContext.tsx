@@ -3044,6 +3044,7 @@ export const AccountingProvider: React.FC<{ children: React.ReactNode }> = ({ ch
 
               let liveOriginalInvoice = linkedOriginalInvoice;
               let sourceInvoiceReturnRevision: number | null = null;
+              let sourceInvoiceActiveReturnCount: number | null = null;
               let sourceInvoiceVersion: number | null = null;
               const isLinkedReturn =
                 (payload.invoiceType === 'sale_return' || payload.invoiceType === 'purchase_return') &&
@@ -3067,6 +3068,7 @@ export const AccountingProvider: React.FC<{ children: React.ReactNode }> = ({ ch
                   id: sourceInvoiceSnap.id,
                 } as Invoice;
                 sourceInvoiceReturnRevision = liveRevision;
+                sourceInvoiceActiveReturnCount = Number(sourceInvoiceSnap.data().activeReturnCount) || 0;
                 sourceInvoiceVersion = Number(sourceInvoiceSnap.data()._version) || 1;
               }
 
@@ -3144,10 +3146,12 @@ export const AccountingProvider: React.FC<{ children: React.ReactNode }> = ({ ch
               if (
                 payload.sourceInvoiceId &&
                 sourceInvoiceReturnRevision !== null &&
+                sourceInvoiceActiveReturnCount !== null &&
                 sourceInvoiceVersion !== null
               ) {
                 tx.update(doc(db, 'invoices', payload.sourceInvoiceId), {
                   returnRevision: sourceInvoiceReturnRevision + 1,
+                  activeReturnCount: sourceInvoiceActiveReturnCount + 1,
                   _version: sourceInvoiceVersion + 1,
                   updatedByDevice: deviceId.slice(0, 64),
                   updatedAt: serverTimestamp(),
@@ -3348,6 +3352,7 @@ export const AccountingProvider: React.FC<{ children: React.ReactNode }> = ({ ch
             if (liveInvoice.status === 'cancelled') return { alreadyCancelled: true as const };
 
             let sourceInvoiceReturnRevision: number | null = null;
+            let sourceInvoiceActiveReturnCount: number | null = null;
             let sourceInvoiceVersion: number | null = null;
             if (
               liveInvoice.sourceInvoiceId &&
@@ -3364,6 +3369,8 @@ export const AccountingProvider: React.FC<{ children: React.ReactNode }> = ({ ch
                 throw new Error('اطلاعات برگشت فاکتور مرجع در دستگاه دیگری تغییر کرده است؛ اطلاعات را تازه‌سازی و دوباره تلاش کنید.');
               }
               sourceInvoiceReturnRevision = liveRevision;
+              sourceInvoiceActiveReturnCount = Number(sourceInvoiceSnap.data().activeReturnCount) || 0;
+              if (sourceInvoiceActiveReturnCount < 1) throw new Error('شمارنده برگشت‌های فعال فاکتور مرجع معتبر نیست؛ ابطال برگشت متوقف شد.');
               sourceInvoiceVersion = Number(sourceInvoiceSnap.data()._version) || 1;
             } else if (liveInvoice.invoiceType === 'sale' || liveInvoice.invoiceType === 'purchase') {
               const liveRevision = Number(invoiceSnap.data().returnRevision) || 0;
@@ -3423,10 +3430,12 @@ export const AccountingProvider: React.FC<{ children: React.ReactNode }> = ({ ch
             if (
               liveInvoice.sourceInvoiceId &&
               sourceInvoiceReturnRevision !== null &&
+              sourceInvoiceActiveReturnCount !== null &&
               sourceInvoiceVersion !== null
             ) {
               tx.update(doc(db, 'invoices', liveInvoice.sourceInvoiceId), {
                 returnRevision: sourceInvoiceReturnRevision + 1,
+                activeReturnCount: sourceInvoiceActiveReturnCount - 1,
                 _version: sourceInvoiceVersion + 1,
                 updatedByDevice: deviceId.slice(0, 64),
                 updatedAt: serverTimestamp(),
