@@ -458,9 +458,30 @@ test('workspace voucher create, numbering, finalize and replay are atomic', asyn
     coreWriteMode: 'workspace_native',
     readBarrier: { status: 'frozen', generation: 'voucher-generation-1', frozenAt: Timestamp.now() },
   });
+  const now = Timestamp.now();
+  const accountRecords = [
+    { id: 'account-cash', code: '101', title: 'Cash', level: 'moein', category: 'asset', nature: 'debit' },
+    { id: 'account-sales', code: '401', title: 'Sales', level: 'moein', category: 'revenue', nature: 'credit' },
+    { id: 'account-party-required', code: '10401', title: 'Receivables', level: 'tafsili', category: 'asset', nature: 'debit', requiresParty: true },
+    { id: 'account-group', code: '501', title: 'Group account', level: 'group', category: 'expense', nature: 'debit' },
+  ];
+  const accountsCollection = firestore.collection('workspaces').doc(owner.uid)
+    .collection('migrationData').doc('accounts').collection('records');
+  for (const account of accountRecords) {
+    const { id, ...payload } = account;
+    await accountsCollection.doc(id).set({
+      workspaceId: owner.uid, sourceCollection: 'accounts', sourceId: id,
+      sourceHash: `fixture-${id}`, schemaVersion: 1, version: 1, deleted: false,
+      payload: {
+        ownerId: owner.uid, isSystem: false, active: true,
+        createdAt: now, updatedAt: now, ...payload,
+      },
+      createdAt: now, updatedAt: now,
+    });
+  }
+
   const voucherId = `voucher-${owner.uid}`;
   const operationId = randomUUID().replace(/-/g, '');
-  const now = Timestamp.now();
   const draft = {
     ownerId: owner.uid, date: '1405/08/05', fiscalYear: '1405',
     description: 'Atomic workspace voucher', voucherType: 'general', status: 'draft',
@@ -470,6 +491,27 @@ test('workspace voucher create, numbering, finalize and replay are atomic', asyn
       { accountCode: '401', debit: 0, credit: 1250, description: 'Credit' },
     ],
   };
+  await expectCallableError(call('mutateWorkspaceVoucher', owner.token, {
+    operation: 'create', documentId: `voucher-unknown-account-${owner.uid}`,
+    operationId: randomUUID().replace(/-/g, ''),
+    data: { ...draft, lines: [{ accountCode: '99999', debit: 1250, credit: 0 }, { accountCode: '401', debit: 0, credit: 1250 }] },
+  }), 'FAILED_PRECONDITION');
+  await expectCallableError(call('mutateWorkspaceVoucher', owner.token, {
+    operation: 'create', documentId: `voucher-group-account-${owner.uid}`,
+    operationId: randomUUID().replace(/-/g, ''),
+    data: { ...draft, lines: [{ accountCode: '501', debit: 1250, credit: 0 }, { accountCode: '401', debit: 0, credit: 1250 }] },
+  }), 'FAILED_PRECONDITION');
+  await expectCallableError(call('mutateWorkspaceVoucher', owner.token, {
+    operation: 'create', documentId: `voucher-party-required-${owner.uid}`,
+    operationId: randomUUID().replace(/-/g, ''),
+    data: { ...draft, lines: [{ accountCode: '10401', debit: 1250, credit: 0 }, { accountCode: '401', debit: 0, credit: 1250 }] },
+  }), 'FAILED_PRECONDITION');
+  await expectCallableError(call('mutateWorkspaceVoucher', owner.token, {
+    operation: 'create', documentId: `voucher-invalid-date-${owner.uid}`,
+    operationId: randomUUID().replace(/-/g, ''),
+    data: { ...draft, date: '1405/13/01' },
+  }), 'FAILED_PRECONDITION');
+
   const created = await call('mutateWorkspaceVoucher', owner.token, {
     operation: 'create', documentId: voucherId, operationId, data: draft,
   });
