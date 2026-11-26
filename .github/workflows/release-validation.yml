@@ -29,7 +29,7 @@ jobs:
       - name: Set up Node.js
         uses: actions/setup-node@v4
         with:
-          node-version: 22
+          node-version: 24.12.0
 
       - name: Install dependencies
         run: npm install --no-audit --no-fund --no-progress
@@ -39,6 +39,14 @@ jobs:
 
       - name: TypeScript validation
         run: npm run lint
+
+      - name: Install Firebase Functions dependencies
+        run: npm install --no-audit --no-fund --no-progress
+        working-directory: functions
+
+      - name: Type-check Firebase Functions
+        run: npm run lint
+        working-directory: functions
 
       - name: Build production application
         run: npm run build
