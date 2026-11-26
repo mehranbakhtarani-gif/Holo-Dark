@@ -1704,6 +1704,116 @@ export const adjustWorkspaceProductStockWithVoucher = onCall({ region: REGION, t
   });
 });
 
+function isValidWorkspaceShamsiDate(value: unknown): value is string {
+  if (typeof value !== 'string') return false;
+  const match = /^(\\d{4})\\/(\\d{2})\\/(\\d{2})$/.exec(value.trim());
+  if (!match) return false;
+  const year = Number(match[1]);
+  const month = Number(match[2]);
+  const day = Number(match[3]);
+  if (year < 1300 || year > 1500 || month < 1 || month > 12) return false;
+  const maxDay = month <= 6 ? 31 : 30;
+  return day >= 1 && day <= maxDay;
+}
+
+/** Server-side reference and fiscal-period validation for every workspace-native voucher transition. */
+async function validateWorkspaceVoucherReferences(
+  tx: FirebaseFirestore.Transaction,
+  workspaceId: string,
+  voucher: Record<string, unknown>,
+  fiscalProfileSnap: FirebaseFirestore.DocumentSnapshot,
+): Promise<void> {
+  if (!isValidWorkspaceShamsiDate(voucher.date)) {
+    throw new HttpsError('invalid-argument', 'تاریخ سند شمسی معتبر نیست.');
+  }
+  const dateFiscalYear = voucher.date.slice(0, 4);
+  if (typeof voucher.fiscalYear !== 'string' || voucher.fiscalYear !== dateFiscalYear) {
+    throw new HttpsError('invalid-argument', 'سال مالی سند با سال درج‌شده در تاریخ آن مطابقت ندارد.');
+  }
+  const closedFiscalYears = fiscalProfileSnap.get('closedFiscalYears');
+  if (Array.isArray(closedFiscalYears) && closedFiscalYears.includes(dateFiscalYear)) {
+    throw new HttpsError('failed-precondition', `سال مالی ${dateFiscalYear} بسته شده است؛ ثبت یا تغییر سند مجاز نیست.`);
+  }
+
+  const lines = Array.isArray(voucher.lines) ? voucher.lines as Record<string, unknown>[] : [];
+  if (lines.length < 2 || lines.length > 100) {
+    throw new HttpsError('invalid-argument', 'تعداد آرتیکل‌های سند معتبر نیست.');
+  }
+  const accountCodes = [...new Set(lines.map((line) =>
+    typeof line?.accountCode === 'string' ? line.accountCode.trim() : ''
+  ).filter(Boolean))];
+  if (accountCodes.length === 0) {
+    throw new HttpsError('invalid-argument', 'کد حساب‌های سند معتبر نیست.');
+  }
+
+  const accountCollection = migrationDestination(workspaceId, 'accounts');
+  const accountPages = await Promise.all(
+    Array.from({ length: Math.ceil(accountCodes.length / 30) }, (_, index) =>
+      tx.get(accountCollection.where('payload.code', 'in', accountCodes.slice(index * 30, (index + 1) * 30)))
+    ),
+  );
+  const accountsByCode = new Map<string, Record<string, unknown>>();
+  for (const page of accountPages) {
+    for (const document of page.docs) {
+      const payload = document.get('payload') as Record<string, unknown> | undefined;
+      if (payload && payload.ownerId === workspaceId && typeof payload.code === 'string') {
+        accountsByCode.set(payload.code, payload);
+      }
+    }
+  }
+
+  const partyIds = [...new Set(lines.map((line) =>
+    typeof line?.partyId === 'string' ? line.partyId.trim() : ''
+  ).filter(Boolean))];
+  const costCenterIds = [...new Set(lines.map((line) =>
+    typeof line?.costCenterId === 'string' ? line.costCenterId.trim() : ''
+  ).filter(Boolean))];
+  const [partySnapshots, costCenterSnapshots] = await Promise.all([
+    Promise.all(partyIds.map((id) => tx.get(migrationDestination(workspaceId, 'parties').doc(id)))),
+    Promise.all(costCenterIds.map((id) => tx.get(migrationDestination(workspaceId, 'costCenters').doc(id)))),
+  ]);
+  const partiesById = new Map(partyIds.map((id, index) => [id, partySnapshots[index]]));
+  const costCentersById = new Map(costCenterIds.map((id, index) => [id, costCenterSnapshots[index]]));
+
+  for (let index = 0; index < lines.length; index += 1) {
+    const line = lines[index];
+    const rowNumber = index + 1;
+    const code = typeof line.accountCode === 'string' ? line.accountCode.trim() : '';
+    const account = accountsByCode.get(code);
+    if (!account) {
+      throw new HttpsError('failed-precondition', `ردیف ${rowNumber}: حساب ${code || 'نامشخص'} در کدینگ تأییدشده فضای کاری وجود ندارد.`);
+    }
+    if (account.active === false) {
+      throw new HttpsError('failed-precondition', `ردیف ${rowNumber}: حساب ${code} غیرفعال است.`);
+    }
+    if (account.level === 'group' || account.level === 'kol') {
+      throw new HttpsError('failed-precondition', `ردیف ${rowNumber}: ثبت مستقیم روی حساب گروه یا کل مجاز نیست.`);
+    }
+
+    const requiresParty = account.requiresParty === true
+      || (account.requiresParty !== false && ['104', '301', '103', '302'].some((prefix) => code.startsWith(prefix)));
+    const partyId = typeof line.partyId === 'string' ? line.partyId.trim() : '';
+    if (requiresParty && !partyId) {
+      throw new HttpsError('failed-precondition', `ردیف ${rowNumber}: انتخاب طرف‌حساب برای حساب ${code} الزامی است.`);
+    }
+    if (partyId) {
+      const party = partiesById.get(partyId);
+      if (!party?.exists || party.get('payload.ownerId') !== workspaceId) {
+        throw new HttpsError('failed-precondition', `ردیف ${rowNumber}: طرف‌حساب انتخاب‌شده در فضای کاری یافت نشد.`);
+      }
+    }
+
+    const costCenterId = typeof line.costCenterId === 'string' ? line.costCenterId.trim() : '';
+    if (costCenterId) {
+      const costCenter = costCentersById.get(costCenterId);
+      if (!costCenter?.exists || costCenter.get('payload.ownerId') !== workspaceId
+          || costCenter.get('payload.active') === false) {
+        throw new HttpsError('failed-precondition', `ردیف ${rowNumber}: مرکز هزینه معتبر و فعال نیست.`);
+      }
+    }
+  }
+}
+
 /** Workspace-native voucher create/finalize. Voucher and fiscal counter commit together. */
 export const mutateWorkspaceVoucher = onCall({ region: REGION, timeoutSeconds: 60 }, async (request) => {
   const auth = request.auth as CallableAuth | undefined;
@@ -1790,11 +1900,11 @@ export const mutateWorkspaceVoucher = onCall({ region: REGION, timeoutSeconds: 6
     const sourceVoucherRef = operation === 'reverse'
       ? migrationDestination(workspaceId, 'vouchers').doc(String(sourceDocumentId))
       : null;
-    const fiscalProfileRef = operation === 'reverse' ? db.collection('users').doc(workspaceId) : null;
+    const fiscalProfileRef = db.collection('users').doc(workspaceId);
     const [manifest, operationSnap, voucherSnap, counterSnap, sourceVoucherSnap, fiscalProfileSnap] = await Promise.all([
       tx.get(manifestRef), tx.get(operationRef), tx.get(voucherRef), tx.get(counterRef),
       sourceVoucherRef ? tx.get(sourceVoucherRef) : Promise.resolve(null),
-      fiscalProfileRef ? tx.get(fiscalProfileRef) : Promise.resolve(null),
+      tx.get(fiscalProfileRef),
     ]);
     if (!manifest.exists || manifest.get('status') !== 'verified'
         || manifest.get('coreWritesFrozen') !== true || manifest.get('coreWriteMode') !== 'workspace_native'
@@ -1821,6 +1931,9 @@ export const mutateWorkspaceVoucher = onCall({ region: REGION, timeoutSeconds: 6
       const currentPayload = voucherSnap.get('payload') as Record<string, unknown>;
       if (currentPayload.status !== 'draft') {
         throw new HttpsError('failed-precondition', 'فقط سند پیش‌نویس قابل ویرایش یا حذف است.');
+      }
+      if (operation === 'update') {
+        await validateWorkspaceVoucherReferences(tx, workspaceId, input!, fiscalProfileSnap);
       }
       const nextVersion = currentVersion + 1;
       let sourceVersion: number | undefined;
@@ -1938,6 +2051,7 @@ export const mutateWorkspaceVoucher = onCall({ region: REGION, timeoutSeconds: 6
         createdAt: now, updatedAt: now, _version: 1,
         ...(typeof input!.updatedByDevice === 'string' ? { updatedByDevice: input!.updatedByDevice } : {}),
       };
+      await validateWorkspaceVoucherReferences(tx, workspaceId, reversalPayload, fiscalProfileSnap);
       tx.create(voucherRef, {
         workspaceId, sourceCollection: 'vouchers', sourceId: documentId,
         sourceHash: workspaceMigrationHash(reversalPayload), schemaVersion: 1,
@@ -1964,6 +2078,7 @@ export const mutateWorkspaceVoucher = onCall({ region: REGION, timeoutSeconds: 6
     }
     if (operation === 'create') {
       if (voucherSnap.exists) throw new HttpsError('already-exists', 'شناسه سند از قبل وجود دارد.');
+      await validateWorkspaceVoucherReferences(tx, workspaceId, input!, fiscalProfileSnap);
       const fiscalYear = String(input!.fiscalYear);
       const voucherQuery = migrationDestination(workspaceId, 'vouchers')
         .where('payload.fiscalYear', '==', fiscalYear);
@@ -1997,6 +2112,7 @@ export const mutateWorkspaceVoucher = onCall({ region: REGION, timeoutSeconds: 6
     }
     const currentPayload = voucherSnap.get('payload') as Record<string, unknown>;
     if (currentPayload.status !== 'draft') throw new HttpsError('failed-precondition', 'فقط سند پیش‌نویس قابل قطعی‌سازی است.');
+    await validateWorkspaceVoucherReferences(tx, workspaceId, currentPayload, fiscalProfileSnap);
     const integrityHash = request.data?.integrityHash;
     if (typeof integrityHash !== 'string' || !/^vseal_[0-9a-f]{16}$/.test(integrityHash)
         || workspaceVoucherIntegrityHash(currentPayload) !== integrityHash) {
