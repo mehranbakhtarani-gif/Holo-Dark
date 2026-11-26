@@ -296,6 +296,8 @@ type MeshWireMessage =
       type: 'mesh:state_payload';
       fromPeerId: MeshDevicePeerId;
       authTag: string;
+      nonce: string;
+      issuedAt: string;
       updatedAt: string;
       payloadHash: string;
       vectorClock: Record<string, number>;
