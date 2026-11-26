@@ -112,6 +112,15 @@ export function validateStatutoryParams(params: IranFiscalYearStatutoryParams): 
   if (!Number.isFinite(params.insurableWageCeilingIrr) || params.insurableWageCeilingIrr <= 0) {
     errors.push('سقف دستمزد مشمول بیمه باید بزرگ‌تر از صفر باشد.');
   }
+  if (!Number.isFinite(params.childAllowancePerChildIrr) || params.childAllowancePerChildIrr < 0) {
+    errors.push('حق اولاد هر فرزند باید عددی معتبر و غیرمنفی باشد.');
+  }
+  if (!Number.isFinite(params.overtimeMultiplier) || params.overtimeMultiplier <= 0 || params.overtimeMultiplier > 5) {
+    errors.push('ضریب اضافه‌کاری باید عددی بزرگ‌تر از صفر و حداکثر ۵ باشد.');
+  }
+  if (!Number.isFinite(params.monthlyWorkingHoursBase) || params.monthlyWorkingHoursBase <= 0 || params.monthlyWorkingHoursBase > 744) {
+    errors.push('مبنای ساعات کار ماهانه باید عددی بزرگ‌تر از صفر و حداکثر ۷۴۴ ساعت باشد.');
+  }
   if (!Array.isArray(params.monthlyTaxBrackets) || params.monthlyTaxBrackets.length === 0) {
     errors.push('حداقل یک پله مالیاتی باید تعریف شده باشد.');
   } else {
@@ -121,12 +130,19 @@ export function validateStatutoryParams(params: IranFiscalYearStatutoryParams): 
       if (!Number.isFinite(b.rate) || b.rate < 0 || b.rate > 0.6) {
         errors.push(`نرخ پله مالیاتی ردیف ${i + 1} نامعتبر است.`);
       }
-      if (b.upToMonthlyIrr !== null) {
+      if (b.upToMonthlyIrr === null) {
+        if (i !== params.monthlyTaxBrackets.length - 1) {
+          errors.push('پله مالیاتی بدون سقف باید آخرین پله باشد.');
+        }
+      } else {
         if (!Number.isFinite(b.upToMonthlyIrr) || b.upToMonthlyIrr <= prevBound) {
           errors.push(`سقف پله مالیاتی ردیف ${i + 1} باید اکیداً بزرگ‌تر از پله قبلی باشد.`);
         }
         prevBound = b.upToMonthlyIrr;
       }
+    }
+    if (params.monthlyTaxBrackets[params.monthlyTaxBrackets.length - 1].upToMonthlyIrr !== null) {
+      errors.push('آخرین پله مالیاتی باید سقف نامحدود داشته باشد تا درآمد بالاتر از آخرین سقف بدون مالیات نماند.');
     }
   }
   return errors;
