@@ -298,3 +298,25 @@ export const revokeWorkspaceMember = onCall({ region: REGION }, async (request) 
   await setWorkspaceClaims(uid, workspaceId, '', false);
   return { uid, revoked: true };
 });
+
+/** Lists workspace membership metadata for the authenticated owner only. */
+export const listWorkspaceMembers = onCall({ region: REGION }, async (request) => {
+  const auth = request.auth as CallableAuth | undefined;
+  requireVerifiedAuth(auth);
+  const workspaceId = await requireWorkspaceOwner(auth);
+  const snapshot = await db.collection('workspaceMemberships')
+    .where('workspaceId', '==', workspaceId)
+    .get();
+  const members = snapshot.docs.map((member) => {
+    const data = member.data();
+    return {
+      uid: String(data.uid),
+      email: String(data.email || ''),
+      role: String(data.role),
+      active: data.active === true,
+      createdAt: data.createdAt?.toDate?.().toISOString?.() || null,
+    };
+  });
+  members.sort((a, b) => a.role === 'owner' ? -1 : b.role === 'owner' ? 1 : a.email.localeCompare(b.email));
+  return { members };
+});
