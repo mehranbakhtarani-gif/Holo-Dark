@@ -774,7 +774,7 @@ export function useDualCloudSync() {
     async (silent = false, overrideToken?: string | null): Promise<boolean> => {
       if (sbInFlightRef.current) return false;
       const snapshotJson = exportBackupJson();
-      const snapshotHash = fingerprintWorkspacePayload(snapshotJson);
+      const snapshotHash = await fingerprintWorkspacePayload(snapshotJson);
 
       if (
         silent &&
@@ -1558,7 +1558,6 @@ export function useDualCloudSync() {
   const clearPendingOutbox = useCallback(() => {
     clearOfflineOutbox();
     setOutbox([]);
-    pendingOperationRef.current = null;
     autoDrainAttemptedRef.current = null;
     void clearPendingSyncOutboxOperations();
     showToast('صف انتظار همگام‌سازی پاکسازی شد (اطلاعات شما در پایگاه داده محلی محفوظ است).');
