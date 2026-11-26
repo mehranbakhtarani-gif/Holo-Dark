@@ -63,7 +63,7 @@ jobs:
       - name: Firebase Functions emulator integration tests
         run: |
           npm --prefix functions run build
-          firebase emulators:exec --config firebase.json --only auth,firestore,functions --project demo-holo-dark "node --test functions/test/workspace.emulator.test.cjs"
+          firebase emulators:exec --config firebase.json --only auth,firestore,functions --project demo-holo-dark "FIREBASE_PROJECT_ID=demo-holo-dark node --test functions/test/workspace.emulator.test.cjs"
 
       - name: Build production application
         run: npm run build
