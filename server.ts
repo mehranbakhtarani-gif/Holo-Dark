@@ -32,9 +32,15 @@ async function startServer() {
   app.set('trust proxy', 1);
 
   // Baseline security headers (preserve iframe embed compatibility by omitting X-Frame-Options)
-  app.use((_req, res, next) => {
+  app.use((req, res, next) => {
     res.setHeader('X-Content-Type-Options', 'nosniff');
     res.setHeader('Referrer-Policy', 'strict-origin-when-cross-origin');
+    res.setHeader('Permissions-Policy', 'camera=(), microphone=(), geolocation=()');
+    if (req.secure) res.setHeader('Strict-Transport-Security', 'max-age=31536000; includeSubDomains');
+    if (req.path === '/api' || req.path.startsWith('/api/')) {
+      res.setHeader('Cache-Control', 'no-store');
+      res.setHeader('Pragma', 'no-cache');
+    }
     next();
   });
 
@@ -42,14 +48,15 @@ async function startServer() {
   const rateBuckets = new Map<string, { count: number; resetAt: number }>();
   const createRateLimiter = (maxPerMinute: number) => (req: Request, res: Response, next: express.NextFunction) => {
     const ip = req.ip || req.socket.remoteAddress || 'unknown';
-    const key = `${req.path}:${ip}`;
+    const key = `${req.method}:${req.baseUrl}${req.path}:${ip}`;
     const now = Date.now();
     const bucket = rateBuckets.get(key);
     if (!bucket || now > bucket.resetAt) {
       rateBuckets.set(key, { count: 1, resetAt: now + 60_000 });
       if (rateBuckets.size > 5000) {
         for (const [k, v] of rateBuckets.entries()) {
-          if (now > v.resetAt) rateBuckets.delete(k);
+          if (now > v.resetAt || rateBuckets.size > 4000) rateBuckets.delete(k);
+          if (rateBuckets.size <= 4000) break;
         }
       }
       next();
@@ -57,6 +64,7 @@ async function startServer() {
     }
     bucket.count += 1;
     if (bucket.count > maxPerMinute) {
+      res.setHeader('Retry-After', '60');
       res.status(429).json({
         error: 'تعداد درخواست‌ها بیش از حد مجاز در دقیقه است. لطفاً کمی صبر کرده و دوباره تلاش کنید.',
       });
