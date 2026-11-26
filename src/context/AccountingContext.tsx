@@ -970,6 +970,8 @@ export const AccountingProvider: React.FC<{ children: React.ReactNode }> = ({ ch
 
   const updateCompanyProfile = useCallback(
     async (patch: Partial<CompanyProfile>) => {
+      if (!requirePermission('canManageSettings', 'تغییر تنظیمات شرکت')) return;
+
       const next = { ...profile, ...patch };
       setProfile(next);
       if (user) {
@@ -1365,6 +1367,7 @@ export const AccountingProvider: React.FC<{ children: React.ReactNode }> = ({ ch
       deviceId,
       reserveNextVoucherNumber,
       showToast,
+      requirePermission,
     ]
   );
 
@@ -1963,7 +1966,7 @@ export const AccountingProvider: React.FC<{ children: React.ReactNode }> = ({ ch
       }
       showToast('تعدیل موجودی و سند حسابداری به‌صورت یکپارچه ثبت شد.');
     },
-    [products, profile, accounts, parties, ownerId, vouchers, deviceId, user, reserveNextVoucherNumber, showToast]
+    [products, profile, accounts, parties, ownerId, vouchers, deviceId, user, reserveNextVoucherNumber, showToast, requirePermission]
   );
 
   const bulkStocktakingWithVoucher = useCallback(
@@ -2106,7 +2109,7 @@ export const AccountingProvider: React.FC<{ children: React.ReactNode }> = ({ ch
       }
       showToast(`انبارگردانی ${changedCount} قلم کالا همراه با سند حسابداری به‌صورت یکپارچه ثبت شد.`);
     },
-    [products, profile, accounts, parties, ownerId, vouchers, deviceId, user, reserveNextVoucherNumber, showToast]
+    [products, profile, accounts, parties, ownerId, vouchers, deviceId, user, reserveNextVoucherNumber, showToast, requirePermission]
   );
 
   const bulkUpdateProductPrices = useCallback(
@@ -2266,6 +2269,8 @@ export const AccountingProvider: React.FC<{ children: React.ReactNode }> = ({ ch
       chequeId: string,
       patch: Partial<Pick<Cheque, 'bankName' | 'branch' | 'dueDate' | 'notes'>>
     ) => {
+      if (!requirePermission('canManageTreasury', 'ویرایش اطلاعات چک')) return;
+
       if (user) {
         try {
           const payload: Record<string, unknown> = { updatedAt: serverTimestamp() };
@@ -2338,7 +2343,7 @@ export const AccountingProvider: React.FC<{ children: React.ReactNode }> = ({ ch
         showToast(plan.description || 'وضعیت چک صیادی به‌روزرسانی شد.');
       }
     },
-    [cheques, accounts, parties, user, createVoucher, showToast]
+    [cheques, accounts, parties, user, createVoucher, showToast, requirePermission]
   );
 
   const recordQuickTreasury = useCallback(
@@ -2350,6 +2355,8 @@ export const AccountingProvider: React.FC<{ children: React.ReactNode }> = ({ ch
       date: string;
       description: string;
     }) => {
+      if (!requirePermission('canManageTreasury', 'ثبت دریافت یا پرداخت نقدی')) return;
+
       const party = parties.find((p) => p.id === payload.partyId);
       if (!party) return;
       const cashAcc = accounts.find((a) => a.code === payload.accountCode);
@@ -2417,6 +2424,8 @@ export const AccountingProvider: React.FC<{ children: React.ReactNode }> = ({ ch
       date: string;
       description: string;
     }) => {
+      if (!requirePermission('canManageTreasury', 'انتقال بین حساب‌های بانکی')) return;
+
       if (payload.fromAccountCode === payload.toAccountCode) {
         showToast('حساب مبدأ و مقصد انتقال وجه نمی‌تواند یکسان باشد.');
         return;
@@ -3230,7 +3239,7 @@ export const AccountingProvider: React.FC<{ children: React.ReactNode }> = ({ ch
       }
       showToast(`فاکتور ${inv.invoiceNumber} ابطال شد، لایه‌های بهای تمام‌شده انبار بازگردانی و سند معکوس ثبت گردید.`);
     },
-    [invoices, products, vouchers, cheques, profile, ownerId, createVoucher, user, deviceId, showToast]
+    [invoices, products, vouchers, cheques, profile, ownerId, createVoucher, user, deviceId, showToast, requirePermission]
   );
 
   const convertProformaToSale = useCallback(
@@ -3736,6 +3745,8 @@ export const AccountingProvider: React.FC<{ children: React.ReactNode }> = ({ ch
 
   const runYearEndClosing = useCallback(
     async (options?: { createNextYearOpening?: boolean }) => {
+      if (!requirePermission('canFinalizeVoucher', 'بستن سال مالی')) return;
+
       const fy = profile.fiscalYear;
       const sameYearMax = vouchers
         .filter((v) => (v.fiscalYear || extractFiscalYearFromDate(v.date)) === fy)
@@ -5172,6 +5183,8 @@ export const AccountingProvider: React.FC<{ children: React.ReactNode }> = ({ ch
   // ---------------- RBAC OPERATORS CRUD ----------------
   const addRbacOperator = useCallback(
     async (op: Omit<RbacOperator, 'id' | 'ownerId'>) => {
+      if (!requirePermission('canManageSettings', 'تعریف اپراتور')) return;
+
       const full: RbacOperator = { ...op, id: generateSafeId('op'), ownerId };
       if (user) {
         try {
@@ -5202,6 +5215,8 @@ export const AccountingProvider: React.FC<{ children: React.ReactNode }> = ({ ch
       opId: string,
       patch: Partial<Pick<RbacOperator, 'fullName' | 'role' | 'email' | 'active' | 'permissions'>>
     ) => {
+      if (!requirePermission('canManageSettings', 'تغییر دسترسی اپراتور')) return;
+
       if (user) {
         try {
           await updateDoc(doc(db, 'rbacOperators', opId), {
@@ -5222,6 +5237,8 @@ export const AccountingProvider: React.FC<{ children: React.ReactNode }> = ({ ch
 
   const deleteRbacOperator = useCallback(
     async (opId: string) => {
+      if (!requirePermission('canManageSettings', 'حذف اپراتور')) return;
+
       if (rbacOperators.length <= 1) {
         showToast('حداقل یک کاربر مدیر در سیستم باید باقی بماند.');
         return;
@@ -5298,6 +5315,8 @@ export const AccountingProvider: React.FC<{ children: React.ReactNode }> = ({ ch
 
   const reopenFiscalYear = useCallback(
     async (fiscalYear: string, reason: string): Promise<boolean> => {
+      if (!requirePermission('canManageSettings', 'بازگشایی سال مالی')) return false;
+
       const nowTime = new Date().toLocaleTimeString('fa-IR', {
         hour: '2-digit',
         minute: '2-digit',
