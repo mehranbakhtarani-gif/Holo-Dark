@@ -40,6 +40,9 @@ jobs:
       - name: TypeScript validation
         run: npm run lint
 
+      - name: Firestore rules security lint
+        run: npm run lint:rules
+
       - name: Install Firebase Functions dependencies
         run: npm install --no-audit --no-fund --no-progress
         working-directory: functions
