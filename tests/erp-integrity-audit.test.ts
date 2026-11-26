@@ -897,6 +897,52 @@ test('Multi-warehouse reconciliation preserves fractional FIFO quantities', () =
   assert.equal(matrix.reconciliation[0].isBalanced, true);
 });
 
+test('Warehouse Kardex preserves four-decimal fractional quantities', () => {
+  const product: Product = {
+    id: 'prod_kardex_fractional',
+    ownerId: 'owner_test',
+    sku: 'KDX-FRAC',
+    name: 'کالای وزنی کسری',
+    category: 'آزمایشی',
+    unit: 'کیلوگرم',
+    warehouse: 'انبار مقصد',
+    buyPrice: 10_000,
+    sellPrice: 12_000,
+    stock: 0.1234,
+    reorderPoint: 0,
+    vatExempt: true,
+    inventoryValueIrr: 1_234,
+    costingMethod: 'fifo',
+    costLayers: [
+      { layerId: 'fractional_received', date: '1405/01/03', sourceRef: 'TRF-FRAC', warehouse: 'انبار مقصد', originalQty: 0.1234, remainingQty: 0.1234, unitCostIrr: 10_000, totalCostIrr: 1_234 },
+    ],
+  };
+  const kardex = computeWarehouseProductKardex({
+    product,
+    warehouse: 'انبار مقصد',
+    invoices: [],
+    transfers: [{
+      id: 'transfer_fractional',
+      transferNumber: 'TRF-FRAC',
+      date: '1405/01/02',
+      receivedDate: '1405/01/03',
+      productId: product.id,
+      sku: product.sku,
+      productName: product.name,
+      fromWarehouse: 'انبار مبدأ',
+      toWarehouse: 'انبار مقصد',
+      qty: 0.1234,
+      transferredCostIrr: 1_234,
+      transferredLayers: product.costLayers || [],
+      status: 'received',
+    }],
+  });
+  assert.equal(kardex.length, 1);
+  assert.equal(kardex[0].inQty, 0.1234);
+  assert.equal(kardex[0].balanceQty, 0.1234,
+    'Kardex running balances must preserve the same four-decimal precision as FIFO layers');
+});
+
 test('Receiving an in-transit transfer moves only its exact FIFO layers and preserves valuation', () => {
   const product: Product = {
     id: 'prod_receive_transfer',
