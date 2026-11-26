@@ -165,3 +165,7 @@ The Functions access the existing named database through `@google-cloud/firestor
 
 ## Workspace context resolution (phase 14 foundation)
 The `getWorkspaceContext` callable resolves the workspace locator from the authenticated token, then revalidates the active membership document and active workspace on every request. Its role value is server-authoritative. The response includes migration status; staged reads are advertised only when the manifest is verified. The client exports a typed callable helper, but AccountingContext is not yet switched to this result. Root ownerId queries and writes remain unchanged until the subsequent read-adapter and transaction-routing steps are implemented and verified.
+
+
+## AccountingContext workspace resolution guard
+AccountingContext now calls `getWorkspaceContext` before cloud seeding or root-collection listeners. If the caller is an active member whose workspace ID differs from their Firebase UID, it does not seed a personal duplicate tenant and does not attach legacy root listeners. The Context scopes its ownerId to the resolved workspace owner ID; because current root Firestore Rules still require `ownerId == request.auth.uid`, member writes are intentionally denied until server-backed Workspace CRUD/read adapters and matching authorization rules are implemented. Verified staging status alone does not enable client reads: the snapshot can become stale while legacy writes continue. Authorization errors fail closed; only an uninitialized workspace or a not-yet-deployed resolver retains the legacy owner path.
