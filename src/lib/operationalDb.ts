@@ -480,38 +480,6 @@ export async function markSyncOutboxOperationStatus(
   }
 }
 
-/** Removes operations superseded by an accepted full-workspace snapshot for one sync scope. */
-export async function clearSyncOutboxOperationsForScope(
-  target: SyncOutboxOperation['target'],
-  workspaceId: string,
-  deviceId: string,
-): Promise<void> {
-  if (!isIndexedDbAvailable()) {
-    throw new Error('IndexedDB is unavailable; sync outbox cleanup cannot be verified.');
-  }
-  const db = await openOperationalDb();
-  try {
-    await new Promise<void>((resolve, reject) => {
-      const tx = db.transaction('syncOutbox', 'readwrite');
-      const store = tx.objectStore('syncOutbox');
-      const req = store.getAll();
-      req.onsuccess = () => {
-        for (const item of (req.result as SyncOutboxOperation[])) {
-          if (item.target === target && item.workspaceId === workspaceId && item.deviceId === deviceId) {
-            store.delete(item.operationId);
-          }
-        }
-      };
-      req.onerror = () => reject(req.error ?? new Error('Failed to inspect sync outbox'));
-      tx.oncomplete = () => resolve();
-      tx.onerror = () => reject(tx.error ?? new Error('Sync outbox cleanup failed'));
-      tx.onabort = () => reject(tx.error ?? new Error('Sync outbox cleanup aborted'));
-    });
-  } finally {
-    db.close();
-  }
-}
-
 export async function clearPendingSyncOutboxOperations(): Promise<void> {
   if (!isIndexedDbAvailable()) return;
   try {
