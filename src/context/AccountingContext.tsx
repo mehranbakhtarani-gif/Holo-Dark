@@ -3020,6 +3020,13 @@ export const AccountingProvider: React.FC<{ children: React.ReactNode }> = ({ ch
 
       if (user) {
         const isOfflineNow = typeof navigator !== 'undefined' && !navigator.onLine;
+        if (
+          isOfflineNow &&
+          payload.sourceInvoiceId &&
+          (payload.invoiceType === 'sale_return' || payload.invoiceType === 'purchase_return')
+        ) {
+          throw new Error('ثبت برگشت ارجاع‌دار در حالت آفلاین مجاز نیست؛ برای کنترل سقف برگشت و جلوگیری از ثبت هم‌زمان، اتصال اینترنت لازم است.');
+        }
         if (isOfflineNow) {
           // Single atomic Firestore writeBatch (products + voucher + cheque + invoice) queued in local IndexedDB
           committedInvoice = await commitAtomicOfflineCloudBatch();
@@ -3034,6 +3041,46 @@ export const AccountingProvider: React.FC<{ children: React.ReactNode }> = ({ ch
                 ? Math.max(Number(counterSnap.data().lastVoucherNumber) || 0, localMaxVoucherNum)
                 : localMaxVoucherNum;
               const liveNextVoucherNum = currentMax + 1;
+
+              let liveOriginalInvoice = linkedOriginalInvoice;
+              let transactionExistingInvoices = invoices;
+              let sourceInvoiceReturnRevision: number | null = null;
+              const isLinkedReturn =
+                (payload.invoiceType === 'sale_return' || payload.invoiceType === 'purchase_return') &&
+                Boolean(payload.sourceInvoiceId);
+
+              // Read and lock the source invoice plus its existing returns inside the same transaction.
+              // Updating returnRevision on the source invoice serializes concurrent return attempts.
+              if (isLinkedReturn && payload.sourceInvoiceId) {
+                const sourceInvoiceRef = doc(db, 'invoices', payload.sourceInvoiceId);
+                const linkedReturnsQuery = query(
+                  collection(db, 'invoices'),
+                  where('ownerId', '==', user.uid),
+                  where('sourceInvoiceId', '==', payload.sourceInvoiceId)
+                );
+                const [sourceInvoiceSnap, linkedReturnsSnap] = await Promise.all([
+                  tx.get(sourceInvoiceRef),
+                  tx.get(linkedReturnsQuery),
+                ]);
+                if (!sourceInvoiceSnap.exists()) {
+                  throw new Error('فاکتور مرجع برگشت در پایگاه داده یافت نشد.');
+                }
+                liveOriginalInvoice = {
+                  ...(linkedOriginalInvoice || {}),
+                  ...sourceInvoiceSnap.data(),
+                  id: sourceInvoiceSnap.id,
+                } as Invoice;
+                sourceInvoiceReturnRevision = Number(sourceInvoiceSnap.data().returnRevision) || 0;
+                const liveLinkedReturns = linkedReturnsSnap.docs.map((snap) => ({
+                  ...(invoices.find((inv) => inv.id === snap.id) || {}),
+                  ...snap.data(),
+                  id: snap.id,
+                }) as Invoice);
+                transactionExistingInvoices = [
+                  ...invoices.filter((inv) => inv.sourceInvoiceId !== payload.sourceInvoiceId),
+                  ...liveLinkedReturns,
+                ];
+              }
 
               // Read live products for every item in the invoice
               const uniqueProductIds = Array.from(new Set(payload.items.map((it) => it.productId)));
@@ -3080,8 +3127,8 @@ export const AccountingProvider: React.FC<{ children: React.ReactNode }> = ({ ch
                 currentPartyBalance: currentPartyBal,
                 enforceCashOverdraftGuard: true,
                 defaultCostingMethod: profile.defaultCostingMethod,
-                originalInvoice: linkedOriginalInvoice,
-                existingInvoices: invoices,
+                originalInvoice: liveOriginalInvoice,
+                existingInvoices: transactionExistingInvoices,
                 existingVouchers: vouchers,
                 closedFiscalYears: profile.closedFiscalYears,
                 fxDecimals,
@@ -3104,6 +3151,13 @@ export const AccountingProvider: React.FC<{ children: React.ReactNode }> = ({ ch
                     updatedAt: serverTimestamp(),
                   });
                 }
+              }
+
+              if (payload.sourceInvoiceId && sourceInvoiceReturnRevision !== null) {
+                tx.update(doc(db, 'invoices', payload.sourceInvoiceId), {
+                  returnRevision: sourceInvoiceReturnRevision + 1,
+                  updatedAt: serverTimestamp(),
+                });
               }
 
               for (const prod of livePlan.updatedProducts) {
