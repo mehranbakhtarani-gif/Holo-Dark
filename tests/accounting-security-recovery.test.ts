@@ -614,6 +614,29 @@ test('Stage 10 [Scenarios 6 & 7]: Sales Return (10 units historical cost recover
   assert.equal(res.conservationDeltaIrr, 0, 'Exact inventory conservation after both returns');
 });
 
+test('FIFO partial sales returns restore successive original consumed layers without duplicating the latest layer', () => {
+  const result = recalculateInventoryLedger({
+    productId: 'prd_partial_fifo_returns',
+    costingMethod: 'fifo',
+    movements: [
+      { id: 'buy_a', date: '1405/01/01', sequence: 1, kind: 'purchase', productId: 'prd_partial_fifo_returns', qty: 5, totalCostIrr: 500 },
+      { id: 'buy_b', date: '1405/01/02', sequence: 2, kind: 'purchase', productId: 'prd_partial_fifo_returns', qty: 5, totalCostIrr: 1_000 },
+      { id: 'buy_c', date: '1405/01/03', sequence: 3, kind: 'purchase', productId: 'prd_partial_fifo_returns', qty: 5, totalCostIrr: 1_500 },
+      { id: 'sale_all', date: '1405/01/04', sequence: 4, kind: 'sale', productId: 'prd_partial_fifo_returns', qty: 15 },
+      { id: 'return_latest', date: '1405/01/05', sequence: 5, kind: 'sale_return', productId: 'prd_partial_fifo_returns', qty: 5, sourceRefId: 'sale_all' },
+      { id: 'return_previous', date: '1405/01/06', sequence: 6, kind: 'sale_return', productId: 'prd_partial_fifo_returns', qty: 5, sourceRefId: 'sale_all' },
+    ],
+  });
+
+  const firstReturn = result.kardex.find((entry) => entry.movementId === 'return_latest');
+  const secondReturn = result.kardex.find((entry) => entry.movementId === 'return_previous');
+  assert.equal(firstReturn?.cogsOrCostIrr, 1_500, 'First return restores the last consumed 5-unit layer');
+  assert.equal(secondReturn?.cogsOrCostIrr, 1_000, 'Second return restores the next unreturned 5-unit layer');
+  assert.equal(result.finalState.stockQty, 10);
+  assert.equal(result.finalState.totalValueIrr, 2_500);
+  assert.equal(result.conservationDeltaIrr, 0);
+});
+
 test('Inventory ledger rejects cumulative sales returns beyond the original sale quantity', () => {
   assert.throws(
     () => recalculateInventoryLedger({
