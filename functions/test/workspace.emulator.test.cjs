@@ -22,7 +22,7 @@ async function createVerifiedUser(label, verify = true) {
   const signupText = await signup.text();
   assert.equal(signup.ok, true, signupText);
   const created = JSON.parse(signupText);
-  if (!verify) return { email, uid: created.localId, token: created.idToken };
+  if (!verify) return { email, password, uid: created.localId, token: created.idToken };
   const verified = await fetch(`http://${AUTH_EMULATOR}/identitytoolkit.googleapis.com/v1/accounts:update?key=${API_KEY}`, {
     method: 'POST', headers: { 'content-type': 'application/json' },
     body: JSON.stringify({ idToken: created.idToken, emailVerified: true, returnSecureToken: true }),
@@ -30,7 +30,18 @@ async function createVerifiedUser(label, verify = true) {
   const verifiedText = await verified.text();
   assert.equal(verified.ok, true, verifiedText);
   const account = JSON.parse(verifiedText);
-  return { email, uid: account.localId, token: account.idToken };
+  return { email, password, uid: account.localId, token: account.idToken };
+}
+
+async function refreshUserToken(user) {
+  const response = await fetch(`http://${AUTH_EMULATOR}/identitytoolkit.googleapis.com/v1/accounts:signInWithPassword?key=${API_KEY}`, {
+    method: 'POST', headers: { 'content-type': 'application/json' },
+    body: JSON.stringify({ email: user.email, password: user.password, returnSecureToken: true }),
+  });
+  const body = await response.text();
+  assert.equal(response.ok, true, body);
+  user.token = JSON.parse(body).idToken;
+  return user;
 }
 
 async function call(name, token, data = {}) {
@@ -60,6 +71,7 @@ test('workspace provisioning, invitation, owner-only RBAC and revocation', async
   const ownerWorkspace = await call('bootstrapWorkspace', owner.token);
   assert.equal(ownerWorkspace.workspaceId, owner.uid);
   await call('bootstrapWorkspace', owner.token); // idempotent owner bootstrap
+  await refreshUserToken(owner);
 
   const invitee = await createVerifiedUser('invitee');
   const wrongEmail = await createVerifiedUser('wrong');
@@ -87,6 +99,7 @@ test('workspace provisioning, invitation, owner-only RBAC and revocation', async
     call('acceptWorkspaceInvitation', invitee.token, { invitationToken: invitation.invitationToken }),
   ]);
   assert.ok(acceptResults.every((result) => result.workspaceId === owner.uid));
+  await refreshUserToken(invitee);
   await expectCallableError(call('bootstrapWorkspace', staleInviteeToken), 'ALREADY_EXISTS');
 
   const members = await call('listWorkspaceMembers', owner.token);
