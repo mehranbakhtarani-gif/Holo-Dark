@@ -1,14 +1,17 @@
 const { test } = require('node:test');
 const assert = require('node:assert/strict');
 const { randomUUID } = require('node:crypto');
-const { Firestore, Timestamp } = require('@google-cloud/firestore');
+const { initializeApp } = require('firebase-admin/app');
+const { getFirestore, Timestamp } = require('firebase-admin/firestore');
 
 const PROJECT_ID = process.env.FIREBASE_PROJECT_ID || 'elaborate-hash-368613';
 const AUTH_EMULATOR = process.env.AUTH_EMULATOR_HOST || '127.0.0.1:9099';
 const FUNCTIONS_EMULATOR = process.env.FUNCTIONS_EMULATOR_HOST || '127.0.0.1:5001';
 const FIRESTORE_EMULATOR = process.env.FIRESTORE_EMULATOR_HOST || '127.0.0.1:8080';
 const DATABASE_ID = 'ai-studio-remixapex-83053e73-77ed-4f64-8f70-f22da529446b';
-const firestore = new Firestore({ projectId: PROJECT_ID, databaseId: DATABASE_ID, host: FIRESTORE_EMULATOR, ssl: false });
+process.env.FIRESTORE_EMULATOR_HOST = FIRESTORE_EMULATOR;
+const adminApp = initializeApp({ projectId: PROJECT_ID }, 'workspace-migration-emulator-test');
+const firestore = getFirestore(adminApp, DATABASE_ID);
 const API_KEY = 'fake-api-key';
 const base = `http://${FUNCTIONS_EMULATOR}/${PROJECT_ID}/us-central1`;
 
