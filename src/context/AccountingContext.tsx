@@ -3152,6 +3152,7 @@ export const AccountingProvider: React.FC<{ children: React.ReactNode }> = ({ ch
                 tx.update(doc(db, 'invoices', payload.sourceInvoiceId), {
                   returnRevision: sourceInvoiceReturnRevision + 1,
                   activeReturnCount: sourceInvoiceActiveReturnCount + 1,
+                  lastReturnMutationId: id,
                   _version: sourceInvoiceVersion + 1,
                   updatedByDevice: deviceId.slice(0, 64),
                   updatedAt: serverTimestamp(),
@@ -3436,6 +3437,7 @@ export const AccountingProvider: React.FC<{ children: React.ReactNode }> = ({ ch
               tx.update(doc(db, 'invoices', liveInvoice.sourceInvoiceId), {
                 returnRevision: sourceInvoiceReturnRevision + 1,
                 activeReturnCount: sourceInvoiceActiveReturnCount - 1,
+                lastReturnMutationId: invoiceId,
                 _version: sourceInvoiceVersion + 1,
                 updatedByDevice: deviceId.slice(0, 64),
                 updatedAt: serverTimestamp(),
