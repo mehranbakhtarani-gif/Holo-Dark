@@ -804,6 +804,13 @@ service cloud.firestore {
           && (
             !incoming().diff(existing()).affectedKeys().hasAny(['returnRevision', 'activeReturnCount', 'lastReturnMutationId'])
             || (
+              existing().invoiceType == 'proforma'
+              && incoming().invoiceType == 'sale'
+              && incoming().returnRevision == 0
+              && incoming().activeReturnCount == 0
+              && !('lastReturnMutationId' in incoming())
+            )
+            || (
               ('activeReturnCount' in existing())
               && ('returnRevision' in existing())
               && ('activeReturnCount' in incoming())
@@ -856,7 +863,7 @@ service cloud.firestore {
             incoming().diff(existing()).affectedKeys().hasOnly(['paidCash', 'paidBank', 'paidCheque', 'creditAmount', 'status', 'returnRevision', 'activeReturnCount', 'lastReturnMutationId', '_version', 'updatedByDevice', 'updatedAt']) ||
             (
               existing().invoiceType == 'proforma'
-              && incoming().diff(existing()).affectedKeys().hasOnly(['invoiceNumber', 'invoiceType', 'status', 'voucherId', 'items', '_version', 'updatedByDevice', 'updatedAt'])
+              && incoming().diff(existing()).affectedKeys().hasOnly(['invoiceNumber', 'invoiceType', 'status', 'voucherId', 'items', 'returnRevision', 'activeReturnCount', '_version', 'updatedByDevice', 'updatedAt'])
             )
           )
         )
