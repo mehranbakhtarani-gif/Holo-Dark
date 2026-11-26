@@ -49,6 +49,7 @@ import {
   computeWarehouseProductKardex,
   evaluateWarehouseShortageSurplus,
   executeTrackedWarehouseTransfer,
+  receiveTrackedWarehouseTransfer,
 } from '../src/lib/multiWarehouseEngine';
 import {
   computeSandboxDiff,
@@ -804,6 +805,70 @@ test('6. Multi-Warehouse Physical/Reserved/Available/In-Transit, Tracked Transfe
   assert.equal(shortage.kind, 'shortage');
   assert.equal(shortage.varianceQty, -3);
   assert.equal(shortage.varianceValueIrr, -12_000_000);
+});
+
+test('Receiving an in-transit transfer moves only its exact FIFO layers and preserves valuation', () => {
+  const product: Product = {
+    id: 'prod_receive_transfer',
+    sku: 'TRF-RCV',
+    name: 'کالای آزمایشی',
+    category: 'آزمایشی',
+    unit: 'عدد',
+    warehouse: 'انبار مرکزی',
+    buyPrice: 100,
+    sellPrice: 150,
+    stock: 8,
+    reorderPoint: 0,
+    vatExempt: true,
+    inventoryValueIrr: 1_000,
+    costingMethod: 'fifo',
+    costLayers: [
+      { layerId: 'source_remain', date: '1405/01/01', sourceRef: 'purchase_1', warehouse: 'انبار مرکزی', originalQty: 3, remainingQty: 3, unitCostIrr: 100, totalCostIrr: 300 },
+      { layerId: 'trf_transfer_1_purchase_2', date: '1405/01/02', sourceRef: 'purchase_2', warehouse: 'در راه → انبار مقصد', originalQty: 5, remainingQty: 5, unitCostIrr: 140, totalCostIrr: 700 },
+    ],
+  };
+  const transfer = {
+    id: 'transfer_1',
+    transferNumber: 'TRF-001',
+    date: '1405/01/02',
+    productId: product.id,
+    sku: product.sku,
+    productName: product.name,
+    fromWarehouse: 'انبار مرکزی',
+    toWarehouse: 'انبار مقصد',
+    qty: 5,
+    transferredCostIrr: 700,
+    transferredLayers: [
+      { layerId: 'trf_transfer_1_purchase_2', date: '1405/01/02', sourceRef: 'purchase_2', warehouse: 'انبار مقصد', originalQty: 5, remainingQty: 5, unitCostIrr: 140, totalCostIrr: 700 },
+    ],
+    status: 'in_transit' as const,
+  };
+
+  const received = receiveTrackedWarehouseTransfer({
+    product,
+    transfer,
+    receivedDate: '1405/01/03',
+  });
+  assert.equal(received.updatedTransfer.status, 'received');
+  assert.equal(received.updatedTransfer.receivedDate, '1405/01/03');
+  assert.equal(received.updatedProduct.stock, 8);
+  assert.equal(received.updatedProduct.inventoryValueIrr, 1_000);
+  assert.equal(received.updatedProduct.costLayers?.find((l) => l.layerId === 'trf_transfer_1_purchase_2')?.warehouse, 'انبار مقصد');
+  assert.equal(received.updatedProduct.costLayers?.find((l) => l.layerId === 'source_remain')?.warehouse, 'انبار مرکزی');
+  assert.equal(received.pnlImpactIrr, 0);
+
+  assert.throws(
+    () => receiveTrackedWarehouseTransfer({ product: received.updatedProduct, transfer: received.updatedTransfer, receivedDate: '1405/01/04' }),
+    /فقط انتقالی/
+  );
+  assert.throws(
+    () => receiveTrackedWarehouseTransfer({
+      product: { ...product, costLayers: product.costLayers?.filter((l) => l.layerId !== 'trf_transfer_1_purchase_2') },
+      transfer,
+      receivedDate: '1405/01/03',
+    }),
+    /لایه‌های انتقال/
+  );
 });
 
 // ============================================================================
