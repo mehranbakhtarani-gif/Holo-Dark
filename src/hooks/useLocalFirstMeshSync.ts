@@ -38,6 +38,7 @@ import {
 import {
   buildRelayEnvelopesFromOutbox,
   getOtherMeshPeerIds,
+  hydrateCompactedRelayPayload,
   loadMeshPassphrase,
   loadSelectedMeshPeerId,
   loadVectorClock,
@@ -415,7 +416,7 @@ export function useLocalFirstMeshSync() {
                 originDeviceId: env.originDeviceId || fromPeerId,
                 summary: `رله سه‌دستگاهی از ${MESH_DEVICES.find((d) => d.peerId === fromPeerId)?.shortLabel || fromPeerId}: ${env.summary}`,
                 payloadHash: env.payloadHash,
-                snapshotJson: env.snapshotJson || currentMergedJson,
+                snapshotJson: env.snapshotJson || '',
                 deliveredToPeers: Array.from(deliveredSet),
                 requiredPeers: stillNeededForOthers,
                 status: 'pending',
@@ -427,6 +428,17 @@ export function useLocalFirstMeshSync() {
               });
             }
           }
+          // Compaction intentionally strips redundant snapshots. Before relaying those
+          // operation IDs onward, attach the final merged state and its matching fingerprint.
+          const mergedRelayPayloadHash = computePayloadFingerprint(currentMergedJson);
+          for (let i = 0; i < relayOutboxItems.length; i += 1) {
+            relayOutboxItems[i] = hydrateCompactedRelayPayload(
+              relayOutboxItems[i],
+              currentMergedJson,
+              mergedRelayPayloadHash
+            );
+          }
+
           const ackedOpIds = Array.from(ackedOpIdSet);
 
           const peerLabel =
