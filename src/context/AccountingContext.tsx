@@ -3045,6 +3045,7 @@ export const AccountingProvider: React.FC<{ children: React.ReactNode }> = ({ ch
               let liveOriginalInvoice = linkedOriginalInvoice;
               let transactionExistingInvoices = invoices;
               let sourceInvoiceReturnRevision: number | null = null;
+              let sourceInvoiceVersion: number | null = null;
               const isLinkedReturn =
                 (payload.invoiceType === 'sale_return' || payload.invoiceType === 'purchase_return') &&
                 Boolean(payload.sourceInvoiceId);
@@ -3071,6 +3072,7 @@ export const AccountingProvider: React.FC<{ children: React.ReactNode }> = ({ ch
                   id: sourceInvoiceSnap.id,
                 } as Invoice;
                 sourceInvoiceReturnRevision = Number(sourceInvoiceSnap.data().returnRevision) || 0;
+                sourceInvoiceVersion = Number(sourceInvoiceSnap.data()._version) || 1;
                 const liveLinkedReturns = linkedReturnsSnap.docs.map((snap) => ({
                   ...(invoices.find((inv) => inv.id === snap.id) || {}),
                   ...snap.data(),
@@ -3153,9 +3155,15 @@ export const AccountingProvider: React.FC<{ children: React.ReactNode }> = ({ ch
                 }
               }
 
-              if (payload.sourceInvoiceId && sourceInvoiceReturnRevision !== null) {
+              if (
+                payload.sourceInvoiceId &&
+                sourceInvoiceReturnRevision !== null &&
+                sourceInvoiceVersion !== null
+              ) {
                 tx.update(doc(db, 'invoices', payload.sourceInvoiceId), {
                   returnRevision: sourceInvoiceReturnRevision + 1,
+                  _version: sourceInvoiceVersion + 1,
+                  updatedByDevice: deviceId.slice(0, 64),
                   updatedAt: serverTimestamp(),
                 });
               }
@@ -3193,7 +3201,13 @@ export const AccountingProvider: React.FC<{ children: React.ReactNode }> = ({ ch
               return livePlan.invoice;
             });
           } catch (err) {
-            if (isFirestoreOfflineError(err)) {
+            if (
+              isFirestoreOfflineError(err) &&
+              payload.sourceInvoiceId &&
+              (payload.invoiceType === 'sale_return' || payload.invoiceType === 'purchase_return')
+            ) {
+              throw new Error('تراکنش کنترل سقف برگشت به‌دلیل قطع اتصال کامل نشد؛ برای جلوگیری از برگشت تکراری، ثبت آفلاین انجام نشد.');
+            } else if (isFirestoreOfflineError(err)) {
               committedInvoice = await commitAtomicOfflineCloudBatch();
             } else {
               const msg =
@@ -3343,6 +3357,7 @@ export const AccountingProvider: React.FC<{ children: React.ReactNode }> = ({ ch
             if (liveInvoice.status === 'cancelled') return { alreadyCancelled: true as const };
 
             let sourceInvoiceReturnRevision: number | null = null;
+            let sourceInvoiceVersion: number | null = null;
             if (
               liveInvoice.sourceInvoiceId &&
               (liveInvoice.invoiceType === 'sale_return' || liveInvoice.invoiceType === 'purchase_return')
@@ -3352,6 +3367,7 @@ export const AccountingProvider: React.FC<{ children: React.ReactNode }> = ({ ch
                 throw new Error('فاکتور مرجع برگشت یافت نشد؛ ابطال برگشت متوقف شد.');
               }
               sourceInvoiceReturnRevision = Number(sourceInvoiceSnap.data().returnRevision) || 0;
+              sourceInvoiceVersion = Number(sourceInvoiceSnap.data()._version) || 1;
             }
 
             const reversalSnap = await tx.get(reversalRef);
@@ -3400,9 +3416,15 @@ export const AccountingProvider: React.FC<{ children: React.ReactNode }> = ({ ch
             });
 
             // All reads are complete. Touching the source invoice serializes return creation/cancellation.
-            if (liveInvoice.sourceInvoiceId && sourceInvoiceReturnRevision !== null) {
+            if (
+              liveInvoice.sourceInvoiceId &&
+              sourceInvoiceReturnRevision !== null &&
+              sourceInvoiceVersion !== null
+            ) {
               tx.update(doc(db, 'invoices', liveInvoice.sourceInvoiceId), {
                 returnRevision: sourceInvoiceReturnRevision + 1,
+                _version: sourceInvoiceVersion + 1,
+                updatedByDevice: deviceId.slice(0, 64),
                 updatedAt: serverTimestamp(),
               });
             }
