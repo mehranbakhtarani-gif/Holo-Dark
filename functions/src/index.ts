@@ -328,3 +328,210 @@ export const listWorkspaceMembers = onCall({ region: REGION }, async (request) =
   members.sort((a, b) => a.role === 'owner' ? -1 : b.role === 'owner' ? 1 : a.email.localeCompare(b.email));
   return { members };
 });
+
+
+const WORKSPACE_MIGRATION_COLLECTIONS = [
+  'counters', 'accounts', 'parties', 'products', 'vouchers', 'invoices',
+  'cheques', 'employees', 'assets', 'costCenters', 'currencies',
+  'exchangeRates', 'importDossiers', 'salesOrders', 'subcontractJobs',
+  'rbacOperators', 'auditLogs', 'workspaceExtensions', 'devicePresence',
+  'cloudBackups',
+] as const;
+const MIGRATION_PAGE_SIZE = 200;
+
+function stableMigrationValue(value: unknown): unknown {
+  if (value === null || value === undefined || typeof value === 'string' || typeof value === 'number' || typeof value === 'boolean') return value;
+  if (value instanceof Date) return { __date: value.toISOString() };
+  if (value && typeof (value as { toMillis?: unknown }).toMillis === 'function') {
+    return { __timestamp: (value as { toMillis: () => number }).toMillis() };
+  }
+  if (Buffer.isBuffer(value)) return { __bytes: value.toString('base64') };
+  if (Array.isArray(value)) return value.map(stableMigrationValue);
+  if (typeof value === 'object') {
+    const record = value as Record<string, unknown>;
+    return Object.keys(record).sort().reduce<Record<string, unknown>>((out, key) => {
+      out[key] = stableMigrationValue(record[key]);
+      return out;
+    }, {});
+  }
+  return String(value);
+}
+
+function workspaceMigrationHash(value: Record<string, unknown>): string {
+  return createHash('sha256').update(JSON.stringify(stableMigrationValue(value))).digest('hex');
+}
+
+function migrationDestination(workspaceId: string, collectionName: string) {
+  return db.collection('workspaces').doc(workspaceId)
+    .collection('migrationData').doc(collectionName).collection('records');
+}
+
+/**
+ * Creates a reversible staging migration. Legacy source documents remain untouched.
+ * This does not switch application reads/writes or grant member access.
+ */
+export const beginWorkspaceDataMigration = onCall({ region: REGION, timeoutSeconds: 60 }, async (request) => {
+  const auth = request.auth as CallableAuth | undefined;
+  requireVerifiedAuth(auth);
+  const workspaceId = await requireWorkspaceOwner(auth);
+  const migrationRef = db.collection('workspaceMigrations').doc(workspaceId);
+  const result = await db.runTransaction(async (tx) => {
+    const snap = await tx.get(migrationRef);
+    if (snap.exists) {
+      const status = snap.get('status');
+      if (status === 'copying' || status === 'verifying' || status === 'verified') {
+        return { status, collectionIndex: Number(snap.get('collectionIndex') || 0), resumed: true };
+      }
+      throw new HttpsError('failed-precondition', 'وضعیت مهاجرت قبلی نامعتبر است؛ بازنشانی خودکار انجام نمی‌شود.');
+    }
+    tx.create(migrationRef, {
+      workspaceId,
+      ownerUid: auth.uid,
+      schemaVersion: 1,
+      status: 'copying',
+      collectionIndex: 0,
+      lastDocumentId: null,
+      copiedCounts: {},
+      verifyCollectionIndex: 0,
+      verifyLastDocumentId: null,
+      verifiedCounts: {},
+      createdAt: FieldValue.serverTimestamp(),
+      updatedAt: FieldValue.serverTimestamp(),
+    });
+    return { status: 'copying', collectionIndex: 0, resumed: false };
+  });
+  return { workspaceId, ...result, collections: WORKSPACE_MIGRATION_COLLECTIONS.length, pageSize: MIGRATION_PAGE_SIZE };
+});
+
+/** Copies one bounded page into an isolated staging namespace, preserving the legacy source. */
+export const migrateWorkspaceDataBatch = onCall({ region: REGION, timeoutSeconds: 120 }, async (request) => {
+  const auth = request.auth as CallableAuth | undefined;
+  requireVerifiedAuth(auth);
+  const workspaceId = await requireWorkspaceOwner(auth);
+  const migrationRef = db.collection('workspaceMigrations').doc(workspaceId);
+  return db.runTransaction(async (tx) => {
+    const manifest = await tx.get(migrationRef);
+    if (!manifest.exists || manifest.get('status') !== 'copying') {
+      throw new HttpsError('failed-precondition', 'مهاجرت در وضعیت کپی فعال نیست.');
+    }
+    const index = Number(manifest.get('collectionIndex') || 0);
+    if (index >= WORKSPACE_MIGRATION_COLLECTIONS.length) {
+      tx.update(migrationRef, { status: 'verifying', verifyCollectionIndex: 0, verifyLastDocumentId: null, updatedAt: FieldValue.serverTimestamp() });
+      return { status: 'verifying', copied: 0, collection: null };
+    }
+    const collectionName = WORKSPACE_MIGRATION_COLLECTIONS[index];
+    let query = db.collection(collectionName).where('ownerId', '==', workspaceId)
+      .orderBy('__name__').limit(MIGRATION_PAGE_SIZE);
+    const cursor = manifest.get('lastDocumentId');
+    if (typeof cursor === 'string' && cursor) query = query.startAfter(cursor);
+    const page = await tx.get(query);
+    if (page.empty) {
+      const nextIndex = index + 1;
+      tx.update(migrationRef, {
+        collectionIndex: nextIndex,
+        lastDocumentId: null,
+        status: nextIndex >= WORKSPACE_MIGRATION_COLLECTIONS.length ? 'verifying' : 'copying',
+        verifyCollectionIndex: nextIndex >= WORKSPACE_MIGRATION_COLLECTIONS.length ? 0 : manifest.get('verifyCollectionIndex') || 0,
+        updatedAt: FieldValue.serverTimestamp(),
+      });
+      return { status: nextIndex >= WORKSPACE_MIGRATION_COLLECTIONS.length ? 'verifying' : 'copying', copied: 0, collection: collectionName };
+    }
+    const nextCounts = { ...(manifest.get('copiedCounts') || {}) } as Record<string, number>;
+    const batch = db.batch();
+    for (const sourceDoc of page.docs) {
+      const payload = sourceDoc.data() as Record<string, unknown>;
+      const serialized = JSON.stringify(stableMigrationValue(payload));
+      if (Buffer.byteLength(serialized, 'utf8') > 850_000) {
+        throw new HttpsError('resource-exhausted', `سند ${collectionName}/${sourceDoc.id} برای بسته‌بندی امن مهاجرت بیش از حد بزرگ است.`);
+      }
+      batch.set(migrationDestination(workspaceId, collectionName).doc(sourceDoc.id), {
+        workspaceId,
+        sourceCollection: collectionName,
+        sourceId: sourceDoc.id,
+        sourceHash: workspaceMigrationHash(payload),
+        schemaVersion: 1,
+        payload,
+        copiedAt: FieldValue.serverTimestamp(),
+      });
+    }
+    nextCounts[collectionName] = (nextCounts[collectionName] || 0) + page.size;
+    const reachedEnd = page.size < MIGRATION_PAGE_SIZE;
+    const nextIndex = reachedEnd ? index + 1 : index;
+    batch.update(migrationRef, {
+      copiedCounts: nextCounts,
+      collectionIndex: nextIndex,
+      lastDocumentId: reachedEnd ? null : page.docs[page.docs.length - 1].id,
+      status: nextIndex >= WORKSPACE_MIGRATION_COLLECTIONS.length ? 'verifying' : 'copying',
+      verifyCollectionIndex: nextIndex >= WORKSPACE_MIGRATION_COLLECTIONS.length ? 0 : manifest.get('verifyCollectionIndex') || 0,
+      updatedAt: FieldValue.serverTimestamp(),
+    });
+    await tx.get(migrationRef);
+    // Transactional writes keep the cursor and copied page atomic.
+    for (const write of batch['_ops'] || []) void write;
+    // Re-issue staged writes through the transaction (the batch is intentionally not committed).
+    for (const sourceDoc of page.docs) {
+      const payload = sourceDoc.data() as Record<string, unknown>;
+      tx.set(migrationDestination(workspaceId, collectionName).doc(sourceDoc.id), {
+        workspaceId, sourceCollection: collectionName, sourceId: sourceDoc.id,
+        sourceHash: workspaceMigrationHash(payload), schemaVersion: 1, payload,
+        copiedAt: FieldValue.serverTimestamp(),
+      });
+    }
+    tx.update(migrationRef, {
+      copiedCounts: nextCounts, collectionIndex: nextIndex,
+      lastDocumentId: reachedEnd ? null : page.docs[page.docs.length - 1].id,
+      status: nextIndex >= WORKSPACE_MIGRATION_COLLECTIONS.length ? 'verifying' : 'copying',
+      verifyCollectionIndex: nextIndex >= WORKSPACE_MIGRATION_COLLECTIONS.length ? 0 : manifest.get('verifyCollectionIndex') || 0,
+      updatedAt: FieldValue.serverTimestamp(),
+    });
+    return { status: nextIndex >= WORKSPACE_MIGRATION_COLLECTIONS.length ? 'verifying' : 'copying', copied: page.size, collection: collectionName };
+  });
+});
+
+/** Compares staged SHA-256 payloads to the live legacy source in bounded pages. */
+export const verifyWorkspaceDataMigration = onCall({ region: REGION, timeoutSeconds: 120 }, async (request) => {
+  const auth = request.auth as CallableAuth | undefined;
+  requireVerifiedAuth(auth);
+  const workspaceId = await requireWorkspaceOwner(auth);
+  const migrationRef = db.collection('workspaceMigrations').doc(workspaceId);
+  return db.runTransaction(async (tx) => {
+    const manifest = await tx.get(migrationRef);
+    if (!manifest.exists || manifest.get('status') !== 'verifying') {
+      if (manifest.exists && manifest.get('status') === 'verified') return { status: 'verified', verified: 0, collection: null };
+      throw new HttpsError('failed-precondition', 'مهاجرت در وضعیت بررسی نیست.');
+    }
+    const index = Number(manifest.get('verifyCollectionIndex') || 0);
+    if (index >= WORKSPACE_MIGRATION_COLLECTIONS.length) {
+      tx.update(migrationRef, { status: 'verified', verifiedAt: FieldValue.serverTimestamp(), updatedAt: FieldValue.serverTimestamp() });
+      return { status: 'verified', verified: 0, collection: null };
+    }
+    const collectionName = WORKSPACE_MIGRATION_COLLECTIONS[index];
+    let query = db.collection(collectionName).where('ownerId', '==', workspaceId)
+      .orderBy('__name__').limit(MIGRATION_PAGE_SIZE);
+    const cursor = manifest.get('verifyLastDocumentId');
+    if (typeof cursor === 'string' && cursor) query = query.startAfter(cursor);
+    const page = await tx.get(query);
+    const destination = migrationDestination(workspaceId, collectionName);
+    const destinationRefs = page.docs.map((doc) => destination.doc(doc.id));
+    const staged = destinationRefs.length ? await tx.getAll(...destinationRefs) : [];
+    const verifiedCounts = { ...(manifest.get('verifiedCounts') || {}) } as Record<string, number>;
+    for (let i = 0; i < page.docs.length; i += 1) {
+      const sourceData = page.docs[i].data() as Record<string, unknown>;
+      if (!staged[i].exists || staged[i].get('sourceHash') !== workspaceMigrationHash(sourceData)) {
+        throw new HttpsError('data-loss', `تطبیق هش داده ناموفق است: ${collectionName}/${page.docs[i].id}. داده مبدأ تغییر کرده یا نسخه مقصد ناقص است.`);
+      }
+    }
+    verifiedCounts[collectionName] = (verifiedCounts[collectionName] || 0) + page.size;
+    const reachedEnd = page.size < MIGRATION_PAGE_SIZE;
+    const nextIndex = reachedEnd ? index + 1 : index;
+    tx.update(migrationRef, {
+      verifiedCounts,
+      verifyCollectionIndex: nextIndex,
+      verifyLastDocumentId: reachedEnd ? null : page.docs[page.docs.length - 1].id,
+      status: nextIndex >= WORKSPACE_MIGRATION_COLLECTIONS.length ? 'verified' : 'verifying',
+      ...(nextIndex >= WORKSPACE_MIGRATION_COLLECTIONS.length ? { verifiedAt: FieldValue.serverTimestamp() } : {}),
+      updatedAt: FieldValue.serverTimestamp(),
+    });
+    return { status: nextIndex >= WORKSPACE_MIGRATION_COLLECTIONS.length ? 'verified' : 'verifying', verified: page.size, collection: collectionName };
+  });
+});
