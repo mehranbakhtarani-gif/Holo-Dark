@@ -8,7 +8,7 @@ const FUNCTIONS_EMULATOR = process.env.FUNCTIONS_EMULATOR_HOST || '127.0.0.1:500
 const API_KEY = 'fake-api-key';
 const base = `http://${FUNCTIONS_EMULATOR}/${PROJECT_ID}/us-central1`;
 
-async function createVerifiedUser(label) {
+async function createVerifiedUser(label, verify = true) {
   const email = `${label}-${randomUUID()}@example.test`;
   const password = 'Test-password-123!';
   const signup = await fetch(`http://${AUTH_EMULATOR}/identitytoolkit.googleapis.com/v1/accounts:signUp?key=${API_KEY}`, {
@@ -17,6 +17,7 @@ async function createVerifiedUser(label) {
   });
   assert.equal(signup.ok, true, await signup.text());
   const created = await signup.json();
+  if (!verify) return { email, uid: created.localId, token: created.idToken };
   const verified = await fetch(`http://${AUTH_EMULATOR}/identitytoolkit.googleapis.com/v1/accounts:update?key=${API_KEY}`, {
     method: 'POST', headers: { 'content-type': 'application/json' },
     body: JSON.stringify({ idToken: created.idToken, emailVerified: true, returnSecureToken: true }),
@@ -56,6 +57,7 @@ test('workspace provisioning, invitation, owner-only RBAC and revocation', async
 
   const invitee = await createVerifiedUser('invitee');
   const wrongEmail = await createVerifiedUser('wrong');
+  const unverified = await createVerifiedUser('unverified', false);
   const invitation = await call('createWorkspaceInvitation', owner.token, {
     email: invitee.email, role: 'accountant',
   });
@@ -65,13 +67,20 @@ test('workspace provisioning, invitation, owner-only RBAC and revocation', async
     'PERMISSION_DENIED',
   );
   await expectCallableError(
+    call('acceptWorkspaceInvitation', unverified.token, { invitationToken: invitation.invitationToken }),
+    'PERMISSION_DENIED',
+  );
+  await expectCallableError(
     call('acceptWorkspaceInvitation', invitee.token, { invitationToken: 'invalid-token-value-that-is-long-enough-123456' }),
     'NOT_FOUND',
   );
 
   const staleInviteeToken = invitee.token;
-  const accepted = await call('acceptWorkspaceInvitation', invitee.token, { invitationToken: invitation.invitationToken });
-  assert.equal(accepted.workspaceId, owner.uid);
+  const acceptResults = await Promise.all([
+    call('acceptWorkspaceInvitation', invitee.token, { invitationToken: invitation.invitationToken }),
+    call('acceptWorkspaceInvitation', invitee.token, { invitationToken: invitation.invitationToken }),
+  ]);
+  assert.ok(acceptResults.every((result) => result.workspaceId === owner.uid));
   await expectCallableError(call('bootstrapWorkspace', staleInviteeToken), 'ALREADY_EXISTS');
 
   const members = await call('listWorkspaceMembers', owner.token);
@@ -81,6 +90,8 @@ test('workspace provisioning, invitation, owner-only RBAC and revocation', async
   await expectCallableError(call('listWorkspaceMembers', invitee.token), 'PERMISSION_DENIED');
   await expectCallableError(call('setWorkspaceMemberRole', owner.token, { uid: owner.uid, role: 'finance_manager' }), 'INVALID_ARGUMENT');
   await expectCallableError(call('setWorkspaceMemberRole', owner.token, { uid: invitee.uid, role: 'owner' }), 'INVALID_ARGUMENT');
+  await expectCallableError(call('setWorkspaceMemberRole', owner.token, { uid: invitee.uid, role: 'root_admin' }), 'INVALID_ARGUMENT');
+  await expectCallableError(call('revokeWorkspaceMember', invitee.token, { uid: owner.uid }), 'PERMISSION_DENIED');
   await expectCallableError(call('setWorkspaceMemberRole', invitee.token, { uid: owner.uid, role: 'accountant' }), 'PERMISSION_DENIED');
 
   await call('setWorkspaceMemberRole', owner.token, { uid: invitee.uid, role: 'warehouse_keeper' });
