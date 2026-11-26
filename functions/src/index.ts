@@ -1724,8 +1724,12 @@ async function validateWorkspaceVoucherReferences(
   fiscalProfileSnap: FirebaseFirestore.DocumentSnapshot,
 ): Promise<void> {
   const voucherDate = voucher.date;
-  if (!isValidWorkspaceShamsiDate(voucherDate)) {
-    throw new HttpsError('invalid-argument', 'تاریخ سند شمسی معتبر نیست.');
+  if (voucher.ownerId !== workspaceId
+      || !isValidWorkspaceShamsiDate(voucherDate)
+      || typeof voucher.description !== 'string'
+      || !['opening', 'general', 'sales', 'purchase', 'treasury', 'payroll', 'depreciation', 'closing'].includes(String(voucher.voucherType))
+      || !['draft', 'permanent'].includes(String(voucher.status))) {
+    throw new HttpsError('invalid-argument', 'ساختار پایه سند برای ثبت یا قطعی‌سازی معتبر نیست.');
   }
   const dateFiscalYear = voucherDate.slice(0, 4);
   if (typeof voucher.fiscalYear !== 'string' || voucher.fiscalYear !== dateFiscalYear) {
@@ -1739,6 +1743,33 @@ async function validateWorkspaceVoucherReferences(
   const lines = Array.isArray(voucher.lines) ? voucher.lines as Record<string, unknown>[] : [];
   if (lines.length < 2 || lines.length > 100) {
     throw new HttpsError('invalid-argument', 'تعداد آرتیکل‌های سند معتبر نیست.');
+  }
+  const totalDebit = voucher.totalDebit;
+  const totalCredit = voucher.totalCredit;
+  if (typeof totalDebit !== 'number' || !Number.isFinite(totalDebit) || totalDebit <= 0
+      || typeof totalCredit !== 'number' || !Number.isFinite(totalCredit) || totalCredit <= 0
+      || Math.abs(totalDebit - totalCredit) > 0.000001) {
+    throw new HttpsError('failed-precondition', 'جمع بدهکار و بستانکار سند معتبر یا متوازن نیست.');
+  }
+  let calculatedDebit = 0;
+  let calculatedCredit = 0;
+  for (let index = 0; index < lines.length; index += 1) {
+    const line = lines[index];
+    if (typeof line.accountCode !== 'string' || !line.accountCode.trim()
+        || typeof line.debit !== 'number' || !Number.isFinite(line.debit) || line.debit < 0
+        || typeof line.credit !== 'number' || !Number.isFinite(line.credit) || line.credit < 0
+        || (line.debit > 0 && line.credit > 0)
+        || (line.debit === 0 && line.credit === 0)
+        || (line.partyId !== undefined && typeof line.partyId !== 'string')
+        || (line.costCenterId !== undefined && typeof line.costCenterId !== 'string')) {
+      throw new HttpsError('invalid-argument', `ساختار مبلغ یا ارجاع آرتیکل ${index + 1} معتبر نیست.`);
+    }
+    calculatedDebit += line.debit;
+    calculatedCredit += line.credit;
+  }
+  if (Math.abs(calculatedDebit - totalDebit) > 0.000001
+      || Math.abs(calculatedCredit - totalCredit) > 0.000001) {
+    throw new HttpsError('failed-precondition', 'جمع آرتیکل‌ها با مبالغ کل سند مطابقت ندارد.');
   }
   const accountCodes = [...new Set(lines.map((line) =>
     typeof line?.accountCode === 'string' ? line.accountCode.trim() : ''
