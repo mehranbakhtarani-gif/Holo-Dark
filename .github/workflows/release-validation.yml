@@ -4,9 +4,11 @@ on:
   push:
     branches:
       - fix/accounting-fifo-persistence
+      - deploy/liara-node22
   pull_request:
     branches:
       - fix/accounting-fifo-persistence
+      - deploy/liara-node22
   workflow_dispatch:
 
 permissions:
@@ -29,7 +31,7 @@ jobs:
       - name: Set up Node.js
         uses: actions/setup-node@v4
         with:
-          node-version: 24.12.0
+          node-version: 22
 
       - name: Install dependencies
         run: npm install --no-audit --no-fund --no-progress
