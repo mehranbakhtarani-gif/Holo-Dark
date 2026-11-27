@@ -4,9 +4,11 @@ on:
   push:
     branches:
       - fix/accounting-fifo-persistence
+      - deploy/liara-node22
   pull_request:
     branches:
       - fix/accounting-fifo-persistence
+      - deploy/liara-node22
   workflow_dispatch:
 
 permissions:
